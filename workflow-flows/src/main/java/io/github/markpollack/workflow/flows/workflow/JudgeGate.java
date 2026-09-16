@@ -22,11 +22,13 @@ import java.util.function.BiFunction;
  * <h2>Aggregates that carry no score</h2>
  * A jury reports an outcome; it does not always report a measurement. A status-only PASS or
  * FAIL is compared through its derived {@code 1.0}/{@code 0.0} view, so a judge that passed
- * without measuring anything clears this gate. An abstention or an evaluation error is not a
- * finding at all — there is nothing to compare against the threshold, and treating it as a
- * quality score of zero would turn "did not evaluate" into "evaluated badly" — so the evaluation
- * comes back {@link GateAssessment.Inconclusive} and the engine terminates the attempt through its
- * error path once it has recorded the verdict.
+ * without measuring anything clears this gate. An abstention, a not-applicable exclusion or an
+ * evaluation error is not a finding at all — there is nothing to compare against the threshold,
+ * and treating it as a quality score of zero would turn "did not evaluate" into "evaluated badly" —
+ * so the evaluation comes back {@link GateAssessment.Inconclusive} and the engine terminates the
+ * attempt through its error path once it has recorded the verdict. A not-applicable aggregate is
+ * not a pass either: routing an exclusion onward would let a jury clear the gate by declining the
+ * question.
  *
  * <h2>Building the {@link JudgmentContext}</h2>
  * The jury votes on a {@link JudgmentContext} produced by a <em>context mapper</em> —
@@ -73,7 +75,7 @@ public class JudgeGate<O> implements Gate<O> {
             // No finding exists to compare, and zero is a real assessment rather than the absence
             // of one. The evaluation is returned as inconclusive so the engine records it and then
             // terminates the attempt through its error path.
-            case ABSTAIN, ERROR -> new GateAssessment.Inconclusive(verdict,
+            case ABSTAIN, NOT_APPLICABLE, ERROR -> new GateAssessment.Inconclusive(verdict,
                     "jury returned " + aggregate.status() + ", so no pass/fail finding exists to compare "
                             + "against threshold " + threshold + ": " + aggregate.reasoning());
         };

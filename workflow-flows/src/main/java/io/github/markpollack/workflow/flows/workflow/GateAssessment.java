@@ -12,8 +12,9 @@ import java.util.Objects;
  *
  * <p>This makes {@link Gate#evaluate} total over the statuses of a returned {@link Verdict}. A jury
  * reports an outcome and does not always reach a finding: an abstention is a subject it cannot
- * speak to, and an evaluation error is a jury that never ran to completion. Neither is a pass and
- * neither is a fail, so neither can be spelled as a {@link GateDecision}. Unchecked failures that
+ * speak to, a not-applicable exclusion is a question that should not have been asked, and an
+ * evaluation error is a jury that never ran to completion. None is a pass and none is a fail, so
+ * none can be spelled as a {@link GateDecision}. Unchecked failures that
  * prevent a jury from returning a verdict are outside this result algebra and may still propagate.
  *
  * <h2>It is public and in-process, and it is not the wire</h2>
@@ -61,7 +62,8 @@ public sealed interface GateAssessment permits GateAssessment.Decided, GateAsses
     /**
      * The gate reached no decision because the jury reached no finding.
      *
-     * @param verdict the verdict, whose aggregate status says whether the jury abstained or errored
+     * @param verdict the verdict, whose aggregate status says whether the jury abstained, excluded
+     *                the subject as not applicable, or errored
      * @param reason  why this gate could not route the verdict, for the engine's diagnostics
      */
     record Inconclusive(Verdict verdict, String reason) implements GateAssessment {
@@ -71,7 +73,7 @@ public sealed interface GateAssessment permits GateAssessment.Decided, GateAsses
             Objects.requireNonNull(reason, "reason");
             JudgmentStatus status = verdict.aggregated().status();
             switch (status) {
-                case ABSTAIN, ERROR -> {
+                case ABSTAIN, NOT_APPLICABLE, ERROR -> {
                     // These statuses carry no pass/fail finding and therefore no routing decision.
                 }
                 case PASS, FAIL -> throw new IllegalArgumentException(

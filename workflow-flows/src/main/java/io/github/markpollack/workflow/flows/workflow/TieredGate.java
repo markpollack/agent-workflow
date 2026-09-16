@@ -24,7 +24,9 @@ import io.github.markpollack.judge.context.JudgmentContext;
  * the escalation path is for, so it escalates rather than terminating. An <em>evaluation error</em>
  * means the jury never ran to completion; escalating it would present a non-result to a reviewer as
  * a borderline result, so the evaluation comes back {@link GateAssessment.Inconclusive} and the
- * engine terminates the attempt through its error path once it has recorded the verdict.
+ * engine terminates the attempt through its error path once it has recorded the verdict. A
+ * <em>not-applicable</em> aggregate is treated the same way: the jury declared the question should
+ * not have been asked, which is neither a borderline result for a reviewer nor a pass.
  *
  * @param <O> the type of output being evaluated
  */
@@ -65,7 +67,7 @@ public class TieredGate<O> implements Gate<O> {
             case PASS, FAIL -> new GateAssessment.Decided(tier(JudgeGate.comparableScore(aggregate)), verdict);
             // A subject this jury cannot speak to is what the human tier exists for.
             case ABSTAIN -> new GateAssessment.Decided(GateDecision.ESCALATE, verdict);
-            case ERROR -> new GateAssessment.Inconclusive(verdict,
+            case NOT_APPLICABLE, ERROR -> new GateAssessment.Inconclusive(verdict,
                     "jury returned " + aggregate.status() + ", so no finding exists to tier against thresholds "
                             + lowThreshold + "/" + highThreshold + ": " + aggregate.reasoning());
         };

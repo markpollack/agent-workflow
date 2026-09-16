@@ -15,6 +15,7 @@
  */
 package io.github.markpollack.workflow.patterns.evaluator;
 
+import io.github.markpollack.judge.jury.Decision;
 import io.github.markpollack.judge.jury.Jury;
 import io.github.markpollack.judge.jury.Verdict;
 import io.github.markpollack.judge.result.Judgment;
@@ -152,7 +153,7 @@ class EvaluatorOptimizerLoopTest {
     private static Jury juryReturning(Judgment aggregate) {
         Jury jury = mock(Jury.class);
         when(jury.vote(any())).thenReturn(
-                Verdict.builder().aggregated(aggregate).individual(List.of()).build());
+                Verdict.builder().aggregated(aggregate).individual(List.of()).decision(Decision.own()).build());
         return jury;
     }
 

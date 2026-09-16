@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import io.github.markpollack.judge.Judge;
 import io.github.markpollack.judge.context.JudgmentContext;
 import io.github.markpollack.judge.jury.ConsensusStrategy;
+import io.github.markpollack.judge.jury.Decision;
 import io.github.markpollack.judge.jury.Jury;
 import io.github.markpollack.judge.jury.SimpleJury;
 import io.github.markpollack.judge.jury.Verdict;
@@ -320,9 +321,9 @@ class GateTest {
      * moves with the dependency.
      *
      * <p>Semantics per the ratified boundary: a status-only PASS/FAIL uses the derived
-     * {@code 1.0}/{@code 0.0} view; ABSTAIN and ERROR made no assessment at all, so neither
-     * reaches a threshold comparison. The tiered gate's first tier escalates an abstention to
-     * its human tier rather than terminating. The typed error vocabulary for the inconclusive
+     * {@code 1.0}/{@code 0.0} view; ABSTAIN, NOT_APPLICABLE and ERROR made no assessment at all,
+     * so none reaches a threshold comparison. The tiered gate's first tier escalates an abstention
+     * to its human tier rather than terminating; an exclusion is not escalated. The typed error vocabulary for the inconclusive
      * and failed-evaluation paths is minted later and deliberately not coined here — what the
      * gate returns says only that no finding exists, and the verdict it carries says why.
      */
@@ -384,6 +385,25 @@ class GateTest {
                     .asInstanceOf(type(GateAssessment.Inconclusive.class))
                     .satisfies(inconclusive -> assertThat(inconclusive.verdict().aggregated().status())
                             .isEqualTo(JudgmentStatus.ERROR));
+        }
+
+        @Test
+        void notApplicableMustNeitherPassNorEscalate() {
+            // An exclusion is not a finding: routing it to PASS would let a jury clear the gate by
+            // declining the question, and it is not a borderline result for the human tier.
+            Jury jury = mockJuryReturning(notApplicable());
+
+            JudgeGate<Object> judgeGate = new JudgeGate<>(jury, 0.8, JudgeGate.defaultContextMapper("Gate"));
+            assertThat(judgeGate.evaluate(AgentContext.create(), "output"))
+                    .asInstanceOf(type(GateAssessment.Inconclusive.class))
+                    .satisfies(inconclusive -> assertThat(inconclusive.verdict().aggregated().status())
+                            .isEqualTo(JudgmentStatus.NOT_APPLICABLE));
+
+            TieredGate<Object> tieredGate = new TieredGate<>(jury, 0.9, 0.6, JudgeGate.defaultContextMapper("Tiered"));
+            assertThat(tieredGate.evaluate(AgentContext.create(), "output"))
+                    .asInstanceOf(type(GateAssessment.Inconclusive.class))
+                    .satisfies(inconclusive -> assertThat(inconclusive.verdict().aggregated().status())
+                            .isEqualTo(JudgmentStatus.NOT_APPLICABLE));
         }
     }
 
@@ -495,6 +515,11 @@ class GateTest {
         @Test
         void anEvaluationErrorReachesRecoveryWithItsExactJudgeEvidence() {
             assertRecoveryReceivesJudgeEvidence(errored(), JudgmentStatus.ERROR);
+        }
+
+        @Test
+        void aNotApplicableExclusionReachesRecoveryWithItsExactJudgeEvidence() {
+            assertRecoveryReceivesJudgeEvidence(notApplicable(), JudgmentStatus.NOT_APPLICABLE);
         }
 
         private void assertRecoveryReceivesJudgeEvidence(Judgment aggregate, JudgmentStatus expectedStatus) {
@@ -765,6 +790,11 @@ class GateTest {
                 .build();
     }
 
+    /** An aggregate declaring that the criterion should not have been asked of this subject. */
+    private static Judgment notApplicable() {
+        return Judgment.notApplicable("The subject has no Java source for this criterion to apply to");
+    }
+
     /** An aggregate from a judge that never reached a finding. */
     private static Judgment errored() {
         return Judgment.builder()
@@ -781,7 +811,7 @@ class GateTest {
     }
 
     private static Verdict verdictOf(Judgment aggregate) {
-        return Verdict.builder().aggregated(aggregate).individual(List.of()).build();
+        return Verdict.builder().aggregated(aggregate).individual(List.of()).decision(Decision.own()).build();
     }
 
     private static Jury mockJuryReturningScore(double score) {
@@ -792,6 +822,7 @@ class GateTest {
                         .reasoning("Score: " + score)
                         .build())
                 .individual(List.of())
+                .decision(Decision.own())
                 .build();
         when(jury.vote(any())).thenReturn(verdict);
         return jury;
