@@ -1,11 +1,22 @@
 package io.github.markpollack.workflow.flows.r1probe.evidence;
 
+import java.lang.annotation.Annotation;
+import java.lang.reflect.AnnotatedElement;
+import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.RecordComponent;
+import java.lang.reflect.Type;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
+import com.fasterxml.jackson.annotation.JacksonAnnotationsInside;
+import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.BeanDescription;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -16,7 +27,8 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
 import io.github.markpollack.judge.jury.Verdict;
 import io.github.markpollack.judge.jury.interpretation.Interpretation;
 
-final class PinnedRecordCodec {
+/** Test-only codec contract shared by definition validation and value checks. */
+public final class PinnedRecordCodec {
 
 	static final String CODEC = "jackson-record";
 	static final String VERSION = "2.22.2/probe-1";
@@ -28,6 +40,26 @@ final class PinnedRecordCodec {
 		.enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
 		.enable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
 		.enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).build();
+
+	/** Checks known type and wire-shape requirements without constructing or encoding values. */
+	public void requireType(Type declaration) {
+		requireConcreteDeclaration(declaration);
+		requireSupported(mapper.constructType(declaration), new HashSet<>());
+	}
+
+	private static void requireConcreteDeclaration(Type declaration) {
+		if (declaration instanceof ParameterizedType parameterized) {
+			for (Type argument : parameterized.getActualTypeArguments()) {
+				requireConcreteDeclaration(argument);
+			}
+		}
+		else if (declaration instanceof Class<?> raw && raw.getTypeParameters().length > 0) {
+			throw new IllegalArgumentException("unsupported declared type " + raw.getTypeName() + ": raw generic declaration");
+		}
+		else if (!(declaration instanceof Class<?>)) {
+			throw new IllegalArgumentException("unsupported unresolved declared type " + declaration);
+		}
+	}
 
 	record Payload(String declaredType, String codec, String version, String configuration, byte[] bytes) {
 		Payload {
@@ -42,7 +74,12 @@ final class PinnedRecordCodec {
 
 	Payload encode(Object value, TypeReference<?> declaration) {
 		JavaType type = mapper.constructType(declaration);
-		requireSupported(type, new HashSet<>());
+		try {
+			requireType(declaration.getType());
+		}
+		catch (IllegalArgumentException ex) {
+			throw new IllegalArgumentException("encode failed for " + type.toCanonical() + ": " + ex.getMessage(), ex);
+		}
 		requireValue(value, type);
 		try {
 			byte[] bytes = mapper.writerFor(type).writeValueAsBytes(value);
@@ -61,7 +98,7 @@ final class PinnedRecordCodec {
 
 	<T> T decode(Payload payload, TypeReference<T> declaration) {
 		JavaType type = mapper.constructType(declaration);
-		requireSupported(type, new HashSet<>());
+		requireType(declaration.getType());
 		requireIdentity("declared type", type.toCanonical(), payload.declaredType());
 		requireIdentity("codec", CODEC, payload.codec());
 		requireIdentity("codec version", VERSION, payload.version());
@@ -153,12 +190,9 @@ final class PinnedRecordCodec {
 			if (!node.isObject()) {
 				throw new IllegalArgumentException("expected JSON object");
 			}
+			Map<String, String> properties = recordProperties(type);
 			for (RecordComponent component : raw.getRecordComponents()) {
-				String property = mapper.getDeserializationConfig().introspect(type).findProperties().stream()
-					.filter(candidate -> candidate.getInternalName().equals(component.getName()))
-					.map(candidate -> candidate.getName()).findFirst()
-					.orElseThrow(() -> new IllegalArgumentException("unsupported record property " + component.getName()));
-				requireShape(node.get(property), componentType(type, component),
+				requireShape(node.get(properties.get(component.getName())), componentType(type, component),
 						raw == NativeJudgeProbe.Assessment.class);
 			}
 		}
@@ -169,7 +203,21 @@ final class PinnedRecordCodec {
 			return;
 		}
 		Class<?> raw = type.getRawClass();
-		if (scalar(raw) || nativeEvidence(raw)) {
+		if (nativeEvidence(raw)) {
+			return;
+		}
+		if (raw.getTypeParameters().length != type.containedTypeCount()) {
+			throw new IllegalArgumentException("unsupported declared type " + type.toCanonical() + ": raw generic declaration");
+		}
+		if (scalar(raw)) {
+			if (raw.isEnum()) {
+				requireOrdinaryJacksonAnnotations(raw);
+				requireUniqueEnumWireNames(raw);
+				BeanDescription description = mapper.getSerializationConfig().introspect(type);
+				if (description.findJsonValueAccessor() != null) {
+					throw new IllegalArgumentException("unsupported transformed enum shape " + type.toCanonical());
+				}
+			}
 			return;
 		}
 		if (raw == List.class && type.containedTypeCount() == 1) {
@@ -177,12 +225,118 @@ final class PinnedRecordCodec {
 			return;
 		}
 		if (raw.isRecord()) {
+			recordProperties(type);
 			for (RecordComponent component : raw.getRecordComponents()) {
+				if (component.getGenericType() instanceof ParameterizedType) {
+					rejectWildcardComponents(component.getGenericType());
+				}
 				requireSupported(componentType(type, component), seen);
 			}
 			return;
 		}
 		throw new IllegalArgumentException("unsupported declared type " + type.toCanonical());
+	}
+
+	private static void requireUniqueEnumWireNames(Class<?> raw) {
+		Set<String> wireNames = new HashSet<>();
+		for (var field : raw.getDeclaredFields()) {
+			if (!field.isEnumConstant()) continue;
+			JsonProperty property = field.getAnnotation(JsonProperty.class);
+			String wireName = property == null || property.value().isEmpty() ? field.getName() : property.value();
+			if (!wireNames.add(wireName)) {
+				throw new IllegalArgumentException("unsupported duplicate enum wire name " + wireName + " in " + raw.getTypeName());
+			}
+		}
+	}
+
+	private static void rejectWildcardComponents(Type declared) {
+		if (declared instanceof java.lang.reflect.WildcardType) {
+			throw new IllegalArgumentException("unsupported wildcard component " + declared.getTypeName());
+		}
+		if (declared instanceof ParameterizedType parameterized) {
+			for (Type argument : parameterized.getActualTypeArguments()) {
+				rejectWildcardComponents(argument);
+			}
+		}
+	}
+
+	private Map<String, String> recordProperties(JavaType type) {
+		Class<?> raw = type.getRawClass();
+		requireOrdinaryJacksonAnnotations(raw);
+		BeanDescription serialization = mapper.getSerializationConfig().introspect(type);
+		BeanDescription deserialization = mapper.getDeserializationConfig().introspect(type);
+		if (serialization.findJsonValueAccessor() != null || serialization.findAnyGetter() != null
+				|| deserialization.findAnySetterAccessor() != null || serialization.getObjectIdInfo() != null) {
+			throw new IllegalArgumentException("unsupported transformed record shape " + type.toCanonical());
+		}
+		Map<String, String> writers = new LinkedHashMap<>();
+		Map<String, String> readers = new LinkedHashMap<>();
+		serialization.findProperties().forEach(property -> {
+			if (property.getPrimaryMember() != null) {
+				property.getPrimaryMember().annotations().forEach(annotation -> requireAllowedAnnotation(annotation, false, raw));
+			}
+			if (property.couldSerialize()) writers.put(property.getInternalName(), property.getName());
+		});
+		deserialization.findProperties().forEach(property -> {
+			if (property.getPrimaryMember() != null) {
+				property.getPrimaryMember().annotations().forEach(annotation -> requireAllowedAnnotation(annotation, false, raw));
+			}
+			if (property.couldDeserialize()) readers.put(property.getInternalName(), property.getName());
+		});
+		if (!writers.equals(readers) || writers.size() != raw.getRecordComponents().length
+				|| new HashSet<>(writers.values()).size() != writers.size()) {
+			throw new IllegalArgumentException("unsupported asymmetric record properties " + type.toCanonical());
+		}
+		for (RecordComponent component : raw.getRecordComponents()) {
+			if (!writers.containsKey(component.getName())) {
+				throw new IllegalArgumentException("unsupported record property " + type.toCanonical() + "." + component.getName());
+			}
+		}
+		return readers;
+	}
+
+	private static void requireOrdinaryJacksonAnnotations(Class<?> raw) {
+		requireOrdinaryJacksonAnnotations(raw, new HashSet<>());
+	}
+
+	private static void requireOrdinaryJacksonAnnotations(Class<?> raw, Set<Class<?>> seen) {
+		if (!seen.add(raw)) return;
+		requireAllowedAnnotations(raw, raw);
+		for (Class<?> contract : raw.getInterfaces()) requireOrdinaryJacksonAnnotations(contract, seen);
+		for (var field : raw.getDeclaredFields()) requireAllowedAnnotations(field, raw);
+		for (var method : raw.getDeclaredMethods()) requireAllowedAnnotations(method, raw);
+		for (var constructor : raw.getDeclaredConstructors()) {
+			requireAllowedAnnotations(constructor, raw);
+			for (var parameter : constructor.getParameters()) requireAllowedAnnotations(parameter, raw);
+		}
+		if (raw.isRecord()) {
+			for (var component : raw.getRecordComponents()) requireAllowedAnnotations(component, raw);
+		}
+	}
+
+	private static void requireAllowedAnnotations(AnnotatedElement element, Class<?> owner) {
+		for (Annotation annotation : element.getDeclaredAnnotations()) {
+			requireAllowedAnnotation(annotation, element == owner, owner);
+		}
+	}
+
+	private static void requireAllowedAnnotation(Annotation annotation, boolean classElement, Class<?> owner) {
+			Class<? extends Annotation> kind = annotation.annotationType();
+			if (annotation instanceof JsonProperty property && property.access() == JsonProperty.Access.AUTO) return;
+			if (annotation instanceof JsonPropertyOrder && classElement) return;
+			if (annotation instanceof JsonFormat format && classElement && owner.isRecord()) {
+				if (format.shape() != JsonFormat.Shape.ANY && format.shape() != JsonFormat.Shape.OBJECT) {
+					throw new IllegalArgumentException("unsupported record shape " + owner.getTypeName(),
+							new IllegalArgumentException("expected JSON object"));
+				}
+				if (format.pattern().isEmpty() && format.with().length == 0 && format.without().length == 0
+						&& format.locale().equals("##default") && format.timezone().equals("##default")) return;
+			}
+			if (kind.getName().startsWith("com.fasterxml.jackson.")
+					|| kind.isAnnotationPresent(JacksonAnnotationsInside.class)) {
+				throw new IllegalArgumentException("unsupported Jackson annotation " + kind.getSimpleName()
+						+ " on " + owner.getTypeName());
+			}
 	}
 
 	private void requireValue(Object value, JavaType type) {
