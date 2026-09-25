@@ -17,7 +17,7 @@ public final class ValidatedWorkflow {
     private static final Set<Capability> SUPPORTED=Set.of(Capability.OPERATION,Capability.TERMINAL);
 
     /** Exact selected logical value source; components refer to retained identities, never runtime type search. */
-    public record ValueRecipe(ValueId identity, TypeContracts.Contract contract,List<ValueId> components,List<ValueId> consumed) {
+    public record ValueRecipe(ValueId identity, Type declaration, TypeContracts.Contract contract,List<ValueId> components,List<ValueId> consumed) {
         public ValueRecipe { components=List.copyOf(components); consumed=List.copyOf(consumed); }
     }
     /** Input aliases retain the original ValueId; assembled dispatch inputs have their own retained ID. */
@@ -34,8 +34,14 @@ public final class ValidatedWorkflow {
     private final TypeContracts.Contract input,output;
     private final String authoredIdentity;
     private final TypeContracts.CodecIdentity codec;
+    private final DeadlinePolicy deadlinePolicy;
+    private final java.time.Duration authoredDuration;
+    private final String deadlineOrigin;
 
-    private ValidatedWorkflow(Compilation<?,?> compiled,Map<Placement,ExecutableIdentity> selections) {
+    private ValidatedWorkflow(Compilation<?,?> compiled,Map<Placement,ExecutableIdentity> selections,
+            DeadlinePolicy policy, java.time.Duration authoredDuration) {
+        this.deadlinePolicy=policy; this.authoredDuration=authoredDuration;
+        this.deadlineOrigin=policy.origin(authoredDuration);
         definition=compiled.definition(); graph=compiled.graph();
         rootSummary=compiled.summaries().get(new SummaryKey(Coordinates.root(definition),"root"));
         TypeContracts contracts=new TypeContracts(); codec=contracts.identity();
@@ -63,6 +69,8 @@ public final class ValidatedWorkflow {
         invocations=List.copyOf(calls); values=Collections.unmodifiableMap(new LinkedHashMap<>(recipes));
         StringBuilder authored=new StringBuilder();
         for(String field:List.of(COMPILER_CONTRACT,Coordinates.SCHEME,definition.name(),definition.deadline().toString())) IdentityEncoding.field(authored,field);
+        for(String field:List.of(policy.profile(),policy.maximum().toString(),
+                authoredDuration==null?"default":authoredDuration.toString(),deadlineOrigin)) IdentityEncoding.field(authored,field);
         contractIdentity(authored,input); contractIdentity(authored,output);
         for(InvocationRecipe call:calls) {
             IdentityEncoding.field(authored,call.placement().graphName());
@@ -87,18 +95,27 @@ public final class ValidatedWorkflow {
      * Unsupported composition refuses; support can expand only with compiler/runtime proof.
      */
     public static ValidatedWorkflow compile(Definition<?,?> source,Map<Placement,ExecutableIdentity> selections) {
+        return compile(source,selections,DeadlinePolicy.DEFAULT);
+    }
+
+    /** Compiles with a finite deployment policy; a null authored duration selects its default. */
+    public static ValidatedWorkflow compile(Definition<?,?> source,Map<Placement,ExecutableIdentity> selections,
+            DeadlinePolicy policy) {
         Definition<?,?> owned=DefinitionOwnership.acquire(source);
+        Objects.requireNonNull(policy,"deadline policy");
+        java.time.Duration authored=owned.deadline();
+        owned=new Definition<>(owned.name(),owned.input(),owned.output(),owned.nodes(),policy.resolve(authored));
         Map<Placement,ExecutableIdentity> selected=Map.copyOf(selections);
         for(Node node:owned.nodes()) if(!SUPPORTED.contains(Coordinates.capability(node)))
             throw new IllegalArgumentException("unsupported production capability: "+Coordinates.capability(node));
         Compilation<?,?> compiled=StructuredWorkflowCompiler.compileOwned(owned);
-        return new ValidatedWorkflow(compiled,selected);
+        return new ValidatedWorkflow(compiled,selected,policy,authored);
     }
 
     private static void recipe(Fact fact,Map<ValueId,ValueRecipe> values,TypeContracts contracts) {
         if(values.containsKey(fact.identity())) return;
         fact.components().forEach(f->recipe(f,values,contracts)); fact.consumed().forEach(f->recipe(f,values,contracts));
-        values.put(fact.identity(),new ValueRecipe(fact.identity(),contracts.contract(fact.type()),
+        values.put(fact.identity(),new ValueRecipe(fact.identity(),fact.type(),contracts.contract(fact.type()),
                 fact.components().stream().map(Fact::identity).toList(),fact.consumed().stream().map(Fact::identity).toList()));
     }
 
@@ -122,4 +139,7 @@ public final class ValidatedWorkflow {
     public List<InvocationRecipe> invocations() { return invocations; }
     public Map<ValueId,ValueRecipe> values() { return values; }
     public TerminalRecipe terminal() { return terminal; }
+    public DeadlinePolicy deadlinePolicy() { return deadlinePolicy; }
+    public Optional<java.time.Duration> authoredDuration() { return Optional.ofNullable(authoredDuration); }
+    public String deadlineOrigin() { return deadlineOrigin; }
 }

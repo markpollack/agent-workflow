@@ -67,6 +67,21 @@ public final class TypeContracts {
     /** Binding compatibility deliberately preserves concrete generic contracts. */
     public boolean compatible(Type wanted, Type supplied) { return wanted.equals(supplied); }
 
+    /** Encodes a value using an already concrete, compiler-selected declaration. */
+    public byte[] encodeBytes(Object value, Type declaration) {
+        return encode(value, reference(declaration)).bytes();
+    }
+
+    /** Decodes bytes after their persisted type, shape and codec identity have been verified. */
+    public Object decodeBytes(byte[] bytes, Type declaration) {
+        String canonical=mapper.constructType(declaration).toCanonical();
+        return decode(new Payload(canonical,CODEC,VERSION,CONFIGURATION,bytes),reference(declaration));
+    }
+
+    private static TypeReference<Object> reference(Type declaration) {
+        return new TypeReference<>() { @Override public Type getType() { return declaration; } };
+    }
+
 
 	static final String CODEC = "jackson-record";
 	static final String VERSION = "2.22.2/r1-1";
@@ -148,6 +163,9 @@ public final class TypeContracts {
 			requireShape(mapper.readTree(payload.bytes()), type, false);
 			T value = mapper.readValue(payload.bytes(), type);
 			requireValue(value, type);
+			if (!mapper.readTree(payload.bytes()).equals(mapper.readTree(mapper.writerFor(type).writeValueAsBytes(value)))) {
+				throw new IllegalArgumentException("lossless decoding refused: reconstructed wire value differs");
+			}
 			return value;
 		}
 		catch (Exception ex) {
