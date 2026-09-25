@@ -89,25 +89,30 @@ public final class KernelFixtures {
             return new Request("generation:"+context.generation());
         }
     }
-    static ExecutableBundle bundle(Map<String,String> config) throws Exception {
-        return ExecutableBundle.capture(List.of(Path.of(KernelFixtures.class.getProtectionDomain().getCodeSource().getLocation().toURI())),config);
+    static ApplicationDeployment deployment(Map<String,String> config) {
+        return deployment("fixture-v1",config);
     }
-    static ValidatedWorkflow echo(ExecutableBundle bundle,Class<? extends DurableOperation<?,?>> handler,Duration duration) {
-        return single(bundle,handler,Request.class,Request.class,duration,Terminal.SUCCEEDED);
+    static ApplicationDeployment deployment(String build,Map<String,String> config) {
+        return new ApplicationDeployment("kernel-fixtures",build,config,List.of(FirstOperation.class,SecondOperation.class,
+                ThirdOperation.class,FourthOperation.class,FifthOperation.class,ChangedThird.class,ChangedFourth.class,
+                ChangedFifth.class,Echo.class,NullOutput.class,Slow.class,Throws.class,NestedEcho.class,Blocking.class));
     }
-    static ValidatedWorkflow single(ExecutableBundle bundle,Class<? extends DurableOperation<?,?>> handler,java.lang.reflect.Type in,
+    static ValidatedWorkflow echo(ApplicationDeployment deployment,Class<? extends DurableOperation<?,?>> handler,Duration duration) {
+        return single(deployment,handler,Request.class,Request.class,duration,Terminal.SUCCEEDED);
+    }
+    static ValidatedWorkflow single(ApplicationDeployment deployment,Class<? extends DurableOperation<?,?>> handler,java.lang.reflect.Type in,
             java.lang.reflect.Type out,Duration duration,Terminal terminal) {
         Definition<?,?> definition=new Definition<>("simple",in,out,List.of(new Call("work",Op.declared("work",in,out)),new End(terminal,"authored reason")),duration);
         Placement placement=new Placement(List.of(new Segment("workflow","simple",0),new Segment("call","work",0)));
         // Derive the public compiler's stable placement; no second binding resolver.
         var compilation=StructuredWorkflowCompiler.compile(new Definition<>(definition.name(),in,out,definition.nodes(),duration==null?Duration.ofHours(1):duration));
         placement=compilation.bindings().getFirst().placement();
-        return ValidatedWorkflow.compile(definition,Map.of(placement,bundle.selection(handler,in,out)));
+        return ValidatedWorkflow.compile(definition,Map.of(placement,deployment.selection(handler,in,out)));
     }
-    static ValidatedWorkflow o01(ExecutableBundle bundle) {
-        return o01(bundle,false);
+    static ValidatedWorkflow o01(ApplicationDeployment deployment) {
+        return o01(deployment,false);
     }
-    static ValidatedWorkflow o01(ExecutableBundle bundle,boolean changedComponents) {
+    static ValidatedWorkflow o01(ApplicationDeployment deployment,boolean changedComponents) {
         List<Call> calls=List.of(new Call("first",Op.named("first",Request.class,First.class)),
                 new Call("second",Op.named("second",SecondInput.class,Second.class)),
                 new Call("third",Op.declared("third",Second.class,changedComponents?Request.class:Third.class)),
@@ -120,7 +125,7 @@ public final class KernelFixtures {
                 changedComponents?ChangedThird.class:ThirdOperation.class,changedComponents?ChangedFourth.class:FourthOperation.class,
                 changedComponents?ChangedFifth.class:FifthOperation.class);
         Map<Placement,ExecutableIdentity> selected=new LinkedHashMap<>();
-        for(int i=0;i<calls.size();i++) selected.put(construction.bindings().get(i).placement(),bundle.selection(handlers.get(i),calls.get(i).operation().input(),calls.get(i).operation().output()));
+        for(int i=0;i<calls.size();i++) selected.put(construction.bindings().get(i).placement(),deployment.selection(handlers.get(i),calls.get(i).operation().input(),calls.get(i).operation().output()));
         return ValidatedWorkflow.compile(definition,selected);
     }
 }

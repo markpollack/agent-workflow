@@ -4,22 +4,21 @@ import java.lang.reflect.Type;
 import java.util.Objects;
 
 /**
- * Immutable deployment-supplied selection of an executable closure and configuration.
- * Digests attest to selected bytes; they do not prove availability or retention. Before run
- * admission, dispatch or resume, the runtime must resolve and verify those bytes against
- * these identities. Display names and an arbitrary handler with matching Java types are insufficient.
+ * Immutable compiler-selected deployment metadata and concrete type declarations.
+ * The runtime must check these against its fixed application registration before execution.
+ * Metadata equality does not attest to executable bytes or dependency availability.
  *
- * @param entryPoint implementation entry point within the selected closure
- * @param artifactClosureDigest SHA-256 of the deployment's immutable artifact/dependency closure
- * @param configurationDigest SHA-256 of the selected immutable behavior configuration
+ * @param entryPoint registered implementation class name
+ * @param deploymentManifestDigest fingerprint of declared immutable application/build identity
+ * @param configurationDigest digest of the configuration actually supplied to operations
  * @param input concrete input declaration
  * @param output concrete output declaration
  */
-public record ExecutableIdentity(String entryPoint,String artifactClosureDigest,String configurationDigest,
+public record ExecutableIdentity(String entryPoint,String deploymentManifestDigest,String configurationDigest,
                                  Type input,Type output) {
     public ExecutableIdentity {
         if(entryPoint==null||entryPoint.isBlank()) throw new IllegalArgumentException("executable entry point required");
-        requireDigest(artifactClosureDigest); requireDigest(configurationDigest);
+        requireDigest(deploymentManifestDigest); requireDigest(configurationDigest);
         input=DefinitionOwnership.ownType(input); output=DefinitionOwnership.ownType(output);
         TypeContracts contracts=new TypeContracts(); contracts.applicationType(input); contracts.applicationType(output);
     }

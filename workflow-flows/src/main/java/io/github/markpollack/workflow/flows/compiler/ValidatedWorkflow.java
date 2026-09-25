@@ -9,8 +9,8 @@ import static io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
  * Immutable compiler-verified workflow eligible for the sequential runtime capability set.
  * Only {@link #compile(Definition, Map)} can create one; unchecked graphs and construction-only
  * compilations are not admission inputs. This is not a running workflow or durable run state.
- * The future runtime must additionally resolve and verify the selected executable closures,
- * configuration and codec before admitting or recovering a run. No handler executes here.
+ * The runtime must additionally compare the supplied deployment registration and configuration,
+ * concrete type contracts and codec before admitting or recovering a run. No handler executes here.
  */
 public final class ValidatedWorkflow {
     public static final String COMPILER_CONTRACT="structured-workflow-compiler-v1";

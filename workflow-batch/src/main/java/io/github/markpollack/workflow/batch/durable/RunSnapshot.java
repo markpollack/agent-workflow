@@ -5,7 +5,7 @@ import java.util.List;
 
 /** Immutable inspection facts. Payloads and provenance are snapshots, never writable store handles. */
 public record RunSnapshot(String runId,String displayName,Status status,Instant admittedAt,Instant deadline,
-        String deadlineOrigin,String authoredIdentity,String executableDigest,String codecDigest,
+        String deadlineOrigin,String authoredIdentity,ApplicationDeployment.Manifest deployment,
         long generation,String owner,Instant leaseUntil,int nextOperation,Reason reason,
         List<Invocation> invocations,List<Value> values,List<Event> events) {
     public enum Status { ACTIVE, SUCCEEDED, FAILED, CANCELLED }

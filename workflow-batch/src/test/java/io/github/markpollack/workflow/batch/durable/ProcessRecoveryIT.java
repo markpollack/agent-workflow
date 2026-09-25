@@ -69,6 +69,27 @@ class ProcessRecoveryIT {
             assertThat(Files.readString(directory.resolve("recover-result.json"))).contains("first:original/original/changed-first");
         } finally {if(worker.isAlive())worker.destroyForcibly();}
     }
+    @ParameterizedTest(name="different build refuses {0} run in another JVM")
+    @org.junit.jupiter.params.provider.ValueSource(strings={"admit","complete"})
+    void changedDeploymentRefusesActiveAndTerminalRunsInSeparateJvm(String mode) throws Exception {
+        Path directory=Path.of("target/durable-evidence/process-mismatch",mode+"-"+UUID.randomUUID()).toAbsolutePath();Files.createDirectories(directory);
+        ObjectMapper mapper=new ObjectMapper();Process original=launch(directory,mode,"none",0);
+        try {assertThat(original.waitFor(40,TimeUnit.SECONDS)).isTrue();assertThat(original.exitValue()).withFailMessage(Files.readString(directory.resolve(mode+".log"))).isZero();}
+        finally {if(original.isAlive()) original.destroyForcibly();}
+        Map<String,List<String>> counters=new TreeMap<>();
+        try(var files=Files.list(directory)) {for(Path file:files.filter(p->p.toString().endsWith(".calls")).toList()) counters.put(file.getFileName().toString(),Files.readAllLines(file));}
+        Process mismatch=launch(directory,"mismatch","none",0);
+        try {assertThat(mismatch.waitFor(40,TimeUnit.SECONDS)).isTrue();assertThat(mismatch.exitValue()).withFailMessage(Files.readString(directory.resolve("mismatch.log"))).isZero();}
+        finally {if(mismatch.isAlive()) mismatch.destroyForcibly();}
+        assertThat(mismatch.pid()).isNotEqualTo(original.pid());
+        assertThat(Files.readString(directory.resolve("mismatch-after.json"))).isEqualTo(Files.readString(directory.resolve("mismatch-before.json")));
+        var result=mapper.readTree(Files.readString(directory.resolve("mismatch-result.json")));
+        for(String action:List.of("start","resume","result")) assertThat(result.path("refusals").path(action).asText()).isEqualTo("COMPATIBILITY");
+        Map<String,List<String>> after=new TreeMap<>();
+        try(var files=Files.list(directory)) {for(Path file:files.filter(p->p.toString().endsWith(".calls")).toList()) after.put(file.getFileName().toString(),Files.readAllLines(file));}
+        assertThat(after).isEqualTo(counters);
+        Files.writeString(directory.resolve("process-receipt.json"),mapper.writeValueAsString(Map.of("originalPid",original.pid(),"mismatchPid",mismatch.pid(),"mode",mode)));
+    }
     private static Process launch(Path directory,String mode,String boundary,int occurrence) throws Exception {
         String java=Path.of(System.getProperty("java.home"),"bin/java").toString();
         String classpath=System.getProperty("surefire.test.class.path",System.getProperty("java.class.path"));

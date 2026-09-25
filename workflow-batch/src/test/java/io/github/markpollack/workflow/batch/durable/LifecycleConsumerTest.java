@@ -15,9 +15,9 @@ class LifecycleConsumerTest {
                 import io.github.markpollack.workflow.batch.durable.*;
                 import io.github.markpollack.workflow.flows.compiler.ValidatedWorkflow;
                 public class Consumer {
-                    public Object run(Path database, ValidatedWorkflow workflow, ExecutableBundle bundle, Object input) {
-                        try (var runtime=DurableWorkflows.open(database)) {
-                            var admitted=runtime.start(workflow,"request-17",input,bundle);
+                    public Object run(Path database, ValidatedWorkflow workflow, ApplicationDeployment deployment, Object input) {
+                        try (var runtime=DurableWorkflows.open(database,deployment)) {
+                            var admitted=runtime.start(workflow,"request-17",input);
                             runtime.discover();
                             runtime.inspect(admitted.runId());
                             var completed=runtime.resume(admitted.runId(),workflow);
@@ -31,7 +31,7 @@ class LifecycleConsumerTest {
         for(String type:List.of("io.github.markpollack.workflow.flows.workflow.WorkflowGraph<?,?>",
                 "io.github.markpollack.workflow.flows.compiler.WorkflowModel.Compilation<?,?>")) {
             String source="import io.github.markpollack.workflow.batch.durable.*; public class Bypass { void start(DurableWorkflows runtime,"+type+
-                    " raw,ExecutableBundle bundle) { runtime.start(raw,\"key\",\"input\",bundle); } }";
+                    " raw,ApplicationDeployment deployment) { runtime.start(raw,\"key\",\"input\"); } }";
             assertThat(compile("Bypass",source)).isFalse();
         }
     }

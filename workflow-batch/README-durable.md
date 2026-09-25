@@ -8,8 +8,12 @@ validated execution admission.
 The ordinary lifecycle is:
 
 ```java
-try (var runs = DurableWorkflows.open(Path.of("data/workflows"))) {
-    var admitted = runs.start(validated, "request-123", request, executableBundle);
+var deployment = new ApplicationDeployment("my-application", "immutable-build-123",
+        Map.of("endpoint", "https://example.test"), List.of(MyOperation.class));
+// Use deployment.selection(MyOperation.class, Input.class, Output.class)
+// for the corresponding placement when compiling validated.
+try (var runs = DurableWorkflows.open(Path.of("data/workflows"), deployment)) {
+    var admitted = runs.start(validated, "request-123", request);
     var progress = runs.inspect(admitted.runId());
     var completed = runs.resume(admitted.runId(), validated);
     if (completed.status() == RunSnapshot.Status.SUCCEEDED) {
@@ -21,46 +25,53 @@ try (var runs = DurableWorkflows.open(Path.of("data/workflows"))) {
 `start` commits admission without invoking a handler. Repeating an idempotency key with the same
 input and compatibility facts returns its existing run; conflicting reuse refuses. `discover()`
 returns active admissions, including accepted work that has never been dispatched. A replacement
-process opens the same file and supplies the same validated workflow to `resume`. It does not need
-the original application artifact files: retained selections are read from the database.
+process opens the same file with the compatible deployed application and supplies the same validated
+workflow to `resume`. The application supplies its executable code and dependencies after restart.
 `cancel(runId, actor, reason)` records a permanent cancellation when it wins the store transition.
 `inspect` exposes immutable values/provenance, deliveries, events, deadlines and terminal reasons.
 The optional display-name argument to `start` is presentation; authored definition/placement names
 remain stable execution identifiers.
 
-## Executable packaging
+## Application deployment
 
 An ordinary implementation directly implements `DurableOperation<Input, Output>` with concrete
 declared contracts and a public no-argument constructor. A fresh instance receives the exact
 decoded input, a `DeliveryContext` and immutable `Map<String,String>` configuration per delivery.
 The context distinguishes logical invocation, physical delivery, generation and absolute deadline.
 
-Capture explicit application class directories or JARs and their dependencies with
-`ExecutableBundle.capture(classpath, configuration)`. Its `selection(entryPoint, inputType,
-outputType)` supplies the compiler's `ExecutableIdentity` for each selected placement. One bundle
-and configuration cover a run. Construction/placement selection remains in the compiler API;
-the lifecycle needs no database entities or checkpoint manipulation.
+`ApplicationDeployment` copies the configuration and explicit operation classes. Bind it to a
+runtime handle with `open(database, deployment[, policy])`. Its `selection(operationClass,
+inputType, outputType)` supplies the compiler's `ExecutableIdentity` for a selected placement.
+The fixed registration governs both compatibility checks and actual invocation. Classes use their
+ordinary application loader; Workflow does not switch the thread context loader, scan dependencies,
+archive JARs or load retained classes. Construction/placement selection remains in the compiler API.
 
-The image retains application class/resource bytes, original JAR bytes, the fixed compiler codec
-location and Jackson annotation/core/databind artifacts, shared leaf API bytes and a Java runtime
-identity. Its closure, codec and configuration digests are distinct. Multi-release JAR entries are
-selected for the current Java runtime. Different duplicate resources, native libraries and
-manifest `Class-Path` expansion refuse. Class directories are snapshots, not watched deployments.
+Admission verifies selected class names, public constructors, direct concrete generic signatures,
+selected value type/shape/codec contracts and lossless root encoding/decoding. Known mismatches
+refuse before delivery. Deeper missing methods or dependencies discovered during invocation record
+an explicit handler failure, subject to ownership fencing; exhaustive preflight linkage is unsupported.
 
-Admission verifies symbolic class/member linkage of selected operations and declared application
-types, their concrete Java signatures, retained type/shape/codec contracts, and root decoding.
-Dispatch and recovery verify retained bytes and selections again. Application/codec classes load
-from an in-memory copy of the verified image, with no application-classpath fallback. Only Java
-platform classes and the two verified shared leaf API types delegate to the host loader. Missing
-or changed retained selections refuse; there is no force-resume or codec plugin override.
+Identity and configuration strings must contain well-formed Unicode; malformed surrogate sequences
+refuse before hashing. The durable manifest records application ID, immutable build ID, a digest of the exact copied
+configuration supplied to handlers, the fixed codec contract, observed Jackson core/databind
+versions, and Java runtime version/vendor/VM name. Recovery compares the handle's current supplied
+manifest with the saved manifest using exact equality, alongside authored behavior, operation
+selection and finite policy identity. A changed build ID refuses even if its code might be compatible.
+Terminal resume/result access, admission reuse and lease renewal enforce compatibility too.
+`inspect` exposes the manifest independently from authored identity and run identity.
 
-This is explicit local packaging, not automatic discovery of every possible runtime dependency.
-Reflective class names, service/resource lookups and dynamically selected dependencies must be
-included by the deployment. The host JVM/platform and instrumentation remain trusted deployment
-infrastructure; runtime vendor/version and shared API resource identity are checked, not a full
-JVM binary measurement. Hashing does not freeze external services, system properties, environment,
-files, native behavior or undeclared DI state. Operations must make relevant immutable behavior
-configuration explicit. External responses and effects remain external facts.
+The application must assign a new immutable build ID when code, dependencies, codec implementation
+or relevant deployment specification changes, and supply the corresponding complete deployment.
+A mutable label or a source commit that can produce different builds is insufficient. Workflow
+compares declared identity and the concrete contracts/configuration it can check; it does not prove
+that every executable byte or dependency is unchanged. Reusing a build ID for changed code violates
+the deployment contract and cannot generally be detected. Reported version metadata is not binary
+measurement. Environment, static/DI state, instrumentation, external services and effects remain
+application/deployment responsibilities. Relevant immutable behavior configuration must be explicit.
+
+`open(database[, policy])` provides management-only inspection, discovery and cancellation.
+Execution requires a deployment registration. There is no force-resume, alternate retained-code
+mode, executable reconstruction, codec plugin loader or checkpoint migration.
 
 ## Values, ownership and time
 
@@ -92,7 +103,7 @@ inspection materialize unobserved expiry. Backward clock changes do not move the
 backward; forward clock changes can expire work early. Operate the local host clock accordingly.
 
 State, immutable value references/payloads, continuation, delivery accounting and ordered events
-commit together. Executable/configuration retention joins the admission transaction. No database
+commit together. The deployment manifest joins the admission transaction. No database
 transaction spans handler construction or execution. A charged but unresolved delivery may be
 redelivered after replacement; its saved effective input is reused. Exhaustion fails explicitly.
 This guarantees committed-result reuse and fenced commits, not exactly-once external effects.
@@ -108,7 +119,8 @@ migration are unsupported. Cancellation revokes durable authority without interr
 threads; physical interruption of external work is not guaranteed.
 
 A global transition lock serializes state changes and inspection across runs. The initial schema
-stores one versioned aggregate per run and content-addressed retained artifacts. Values, artifacts
+stores one format-2 aggregate per run, with no executable artifact store. Old, absent or unknown
+run-format versions refuse before schema initialization; existing rows are not migrated. Values
 and events are retained indefinitely; no pruning or migration API is provided. This favors a
 bounded, inspectable local implementation over throughput or large-history optimization. Filesystem
 and hardware durability remain within H2's guarantees; process-kill tests are not power-loss tests.

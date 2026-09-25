@@ -3,7 +3,7 @@ package io.github.markpollack.workflow.batch.durable;
 import java.util.Map;
 
 /**
- * A named leaf implementation in a retained execution image. Implement directly with concrete
+ * A named leaf implementation registered by the deployed application. Implement directly with concrete
  * input/output types and a public no-argument constructor. Instances are created per delivery.
  * External effects can repeat after an unresolved delivery; use the logical invocation ID as
  * an external idempotency key where the external service supports it.

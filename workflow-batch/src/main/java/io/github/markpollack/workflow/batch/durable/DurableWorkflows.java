@@ -16,44 +16,50 @@ import io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
  */
 public final class DurableWorkflows implements AutoCloseable {
     private final JdbcRunStore store;
+    private final ApplicationDeployment deployment;
     private final ExecutionPolicy policy;
     private final BoundaryHooks hooks;
 
-    /** Open a file-backed store using the documented finite execution policy. */
-    public static DurableWorkflows open(Path database) { return new DurableWorkflows(database,ExecutionPolicy.DEFAULT,BoundaryHooks.NONE); }
-    public static DurableWorkflows open(Path database,ExecutionPolicy policy) { return new DurableWorkflows(database,policy,BoundaryHooks.NONE); }
-    DurableWorkflows(Path database,ExecutionPolicy policy,BoundaryHooks hooks) {
-        this.policy=Objects.requireNonNull(policy);this.hooks=Objects.requireNonNull(hooks);store=new JdbcRunStore(database);
+    /** Open a management-only handle for inspection, discovery and cancellation. */
+    public static DurableWorkflows open(Path database) { return open(database,ExecutionPolicy.DEFAULT); }
+    public static DurableWorkflows open(Path database,ExecutionPolicy policy) { return new DurableWorkflows(database,null,policy,BoundaryHooks.NONE); }
+    /** Open with one immutable registration used for both compatibility checks and invocation. */
+    public static DurableWorkflows open(Path database,ApplicationDeployment deployment) { return open(database,deployment,ExecutionPolicy.DEFAULT); }
+    public static DurableWorkflows open(Path database,ApplicationDeployment deployment,ExecutionPolicy policy) {
+        return new DurableWorkflows(database,Objects.requireNonNull(deployment),policy,BoundaryHooks.NONE);
+    }
+    DurableWorkflows(Path database,ApplicationDeployment deployment,ExecutionPolicy policy,BoundaryHooks hooks) {
+        this.deployment=deployment;this.policy=Objects.requireNonNull(policy);this.hooks=Objects.requireNonNull(hooks);store=new JdbcRunStore(database);
     }
 
     /** Admit exact input, selections and deadline atomically; identical idempotency reuse returns the original run. */
-    public RunSnapshot start(ValidatedWorkflow workflow,String idempotencyKey,Object input,ExecutableBundle bundle) {
-        return start(workflow,idempotencyKey,input,bundle,workflow.definition().name());
+    public RunSnapshot start(ValidatedWorkflow workflow,String idempotencyKey,Object input) {
+        return start(workflow,idempotencyKey,input,workflow.definition().name());
     }
     /** Display text is an admitted presentation fact and does not change authored behavior or idempotency. */
-    public RunSnapshot start(ValidatedWorkflow workflow,String idempotencyKey,Object input,ExecutableBundle bundle,String displayName) {
-        Objects.requireNonNull(workflow);Objects.requireNonNull(bundle);requireText(idempotencyKey,"idempotency key");requireText(displayName,"display name");
-        ResolvedBundle resolved=new ResolvedBundle(bundle,workflow);
-        byte[] root=new TypeContracts().encodeBytes(input,workflow.definition().input());
+    public RunSnapshot start(ValidatedWorkflow workflow,String idempotencyKey,Object input,String displayName) {
+        Objects.requireNonNull(workflow);requireText(idempotencyKey,"idempotency key");requireText(displayName,"display name");
+        ResolvedApplication resolved=new ResolvedApplication(requireDeployment(),workflow);
+        byte[] root=resolved.encode(input,workflow.definition().input());
         resolved.decode(root,workflow.definition().input());
-        String compatibility=compatibility(workflow,bundle.closureDigest(),bundle.configurationDigest(),bundle.codecDigest(),policy);
+        String compatibility=compatibility(workflow,requireDeployment().manifest(),policy);
         String admission=Digests.fields(compatibility,Digests.of(root));
         RunSnapshot result=store.transaction(tx->{
             RunState existing=tx.byKey(idempotencyKey);
             if(existing!=null) {
+                compatible(existing,workflow);
                 if(!existing.admission.equals(admission)) throw new WorkflowRefusal("IDEMPOTENCY_CONFLICT","idempotency key has different admitted facts");
                 if(existing.expire(tx.now)) tx.save(existing);
                 return existing.snapshot();
             }
             RunState run=new RunState();run.id=UUID.randomUUID().toString();run.key=idempotencyKey;run.admission=admission;
             run.compatibility=compatibility;run.display=displayName;run.authored=workflow.authoredIdentity();
-            run.closure=bundle.closureDigest();run.configuration=bundle.configurationDigest();run.codec=bundle.codecDigest();
+            run.deployment=requireDeployment().manifest();
             run.admitted=tx.now;run.deadline=Math.addExact(tx.now,workflow.definition().deadline().toMillis());
             run.deadlineOrigin=workflow.deadlineOrigin();run.leaseMillis=policy.lease().toMillis();run.maximumDeliveries=policy.maximumDeliveries();
             var rootRecipe=workflow.values().values().stream().filter(v->v.identity().role().equals("root")).findFirst()
                     .orElseThrow(()->new WorkflowRefusal("BINDING_INVALID","compiler root recipe missing"));
             putValue(run,rootRecipe,root,"");
-            tx.retain(bundle.closureDigest(),bundle.image());tx.retain(bundle.configurationDigest(),bundle.configurationBytes());
             run.event("ADMITTED",tx.now,run.admission);tx.insert(run);
             hooks.at("BEFORE_ADMISSION_COMMIT",run.id);return run.snapshot();
         });
@@ -90,8 +96,8 @@ public final class DurableWorkflows implements AutoCloseable {
         return resume(runId,workflow,"worker-"+UUID.randomUUID());
     }
     public RunSnapshot resume(String runId,ValidatedWorkflow workflow,String worker) {
+        resolve(runId,workflow);
         RunSnapshot initial=inspect(runId);
-        store.transaction(tx->{compatible(tx.get(runId),workflow);return null;});
         if(initial.terminal()) return initial;
         Lease lease=claim(runId,workflow,worker);
         ScheduledExecutorService heartbeat=Executors.newSingleThreadScheduledExecutor(r->{
@@ -122,7 +128,8 @@ public final class DurableWorkflows implements AutoCloseable {
     public static final class Lease {
         private final String runId,owner;
         private final long generation;
-        private Lease(String runId,String owner,long generation) { this.runId=runId;this.owner=owner;this.generation=generation; }
+        private final ValidatedWorkflow workflow;
+        private Lease(String runId,String owner,long generation,ValidatedWorkflow workflow) { this.runId=runId;this.owner=owner;this.generation=generation;this.workflow=workflow; }
         public String runId() { return runId; }
         public String owner() { return owner; }
         public long generation() { return generation; }
@@ -139,7 +146,7 @@ public final class DurableWorkflows implements AutoCloseable {
             run.generation=Math.incrementExact(run.generation);run.owner=worker;
             run.leaseUntil=Math.min(run.deadline,Math.addExact(tx.now,run.leaseMillis));
             run.event("CLAIMED",tx.now,worker+":"+run.generation);tx.save(run);
-            return new Lease(run.id,worker,run.generation);
+            return new Lease(run.id,worker,run.generation,workflow);
         });
         if(result==null) throw new WorkflowRefusal("NOT_CLAIMABLE","run is terminal or has a live owner");
         return result;
@@ -147,8 +154,9 @@ public final class DurableWorkflows implements AutoCloseable {
 
     /** Renew a still-live lease without extending the absolute run deadline or changing delivery accounting. */
     public RunSnapshot renew(Lease lease) {
+        resolve(lease.runId,lease.workflow);
         RunSnapshot result=store.transaction(tx->{
-            RunState run=tx.get(lease.runId);
+            RunState run=tx.get(lease.runId);compatible(run,lease.workflow);
             hooks.at("AFTER_RENEWAL_READ",run.id);
             if(!eligible(tx,run,lease)) return null;
             run.leaseUntil=Math.min(run.deadline,Math.addExact(tx.now,run.leaseMillis));
@@ -160,7 +168,7 @@ public final class DurableWorkflows implements AutoCloseable {
 
     /** Execute at most one physical delivery and commit its result, or commit an explicit terminal. */
     public RunSnapshot advance(Lease lease,ValidatedWorkflow workflow) {
-        ResolvedBundle resolved=resolve(lease.runId,workflow);
+        ResolvedApplication resolved=resolve(lease.runId,workflow);
         Dispatch dispatch=store.transaction(tx->{
             RunState run=tx.get(lease.runId);compatible(run,workflow);
             if(!eligible(tx,run,lease)) return new Dispatch(null,null,null,run.snapshot());
@@ -203,7 +211,7 @@ public final class DurableWorkflows implements AutoCloseable {
         }
         hooks.at("AFTER_DISPATCH_COMMIT",lease.runId);
         // Recheck expiry/cancellation/lease after any delay between the committed charge and entry.
-        boolean mayEnter=store.transaction(tx->{RunState run=tx.get(lease.runId);return eligible(tx,run,lease);});
+        boolean mayEnter=store.transaction(tx->{RunState run=tx.get(lease.runId);compatible(run,workflow);return eligible(tx,run,lease);});
         if(!mayEnter) return inspect(lease.runId);
         byte[] output;
         try {
@@ -229,29 +237,30 @@ public final class DurableWorkflows implements AutoCloseable {
 
     /** Decode a successful result into the consumer's original declared Java contract. */
     public Object result(String runId,ValidatedWorkflow workflow) {
-        resolve(runId,workflow);
+        ResolvedApplication resolved=resolve(runId,workflow);
         byte[] bytes=store.transaction(tx->{
             RunState run=tx.get(runId);compatible(run,workflow);
             if(!run.status.equals("SUCCEEDED")) throw new WorkflowRefusal("NO_SUCCESS_RESULT","run has no successful terminal result");
             RunState.Value value=run.values.get(run.output);verifyValue(value,workflow.values().get(workflow.terminal().successValue()));return value.payload.clone();
         });
-        try { return new TypeContracts().decodeBytes(bytes,workflow.definition().output()); }
-        catch(IllegalArgumentException ex) { throw new WorkflowRefusal("DECODE_FAILED","consumer result decode refused",ex); }
+        return resolved.decode(bytes,workflow.definition().output());
     }
 
     private RunSnapshot fail(Lease lease,DeliveryContext context,String code,String message) {
         return store.transaction(tx->{
-            RunState run=tx.get(lease.runId);
+            RunState run=tx.get(lease.runId);compatible(run,lease.workflow);
             if(!eligible(tx,run,lease)) return run.snapshot();
             current(run,context);run.terminal("FAILED",code,message,lease.owner,tx.now);tx.save(run);return run.snapshot();
         });
     }
-    private ResolvedBundle resolve(String runId,ValidatedWorkflow workflow) {
-        ExecutableBundle bundle=store.transaction(tx->{
-            RunState run=tx.get(runId);compatible(run,workflow);
-            return ExecutableBundle.restore(tx.artifact(run.closure),tx.artifact(run.configuration),run.closure,run.configuration,run.codec);
-        });
-        return new ResolvedBundle(bundle,workflow);
+    private ApplicationDeployment requireDeployment() {
+        if(deployment==null) throw new WorkflowRefusal("DEPLOYMENT_REQUIRED","execution requires an application deployment registration");
+        return deployment;
+    }
+    private ResolvedApplication resolve(String runId,ValidatedWorkflow workflow) {
+        ApplicationDeployment supplied=requireDeployment();
+        store.transaction(tx->{compatible(tx.get(runId),workflow);return null;});
+        return new ResolvedApplication(supplied,workflow);
     }
     private boolean eligible(JdbcRunStore.Tx tx,RunState run,Lease lease) throws Exception {
         if(run.expire(tx.now)) { tx.save(run);return false; }
@@ -272,7 +281,7 @@ public final class DurableWorkflows implements AutoCloseable {
         }
         run.terminal(terminal.intent().name(),"AUTHORED_"+terminal.intent().name(),terminal.reason(),"workflow",now);
     }
-    private static void materialize(RunState run,ValueId id,ValidatedWorkflow workflow,ResolvedBundle resolved,String producer) {
+    private static void materialize(RunState run,ValueId id,ValidatedWorkflow workflow,ResolvedApplication resolved,String producer) {
         if(run.values.containsKey(valueId(id))) { verifyValue(run.values.get(valueId(id)),workflow.values().get(id));return; }
         var recipe=workflow.values().get(id);
         if(recipe==null||recipe.components().isEmpty()) throw new WorkflowRefusal("VALUE_MISSING","selected immutable value missing: "+id);
@@ -284,7 +293,7 @@ public final class DurableWorkflows implements AutoCloseable {
         Object input=resolved.assemble(recipe.declaration(),components);
         putValue(run,recipe,resolved.encode(input,recipe.declaration()),producer);
     }
-    private static Object decode(RunState run,ValueId id,ValidatedWorkflow workflow,ResolvedBundle resolved) {
+    private static Object decode(RunState run,ValueId id,ValidatedWorkflow workflow,ResolvedApplication resolved) {
         RunState.Value value=run.values.get(valueId(id));var recipe=workflow.values().get(id);verifyValue(value,recipe);
         return resolved.decode(value.payload,recipe.declaration());
     }
@@ -307,16 +316,19 @@ public final class DurableWorkflows implements AutoCloseable {
     static String valueId(ValueId id) { return Digests.fields(id.placement().graphName(),id.role(),id.phase()); }
     private static String invocationId(String run,Placement placement) { return Digests.fields(run,placement.graphName(),"root"); }
     private static String codec(TypeContracts.CodecIdentity codec) { return Digests.fields(codec.name(),codec.version(),codec.configuration()); }
-    private static String compatibility(ValidatedWorkflow workflow,String closure,String config,String codec,ExecutionPolicy policy) {
+    private static String compatibility(ValidatedWorkflow workflow,ApplicationDeployment.Manifest manifest,ExecutionPolicy policy) {
         StringBuilder entries=new StringBuilder();
         for(var call:workflow.invocations()) entries.append(Digests.fields(call.placement().graphName(),call.executable().entryPoint(),
-                call.executable().artifactClosureDigest(),call.executable().configurationDigest()));
-        return Digests.fields("durable-run-v1",workflow.authoredIdentity(),entries.toString(),closure,config,codec,
+                call.executable().deploymentManifestDigest(),call.executable().configurationDigest()));
+        return Digests.fields("durable-run-v2",workflow.authoredIdentity(),entries.toString(),manifest.identity(),
                 codec(workflow.codecIdentity()),policy.identity());
     }
     private void compatible(RunState run,ValidatedWorkflow workflow) {
-        if(!run.compatibility.equals(compatibility(workflow,run.closure,run.configuration,run.codec,policy)))
-            throw new WorkflowRefusal("COMPATIBILITY","authored behavior, executable, codec or execution policy differs");
+        ApplicationDeployment.Manifest supplied=requireDeployment().manifest();
+        if(!supplied.equals(run.deployment))
+            throw new WorkflowRefusal("COMPATIBILITY","supplied deployment/configuration/codec/runtime differs from admitted manifest");
+        if(!run.compatibility.equals(compatibility(workflow,supplied,policy)))
+            throw new WorkflowRefusal("COMPATIBILITY","authored behavior, operation selection or execution policy differs");
     }
     private static void requireText(String text,String field) { if(text==null||text.isBlank()) throw new IllegalArgumentException(field+" required"); }
     private record Dispatch(ValidatedWorkflow.InvocationRecipe recipe,Object input,DeliveryContext context,RunSnapshot snapshot) {}

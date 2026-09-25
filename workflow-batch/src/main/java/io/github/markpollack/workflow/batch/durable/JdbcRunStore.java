@@ -5,7 +5,7 @@ import java.sql.*;
 import java.util.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-/** H2 file store with a serialized transition clock, immutable images and explicit fencing columns. */
+/** H2 file store with a serialized transition clock, immutable values and explicit fencing columns. */
 final class JdbcRunStore implements AutoCloseable {
     private final String url;
     private final Connection keeper;
@@ -21,6 +21,7 @@ final class JdbcRunStore implements AutoCloseable {
         Connection opened=null;
         try {
             opened=DriverManager.getConnection(url,"sa","");
+            verifyFormats(opened);
             try(Statement s=opened.createStatement()) {
                 s.execute("CREATE TABLE IF NOT EXISTS aw_transition_lock (id INT PRIMARY KEY, tick BIGINT NOT NULL)");
                 s.execute("INSERT INTO aw_transition_lock SELECT 1,0 WHERE NOT EXISTS(SELECT 1 FROM aw_transition_lock WHERE id=1)");
@@ -28,12 +29,28 @@ final class JdbcRunStore implements AutoCloseable {
                 s.execute("CREATE TABLE IF NOT EXISTS aw_run (id VARCHAR PRIMARY KEY, idempotency VARCHAR NOT NULL UNIQUE, "
                         +"generation BIGINT NOT NULL, owner VARCHAR NOT NULL, status VARCHAR NOT NULL, deadline BIGINT NOT NULL, "
                         +"lease_until BIGINT NOT NULL, state CLOB NOT NULL)");
-                s.execute("CREATE TABLE IF NOT EXISTS aw_artifact (digest VARCHAR PRIMARY KEY, payload BLOB NOT NULL)");
             }
             return opened;
-        } catch(SQLException ex) {
+        } catch(Exception ex) {
             if(opened!=null) try {opened.close();}catch(SQLException close){ex.addSuppressed(close);}
+            if(ex instanceof WorkflowRefusal refusal) throw refusal;
             throw new WorkflowRefusal("STORE_UNAVAILABLE","cannot open durable database",ex);
+        }
+    }
+    // Check the explicit header before schema bootstrap or binding defaults to a new state object.
+    private com.fasterxml.jackson.databind.JsonNode checkedState(String json) throws Exception {
+        var state=mapper.readTree(json);
+        var format=state==null?null:state.get("format");
+        if(format==null||!format.isIntegralNumber()||!format.canConvertToInt()||format.intValue()!=2)
+            throw new WorkflowRefusal("STORE_FORMAT","unsupported durable run format; migration is not available");
+        return state;
+    }
+    private void verifyFormats(Connection connection) throws Exception {
+        try(ResultSet tables=connection.getMetaData().getTables(null,"PUBLIC","AW_RUN",new String[]{"TABLE"})) {
+            if(!tables.next()) return;
+        }
+        try(Statement statement=connection.createStatement();ResultSet rows=statement.executeQuery("SELECT state FROM aw_run")) {
+            while(rows.next()) checkedState(rows.getString(1));
         }
     }
     interface Work<T> { T run(Tx tx) throws Exception; }
@@ -83,8 +100,7 @@ final class JdbcRunStore implements AutoCloseable {
             return result;
         }
         private RunState read(ResultSet rows) throws Exception {
-            RunState state=mapper.readValue(rows.getString("state"),RunState.class);
-            if(state.format!=1) throw new WorkflowRefusal("STORE_FORMAT","unsupported durable run format");
+            RunState state=mapper.treeToValue(checkedState(rows.getString("state")),RunState.class);
             if(!state.id.equals(rows.getString("id"))||!state.key.equals(rows.getString("idempotency"))
                     ||state.generation!=rows.getLong("generation")||!state.owner.equals(rows.getString("owner"))
                     ||!state.status.equals(rows.getString("status"))||state.deadline!=rows.getLong("deadline")
@@ -108,20 +124,6 @@ final class JdbcRunStore implements AutoCloseable {
                 if(s.executeUpdate()!=1) throw new WorkflowRefusal("FENCED","storage ownership comparison failed");
             }
             loaded.put(state.id,new Fence(state.generation,state.owner,state.status,state.deadline,state.leaseUntil));
-        }
-        void retain(String digest,byte[] payload) throws Exception {
-            if(!Digests.of(payload).equals(digest)) throw new WorkflowRefusal("ARTIFACT_CHANGED","artifact digest differs");
-            byte[] existing=artifact(digest);
-            if(existing!=null) {
-                if(!Arrays.equals(existing,payload)) throw new WorkflowRefusal("ARTIFACT_CHANGED","stored artifact is corrupt");
-            } else try(PreparedStatement s=c.prepareStatement("INSERT INTO aw_artifact(digest,payload) VALUES(?,?)")) {
-                s.setString(1,digest);s.setBytes(2,payload);s.executeUpdate();
-            }
-        }
-        byte[] artifact(String digest) throws Exception {
-            try(PreparedStatement s=c.prepareStatement("SELECT payload FROM aw_artifact WHERE digest=?")) {
-                s.setString(1,digest);try(ResultSet rows=s.executeQuery()) { return rows.next()?rows.getBytes(1):null; }
-            }
         }
     }
     private record Fence(long generation,String owner,String status,long deadline,long lease) {}

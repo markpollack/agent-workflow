@@ -5,8 +5,9 @@ import java.util.*;
 
 /** Store format, kept separate from both compiler analysis and public inspection. */
 final class RunState {
-    public int format=1;
-    public String id,key,admission,compatibility,display,authored,closure,configuration,codec,deadlineOrigin;
+    public int format=2;
+    public String id,key,admission,compatibility,display,authored,deadlineOrigin;
+    public ApplicationDeployment.Manifest deployment;
     public long admitted,deadline,generation,leaseUntil,leaseMillis;
     public String owner="",status="ACTIVE",reasonCode="",reasonMessage="",actor="",output="";
     public long terminalAt;
@@ -58,7 +59,7 @@ final class RunState {
     }
     RunSnapshot snapshot() {
         return new RunSnapshot(id,display,RunSnapshot.Status.valueOf(status),Instant.ofEpochMilli(admitted),
-                Instant.ofEpochMilli(deadline),deadlineOrigin,authored,closure,codec,generation,owner,
+                Instant.ofEpochMilli(deadline),deadlineOrigin,authored,deployment,generation,owner,
                 leaseUntil==0?null:Instant.ofEpochMilli(leaseUntil),next,
                 active()?null:new RunSnapshot.Reason(reasonCode,reasonMessage,actor,Instant.ofEpochMilli(terminalAt)),
                 invocations.stream().map(Invocation::snapshot).toList(),values.values().stream().map(Value::snapshot).toList(),
