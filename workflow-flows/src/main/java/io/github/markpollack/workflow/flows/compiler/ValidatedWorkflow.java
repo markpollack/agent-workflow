@@ -1,0 +1,125 @@
+package io.github.markpollack.workflow.flows.compiler;
+
+import java.lang.reflect.Type;
+import java.util.*;
+import io.github.markpollack.workflow.flows.workflow.WorkflowGraph;
+import static io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
+
+/**
+ * Immutable compiler-verified workflow eligible for the sequential runtime capability set.
+ * Only {@link #compile(Definition, Map)} can create one; unchecked graphs and construction-only
+ * compilations are not admission inputs. This is not a running workflow or durable run state.
+ * The future runtime must additionally resolve and verify the selected executable closures,
+ * configuration and codec before admitting or recovering a run. No handler executes here.
+ */
+public final class ValidatedWorkflow {
+    public static final String COMPILER_CONTRACT="structured-workflow-compiler-v1";
+    private static final Set<Capability> SUPPORTED=Set.of(Capability.OPERATION,Capability.TERMINAL);
+
+    /** Exact selected logical value source; components refer to retained identities, never runtime type search. */
+    public record ValueRecipe(ValueId identity, TypeContracts.Contract contract,List<ValueId> components,List<ValueId> consumed) {
+        public ValueRecipe { components=List.copyOf(components); consumed=List.copyOf(consumed); }
+    }
+    /** Input aliases retain the original ValueId; assembled dispatch inputs have their own retained ID. */
+    public record InvocationRecipe(Placement placement,ValueId input,ValueId output,ExecutableIdentity executable) {}
+    /** Explicit terminal intent and selected success value (absent for non-success). */
+    public record TerminalRecipe(Placement placement,Terminal intent,String reason,ValueId successValue) {}
+
+    private final Definition<?,?> definition;
+    private final WorkflowGraph<?,?> graph;
+    private final RegionSummary rootSummary;
+    private final List<InvocationRecipe> invocations;
+    private final Map<ValueId,ValueRecipe> values;
+    private final TerminalRecipe terminal;
+    private final TypeContracts.Contract input,output;
+    private final String authoredIdentity;
+    private final TypeContracts.CodecIdentity codec;
+
+    private ValidatedWorkflow(Compilation<?,?> compiled,Map<Placement,ExecutableIdentity> selections) {
+        definition=compiled.definition(); graph=compiled.graph();
+        rootSummary=compiled.summaries().get(new SummaryKey(Coordinates.root(definition),"root"));
+        TypeContracts contracts=new TypeContracts(); codec=contracts.identity();
+        input=contracts.contract(definition.input()); output=contracts.contract(definition.output());
+        List<InvocationRecipe> calls=new ArrayList<>(); Map<ValueId,ValueRecipe> recipes=new LinkedHashMap<>();
+        Set<Placement> required=new HashSet<>();
+        for(Binding binding:compiled.bindings()) {
+            required.add(binding.placement());
+            ExecutableIdentity selected=selections.get(binding.placement());
+            if(selected==null) throw new IllegalArgumentException("missing executable selection at "+binding.placement());
+            if(!contracts.compatible(binding.input().type(),selected.input())||!contracts.compatible(binding.output().type(),selected.output()))
+                throw new IllegalArgumentException("executable contract disagreement at "+binding.placement());
+            recipe(binding.input(),recipes,contracts); recipe(binding.output(),recipes,contracts);
+            calls.add(new InvocationRecipe(binding.placement(),binding.input().identity(),binding.output().identity(),selected));
+        }
+        if(!required.equals(selections.keySet())) throw new IllegalArgumentException("extraneous executable selection");
+        int last=definition.nodes().size()-1;
+        End end=(End)definition.nodes().get(last);
+        Placement endPlacement=Coordinates.node(Coordinates.root(definition),end,last);
+        Fact finalValue;
+        if(calls.isEmpty()) finalValue=new Fact(new ValueId(Coordinates.root(definition),"root","root"),"root",definition.input(),List.of(),List.of());
+        else finalValue=compiled.bindings().getLast().output();
+        recipe(finalValue,recipes,contracts);
+        terminal=new TerminalRecipe(endPlacement,end.terminal(),end.reason()==null?"":end.reason(),end.terminal()==Terminal.SUCCEEDED?finalValue.identity():null);
+        invocations=List.copyOf(calls); values=Collections.unmodifiableMap(new LinkedHashMap<>(recipes));
+        StringBuilder authored=new StringBuilder();
+        for(String field:List.of(COMPILER_CONTRACT,Coordinates.SCHEME,definition.name(),definition.deadline().toString())) IdentityEncoding.field(authored,field);
+        contractIdentity(authored,input); contractIdentity(authored,output);
+        for(InvocationRecipe call:calls) {
+            IdentityEncoding.field(authored,call.placement().graphName());
+            valueIdentity(authored,call.input()); valueIdentity(authored,call.output());
+        }
+        for(ValueRecipe value:recipes.values()) {
+            valueIdentity(authored,value.identity()); contractIdentity(authored,value.contract());
+            IdentityEncoding.field(authored,Integer.toString(value.components().size()));
+            value.components().forEach(id->valueIdentity(authored,id));
+            IdentityEncoding.field(authored,Integer.toString(value.consumed().size()));
+            value.consumed().forEach(id->valueIdentity(authored,id));
+        }
+        IdentityEncoding.field(authored,terminal.placement().graphName());
+        IdentityEncoding.field(authored,terminal.intent().name()); IdentityEncoding.field(authored,terminal.reason());
+        if(terminal.successValue()!=null) valueIdentity(authored,terminal.successValue());
+        authoredIdentity=IdentityEncoding.digest(authored.toString());
+    }
+
+    /**
+     * Compiles and checks one owned definition for the fixed initial capability set.
+     * Selections are deployment attestations keyed by stable authored call placements.
+     * Unsupported composition refuses; support can expand only with compiler/runtime proof.
+     */
+    public static ValidatedWorkflow compile(Definition<?,?> source,Map<Placement,ExecutableIdentity> selections) {
+        Definition<?,?> owned=DefinitionOwnership.acquire(source);
+        Map<Placement,ExecutableIdentity> selected=Map.copyOf(selections);
+        for(Node node:owned.nodes()) if(!SUPPORTED.contains(Coordinates.capability(node)))
+            throw new IllegalArgumentException("unsupported production capability: "+Coordinates.capability(node));
+        Compilation<?,?> compiled=StructuredWorkflowCompiler.compileOwned(owned);
+        return new ValidatedWorkflow(compiled,selected);
+    }
+
+    private static void recipe(Fact fact,Map<ValueId,ValueRecipe> values,TypeContracts contracts) {
+        if(values.containsKey(fact.identity())) return;
+        fact.components().forEach(f->recipe(f,values,contracts)); fact.consumed().forEach(f->recipe(f,values,contracts));
+        values.put(fact.identity(),new ValueRecipe(fact.identity(),contracts.contract(fact.type()),
+                fact.components().stream().map(Fact::identity).toList(),fact.consumed().stream().map(Fact::identity).toList()));
+    }
+
+    private static void valueIdentity(StringBuilder target,ValueId value) {
+        IdentityEncoding.field(target,value.placement().graphName()); IdentityEncoding.field(target,value.role()); IdentityEncoding.field(target,value.phase());
+    }
+    private static void contractIdentity(StringBuilder target,TypeContracts.Contract contract) {
+        IdentityEncoding.field(target,contract.javaType()); IdentityEncoding.field(target,contract.shapeDigest());
+    }
+
+    public Definition<?,?> definition() { return definition; }
+    public WorkflowGraph<?,?> graph() { return graph; }
+    public RegionSummary rootSummary() { return rootSummary; }
+    public Set<Capability> capabilities() { return SUPPORTED; }
+    public String coordinateScheme() { return Coordinates.SCHEME; }
+    public String compilerContract() { return COMPILER_CONTRACT; }
+    public String authoredIdentity() { return authoredIdentity; }
+    public TypeContracts.CodecIdentity codecIdentity() { return codec; }
+    public TypeContracts.Contract inputContract() { return input; }
+    public TypeContracts.Contract outputContract() { return output; }
+    public List<InvocationRecipe> invocations() { return invocations; }
+    public Map<ValueId,ValueRecipe> values() { return values; }
+    public TerminalRecipe terminal() { return terminal; }
+}
