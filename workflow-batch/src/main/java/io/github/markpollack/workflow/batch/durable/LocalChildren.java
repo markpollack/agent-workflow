@@ -3,98 +3,162 @@ package io.github.markpollack.workflow.batch.durable;
 import io.github.markpollack.workflow.flows.compiler.ValidatedWorkflow;
 import static io.github.markpollack.workflow.batch.durable.DurableWorkflows.*;
 
-/** One-store child acceptance and scoped parent-call settlement. No application invocation occurs here. */
+/** One-store child acceptance, waiting and settlement. All methods use the caller's transaction. */
 final class LocalChildren {
-    private LocalChildren() {}
+    enum Transition {
+        ACCEPTED("AFTER_CHILD_ACCEPT_COMMIT"), WAITING("AFTER_CHILD_WAIT_COMMIT"),
+        SETTLED("AFTER_CHILD_SETTLEMENT_COMMIT"), LIMIT_EXCEEDED("");
 
-    static void advance(JdbcRunStore.Tx tx, RunState parent, RunState.Invocation call,
-            ValidatedWorkflow.InvocationRecipe recipe, ValidatedWorkflow workflow, ValidatedWorkflow childWorkflow,
-            ApplicationDeployment deployment, ExecutionPolicy policy, BoundaryHooks hooks) throws Exception {
-        var input=parent.values.get(valueId(recipe.input()));
-        verifyValue(input,workflow.values().get(recipe.input()));
-        if(!call.id.equals(Digests.fields(parent.id,recipe.placement().graphName(),"root"))
-                ||!call.placement.equals(recipe.placement().graphName())
-                ||!call.input.equals(input.id)||!call.output.equals(valueId(recipe.output()))
-                ||!call.status.equals("UNRESOLVED")||!call.deliveries.isEmpty()||call.settledAt!=0)
-            throw new WorkflowRefusal("CHILD_FACTS_CHANGED","child invocation facts disagree");
-        String expectedId=Digests.fields("local-child-v1",parent.id,call.id);
-        String compatibility=compatibility(childWorkflow,deployment.manifest(),policy);
-        var rootRecipe=childWorkflow.values().values().stream().filter(v->v.identity().role().equals("root"))
-                .findFirst().orElseThrow(()->new WorkflowRefusal("BINDING_INVALID","child root recipe missing"));
-        ResolvedApplication resolved=new ResolvedApplication(deployment,childWorkflow);
-        resolved.decode(input.payload,childWorkflow.definition().input());
-        RunState child;
-        if(call.childId.isEmpty()) {
-            RunState root=tx.get(parent.rootId);
-            if(parent.depth>=root.maximumChildDepth||root.descendants>=root.maximumDescendants) {
-                tx.terminal(parent,"FAILED","CHILD_LIMIT_EXCEEDED","finite child lineage allowance exhausted","store");
-                return;
-            }
-            hooks.at("BEFORE_CHILD_RESERVATION",parent.id);
-            if(tx.byKey("child:"+call.id)!=null)
-                throw new WorkflowRefusal("CHILD_FACTS_CHANGED","unattached child reservation already exists");
-            child=new RunState();child.id=expectedId;child.key="child:"+call.id;
-            child.admission=Digests.fields(compatibility,input.digest);child.compatibility=compatibility;
-            child.display=childWorkflow.definition().name();child.authored=childWorkflow.authoredIdentity();
-            child.deployment=deployment.manifest();child.admitted=tx.now;
-            long local=Math.addExact(tx.now,childWorkflow.definition().deadline().toMillis());
-            child.deadline=Math.min(parent.deadline,local);
-            child.deadlineOrigin=parent.deadline<=local?"INHERITED:"+parent.id+":"+parent.deadlineOrigin:childWorkflow.deadlineOrigin();
-            child.leaseMillis=parent.leaseMillis;child.maximumDeliveries=parent.maximumDeliveries;
-            child.maximumChildDepth=root.maximumChildDepth;child.maximumDescendants=root.maximumDescendants;
-            child.rootId=root.id;child.parentId=parent.id;child.parentInvocation=call.id;child.depth=parent.depth+1;
-            putValue(child,rootRecipe,input.payload,"");
-            var childRoot=child.values.get(valueId(rootRecipe.identity()));
-            childRoot.sourceRun=parent.id;childRoot.sourceValue=input.id;
-            child.event("ADMITTED",tx.now,child.admission);
-            child.event("CHILD_ATTACHED",tx.now,parent.id+":"+call.id);
-            root.descendants=Math.incrementExact(root.descendants);
-            call.childId=child.id;
-            parent.event("CHILD_ACCEPTED",tx.now,call.id+":"+child.id);
-            tx.save(root);tx.insert(child);
-            hooks.at("AFTER_CHILD_CREATE_BEFORE_COMMIT",parent.id);
-            release(parent,tx.now);tx.save(parent);
-            hooks.at("BEFORE_CHILD_ACCEPT_COMMIT",parent.id);
-            return;
-        }
-        if(!call.childId.equals(expectedId)) throw new WorkflowRefusal("CHILD_FACTS_CHANGED","child identity changed");
-        child=tx.get(call.childId);
-        var childRoot=child.values.get(valueId(rootRecipe.identity()));
-        verifyValue(childRoot,rootRecipe);
-        long local=Math.addExact(child.admitted,childWorkflow.definition().deadline().toMillis());
-        String origin=parent.deadline<=local?"INHERITED:"+parent.id+":"+parent.deadlineOrigin:childWorkflow.deadlineOrigin();
-        if(!child.parentId.equals(parent.id)||!child.parentInvocation.equals(call.id)||!child.rootId.equals(parent.rootId)
-                ||child.depth!=parent.depth+1||!child.compatibility.equals(compatibility)||!child.deployment.equals(deployment.manifest())
-                ||!child.admission.equals(Digests.fields(compatibility,input.digest))
-                ||child.deadline!=Math.min(parent.deadline,local)||!child.deadlineOrigin.equals(origin)
-                ||!childRoot.sourceRun.equals(parent.id)||!childRoot.sourceValue.equals(input.id)
-                ||!java.util.Arrays.equals(childRoot.payload,input.payload))
-            throw new WorkflowRefusal("CHILD_FACTS_CHANGED","accepted child lineage/input/deadline/compatibility disagrees");
-        tx.observe(child);
-        if(child.active()) { release(parent,tx.now);tx.save(parent);return; }
-        call.childOutcome=child.status;call.childReason=child.reasonCode;call.settledAt=tx.now;
-        if(child.status.equals("SUCCEEDED")) {
-            var outputRecipe=childWorkflow.values().get(childWorkflow.terminal().successValue());
-            var output=child.values.get(child.output);
-            verifyValue(output,outputRecipe);
-            resolved.decode(output.payload,childWorkflow.definition().output());
-            putValue(parent,workflow.values().get(recipe.output()),output.payload,call.id);
-            var parentOutput=parent.values.get(call.output);
-            parentOutput.sourceRun=child.id;parentOutput.sourceValue=output.id;
-            call.status="COMMITTED";parent.next++;
-            parent.event("CHILD_SETTLED",tx.now,call.id+":"+child.id+":SUCCEEDED");
-            if(parent.next==workflow.invocations().size()) finish(tx,parent,workflow);
-            else tx.save(parent);
-        } else {
-            call.status="FAILED";
-            parent.event("CHILD_SETTLED",tx.now,call.id+":"+child.id+":"+child.status);
-            tx.terminal(parent,"FAILED","CHILD_"+child.status,child.reasonCode+":"+child.reasonMessage,child.id);
-        }
-        hooks.at("BEFORE_CHILD_SETTLEMENT_COMMIT",parent.id);
+        final String afterCommit;
+        Transition(String afterCommit) { this.afterCommit = afterCommit; }
     }
 
-    private static void release(RunState parent,long now) {
-        parent.generation=Math.incrementExact(parent.generation);parent.owner="";parent.leaseUntil=0;
-        parent.event("WAITING_CHILD",now,parent.invocations.get(parent.next).childId);
+    private final ApplicationDeployment deployment;
+    private final ExecutionPolicy policy;
+    private final BoundaryHooks hooks;
+
+    LocalChildren(ApplicationDeployment deployment, ExecutionPolicy policy, BoundaryHooks hooks) {
+        this.deployment = deployment;
+        this.policy = policy;
+        this.hooks = hooks;
+    }
+
+    Transition advance(JdbcRunStore.Tx tx, RunState parent, RunState.Invocation invocation,
+            ValidatedWorkflow.InvocationRecipe recipe, ValidatedWorkflow workflow, ResolvedApplication resolved) throws Exception {
+        Call call = new Call(parent, invocation, recipe, workflow, resolved);
+        if (invocation.childId.isEmpty()) return accept(tx, call);
+        RunState child = reattach(tx, call);
+        if (child.active()) {
+            releaseParent(tx, call);
+            return Transition.WAITING;
+        }
+        settle(tx, call, child);
+        return Transition.SETTLED;
+    }
+
+    /** The selected parent-call boundary and its exact input, checked before any transition. */
+    private static final class Call {
+        final RunState parent;
+        final RunState.Invocation invocation;
+        final ValidatedWorkflow workflow, childWorkflow;
+        final ValidatedWorkflow.InvocationRecipe recipe;
+        final RunState.Value input;
+        final ResolvedApplication resolved;
+
+        Call(RunState parent, RunState.Invocation invocation, ValidatedWorkflow.InvocationRecipe recipe,
+                ValidatedWorkflow workflow, ResolvedApplication resolved) {
+            this.parent = parent;
+            this.invocation = invocation;
+            this.recipe = recipe;
+            this.workflow = workflow;
+            this.childWorkflow = workflow.children().get(recipe.placement());
+            this.resolved = resolved;
+            input = parent.values.get(valueId(recipe.input()));
+            verifyValue(input, workflow.values().get(recipe.input()));
+            if (!invocation.id.equals(Digests.fields(parent.id, recipe.placement().graphName(), "root"))
+                    || !invocation.placement.equals(recipe.placement().graphName())
+                    || !invocation.input.equals(input.id) || !invocation.output.equals(valueId(recipe.output()))
+                    || !invocation.status.equals("UNRESOLVED") || !invocation.deliveries.isEmpty() || invocation.settledAt != 0) {
+                throw new WorkflowRefusal("CHILD_FACTS_CHANGED", "child invocation facts disagree");
+            }
+            // Parent preflight already resolved all selected children. Reuse its codec here.
+            resolved.decode(input.payload, childWorkflow.definition().input());
+        }
+    }
+
+    private Transition accept(JdbcRunStore.Tx tx, Call call) throws Exception {
+        RunState parent = call.parent;
+        RunState root = tx.get(parent.rootId);
+        if (parent.depth >= root.maximumChildDepth || root.descendants >= root.maximumDescendants) {
+            tx.terminal(parent, "FAILED", "CHILD_LIMIT_EXCEEDED", "finite child lineage allowance exhausted", "store");
+            return Transition.LIMIT_EXCEEDED;
+        }
+        hooks.at("BEFORE_CHILD_RESERVATION", parent.id);
+        if (tx.byKey("child:" + call.invocation.id) != null) {
+            throw new WorkflowRefusal("CHILD_FACTS_CHANGED", "unattached child reservation already exists");
+        }
+        RunState child = admission(tx, call, root);
+        root.descendants = Math.incrementExact(root.descendants);
+        call.invocation.childId = child.id;
+        parent.event("CHILD_ACCEPTED", tx.now, call.invocation.id + ":" + child.id);
+        tx.save(root);
+        tx.insert(child);
+        hooks.at("AFTER_CHILD_CREATE_BEFORE_COMMIT", parent.id);
+        releaseParent(tx, call);
+        hooks.at("BEFORE_CHILD_ACCEPT_COMMIT", parent.id);
+        return Transition.ACCEPTED;
+    }
+
+    private RunState admission(JdbcRunStore.Tx tx, Call call, RunState root) {
+        RunState parent = call.parent;
+        RunState child = new RunState();
+        child.id = ChildAttachment.childId(parent, call.invocation);
+        child.key = "child:" + call.invocation.id;
+        child.compatibility = compatibility(call.childWorkflow, deployment.manifest(), policy);
+        child.admission = Digests.fields(child.compatibility, call.input.digest);
+        child.display = call.childWorkflow.definition().name();
+        child.authored = call.childWorkflow.authoredIdentity();
+        child.deployment = deployment.manifest();
+        child.admitted = tx.now;
+        var deadline = ChildAttachment.deadline(parent, tx.now, call.childWorkflow);
+        child.deadline = deadline.instant();
+        child.deadlineOrigin = deadline.origin();
+        child.leaseMillis = parent.leaseMillis;
+        child.maximumDeliveries = parent.maximumDeliveries;
+        child.maximumChildDepth = root.maximumChildDepth;
+        child.maximumDescendants = root.maximumDescendants;
+        child.rootId = root.id;
+        child.parentId = parent.id;
+        child.parentInvocation = call.invocation.id;
+        child.depth = parent.depth + 1;
+        var rootRecipe = ChildAttachment.rootRecipe(call.childWorkflow);
+        putValue(child, rootRecipe, call.input.payload, "");
+        var input = child.values.get(valueId(rootRecipe.identity()));
+        input.sourceRun = parent.id;
+        input.sourceValue = call.input.id;
+        child.event("ADMITTED", tx.now, child.admission);
+        child.event("CHILD_ATTACHED", tx.now, parent.id + ":" + call.invocation.id);
+        return child;
+    }
+
+    private RunState reattach(JdbcRunStore.Tx tx, Call call) throws Exception {
+        if (!call.invocation.childId.equals(ChildAttachment.childId(call.parent, call.invocation))) {
+            throw new WorkflowRefusal("CHILD_FACTS_CHANGED", "child identity changed");
+        }
+        RunState child = tx.get(call.invocation.childId);
+        ChildAttachment.verify(tx, child, call.childWorkflow, deployment.manifest(), policy);
+        tx.observe(child);
+        return child;
+    }
+
+    private void settle(JdbcRunStore.Tx tx, Call call, RunState child) throws Exception {
+        RunState parent = call.parent;
+        parent.settleChild(call.invocation, child, tx.now);
+        if (child.status.equals("SUCCEEDED")) {
+            var outputRecipe = call.childWorkflow.values().get(call.childWorkflow.terminal().successValue());
+            var output = child.values.get(child.output);
+            verifyValue(output, outputRecipe);
+            call.resolved.decode(output.payload, call.childWorkflow.definition().output());
+            putValue(parent, call.workflow.values().get(call.recipe.output()), output.payload, call.invocation.id);
+            var parentOutput = parent.values.get(call.invocation.output);
+            parentOutput.sourceRun = child.id;
+            parentOutput.sourceValue = output.id;
+            call.invocation.status = "COMMITTED";
+            parent.next++;
+            if (parent.next == call.workflow.invocations().size()) finish(tx, parent, call.workflow);
+            else tx.save(parent);
+        } else {
+            call.invocation.status = "FAILED";
+            tx.terminal(parent, "FAILED", "CHILD_" + child.status, child.reasonCode + ":" + child.reasonMessage, child.id);
+        }
+        hooks.at("BEFORE_CHILD_SETTLEMENT_COMMIT", parent.id);
+    }
+
+    private static void releaseParent(JdbcRunStore.Tx tx, Call call) throws Exception {
+        call.parent.generation = Math.incrementExact(call.parent.generation);
+        call.parent.owner = "";
+        call.parent.leaseUntil = 0;
+        call.parent.event("WAITING_CHILD", tx.now, call.invocation.childId);
+        tx.save(call.parent);
     }
 }

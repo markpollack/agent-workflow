@@ -182,6 +182,8 @@ class LocalChildrenTest {
             runtime.resume(childId,built.child());String completed=StoreTestSupport.state(file,childId);
             var result=runtime.cancel(id,"owner","stop");assertThat(result.status()).isEqualTo(RunSnapshot.Status.CANCELLED);
             assertThat(result.invocations().getFirst().childOutcome()).isEqualTo("SUCCEEDED");
+            assertThat(result.events()).filteredOn(e->e.kind().equals("CHILD_SETTLED"))
+                    .singleElement().satisfies(e->assertThat(e.detail()).endsWith(":SUCCEEDED"));
             assertThat(runtime.resume(id,built.parent()).status()).isEqualTo(RunSnapshot.Status.CANCELLED);
             assertThat(StoreTestSupport.state(file,childId)).isEqualTo(completed);
             assertThat(result.values()).hasSize(1);

@@ -138,8 +138,7 @@ final class JdbcRunStore implements AutoCloseable {
             for(RunState child:all()) if(child.parentId.equals(run.id)) {
                 if(child.active()) revoke(run,child);
                 for(var call:run.invocations) if(call.childId.equals(child.id)&&call.settledAt==0) {
-                    call.childOutcome=child.status;call.childReason=child.reasonCode;call.settledAt=now;
-                    run.event("CHILD_SETTLED",now,call.id+":"+child.id+":"+call.status);
+                    run.settleChild(call,child,now);
                 }
             }
             save(run);

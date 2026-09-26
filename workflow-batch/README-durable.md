@@ -139,14 +139,51 @@ Root submission keys and child reservation keys occupy separate namespaces.
 invocation exposes `childRunId`; `discover` finds both parent and child. A scheduler can resume the
 child using the selected child workflow, then reclaim/advance the parent. Convenience `resume`
 drives an available child after draining the parent's renewal thread. If another worker owns the
-child, it returns the active waiting parent without polling or retaining a parent worker. Repeated
+child, it returns the active waiting parent without polling. Repeated
 reattachment checks the saved identity/input/lineage and never creates or charges another child.
+
+Directly discovered child execution checks the reciprocal parent attachment, exact input and
+lineage before claiming, charging, entering application code or committing a result. Copied child
+outputs retain checked source links when selected by later operations or read as a terminal result.
 
 Parent settlement uses the child's saved terminal evidence once. Successful output retains exact
 bytes plus child run/value provenance; child failure or cancellation fails the parent call, with
 the child's own outcome preserved. Global parent cancellation/expiry atomically revokes child
 authority and accounts for the unresolved call. A child already completed remains evidence, but
 cannot revive its terminal parent. Inspection of a child also observes ancestor expiry.
+
+## Java threads and lifecycle
+
+`resume` and `advance` construct and execute operations directly on their calling Java thread.
+There is no operation executor handoff. Convenience `resume(parent)` releases the parent lease,
+drains its renewal task, then calls `resume(child)` synchronously on that same thread. Releasing
+a lease changes stored ownership; it does not suspend, unblock or free a Java thread. `advance`
+returns after acceptance so the application can schedule the discovered child on another thread.
+An available child driven through `resume` occupies its caller until its operation returns.
+
+Each active `resumeOwned` creates one daemon `workflow-lease-renewal` scheduled executor. Its only
+task is renewing that run's lease, starting after one third of the lease duration. The same call's
+`finally` cancels future renewals without interruption, shuts down and drains the executor. A
+parent's renewal ends before convenience child execution starts; child renewal has its own lease.
+`advance` alone creates no executor or heartbeat; its caller must arrange renewal for long calls.
+H2 separately owns its database background threads. Workflow has no Reactor scheduler.
+
+Concurrent callers can execute different runs' application code at the same time. All database
+transitions serialize through the store lock, and leases prevent two live owners from advancing
+the same run. After lease loss, old application code may overlap a replacement's delivery, but
+generation checks reject its late commit. No transaction stays open while a handler executes.
+
+Cancellation and deadline expiry revoke durable continuation and result authority; they do not
+interrupt application code or impose a Java call timeout. A blocked operation can keep its caller
+and renewal executor alive until it returns. External interruption follows the application's Java
+behavior: an uncaught `InterruptedException` is recorded as `HANDLER_FAILED` if still eligible;
+this path does not restore an interrupt flag cleared by the application wait. Interruption while
+draining renewal is handled separately and the flag is restored after drainage.
+
+`close()` closes only the store keeper connection. It does not cancel runs, interrupt handlers or
+shut down renewal executors owned by active `resume` calls, and is not a barrier preventing later
+method calls. Applications should finish/join their calls before closing the handle. No workflow
+scheduler, parallel-branch executor or global thread/admission limit is provided by this slice.
 
 ## Store envelope
 

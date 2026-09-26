@@ -49,6 +49,13 @@ final class RunState {
         Event e=new Event();e.sequence=events.size()+1L;e.time=time;e.kind=kind;e.detail=detail;events.add(e);
     }
     boolean active() { return status.equals("ACTIVE"); }
+    void settleChild(Invocation call, RunState child, long now) {
+        if (call.settledAt != 0) return;
+        call.childOutcome = child.status;
+        call.childReason = child.reasonCode;
+        call.settledAt = now;
+        event("CHILD_SETTLED", now, call.id + ":" + child.id + ":" + child.status);
+    }
     void terminal(String outcome,String code,String message,String actor,long now) {
         if(!active()) return;
         status=outcome;reasonCode=code;reasonMessage=message;this.actor=actor;terminalAt=now;
