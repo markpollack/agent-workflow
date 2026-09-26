@@ -1,8 +1,8 @@
 # Local durable workflows
 
-`DurableWorkflows` runs compiler-validated sequential workflows using a separate H2 file schema.
+`DurableWorkflows` runs compiler-validated sequential workflows and local child calls using a separate H2 file schema.
 It accepts `ValidatedWorkflow` only. Legacy graphs, runners and checkpoint rows are not admission
-inputs. Decisions, verdicts, parallel groups, fan-out, loops, children and timers currently refuse
+inputs. Decisions, verdicts, parallel groups, fan-out, loops and timers currently refuse
 validated execution admission.
 
 Authored identity fields (including definition names, placement IDs, terminal reasons and deadline
@@ -115,6 +115,39 @@ This guarantees committed-result reuse and fenced commits, not exactly-once exte
 Use the stable logical invocation ID for external idempotency where supported. Business exceptions
 fail immediately; there is no engine retry/backoff feature.
 
+## Local children
+
+`ValidatedWorkflow.compileWithChildren` accepts ordinary operation selections and an exact map
+from parent child-call placements to validated child workflows. The embedded child definition must
+agree with its selected workflow. Children currently support sequential operations and explicit
+terminals; nested child calls and other structured combinations refuse compilation. The ordinary
+`compile` entry point retains its sequential capability set.
+
+Child execution uses the same supplied application deployment. The parent compatibility identity
+includes child behavior and selections; missing child registrations and changed child selections
+refuse before execution. Child values occupy their own run namespace. The parent communicates
+through the selected call input/output, and can retain its own exact assembled call input for later
+operations.
+
+One store transaction records the child reservation, exact input, child run, parent/root lineage,
+minimum inherited deadline, parent attachment and one descendant charge. Defaults allow one child
+level and 64 total descendants per root. The four-argument `ExecutionPolicy` can tighten those
+resource limits; zero disables child creation. Raising a limit does not enable unsupported nesting.
+Root submission keys and child reservation keys occupy separate namespaces.
+
+`advance` returns after child acceptance with an active parent and a released parent lease. Its
+invocation exposes `childRunId`; `discover` finds both parent and child. A scheduler can resume the
+child using the selected child workflow, then reclaim/advance the parent. Convenience `resume`
+drives an available child after draining the parent's renewal thread. If another worker owns the
+child, it returns the active waiting parent without polling or retaining a parent worker. Repeated
+reattachment checks the saved identity/input/lineage and never creates or charges another child.
+
+Parent settlement uses the child's saved terminal evidence once. Successful output retains exact
+bytes plus child run/value provenance; child failure or cancellation fails the parent call, with
+the child's own outcome preserved. Global parent cancellation/expiry atomically revokes child
+authority and accounts for the unresolved call. A child already completed remains evidence, but
+cannot revive its terminal parent. Inspection of a child also observes ancestor expiry.
+
 ## Store envelope
 
 The supported store is H2 2.4.240 embedded file mode with `WRITE_DELAY=0`, file locking and short
@@ -124,11 +157,15 @@ migration are unsupported. Cancellation revokes durable authority without interr
 threads; physical interruption of external work is not guaranteed.
 
 A global transition lock serializes state changes and inspection across runs. The initial schema
-stores one format-2 aggregate per run, with no executable artifact store. Old, absent or unknown
+stores one format-3 aggregate per run, with no executable artifact store. Old, absent or unknown
 run-format versions refuse before schema initialization; existing rows are not migrated. Values
 and events are retained indefinitely; no pruning or migration API is provided. This favors a
 bounded, inspectable local implementation over throughput or large-history optimization. Filesystem
 and hardware durability remain within H2's guarantees; process-kill tests are not power-loss tests.
+
+Format 3 adds child lineage, source-value references and settlement facts. Format 2 databases
+require their existing runtime; opening them here refuses before schema bootstrap. There is no
+automatic conversion or migration.
 
 Run `./mvnw -pl workflow-batch -am verify` for unit, consumer and separate-JVM recovery tests.
 The integration harness records PIDs, force-kill boundaries, recovered database facts and external

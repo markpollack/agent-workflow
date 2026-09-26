@@ -41,7 +41,7 @@ final class JdbcRunStore implements AutoCloseable {
     private com.fasterxml.jackson.databind.JsonNode checkedState(String json) throws Exception {
         var state=mapper.readTree(json);
         var format=state==null?null:state.get("format");
-        if(format==null||!format.isIntegralNumber()||!format.canConvertToInt()||format.intValue()!=2)
+        if(format==null||!format.isIntegralNumber()||!format.canConvertToInt()||format.intValue()!=3)
             throw new WorkflowRefusal("STORE_FORMAT","unsupported durable run format; migration is not available");
         return state;
     }
@@ -79,8 +79,10 @@ final class JdbcRunStore implements AutoCloseable {
         final Connection c;
         final long now;
         private final Map<String,Fence> loaded=new HashMap<>();
+        private final Map<String,RunState> states=new HashMap<>();
         Tx(Connection c,long now) { this.c=c;this.now=now; }
         RunState get(String id) throws Exception {
+            if(states.containsKey(id)) return states.get(id);
             RunState state=find("id",id);
             if(state==null) throw new WorkflowRefusal("RUN_NOT_FOUND","unknown durable run: "+id);
             return state;
@@ -100,12 +102,15 @@ final class JdbcRunStore implements AutoCloseable {
             return result;
         }
         private RunState read(ResultSet rows) throws Exception {
+            String id=rows.getString("id");
+            if(states.containsKey(id)) return states.get(id);
             RunState state=mapper.treeToValue(checkedState(rows.getString("state")),RunState.class);
             if(!state.id.equals(rows.getString("id"))||!state.key.equals(rows.getString("idempotency"))
                     ||state.generation!=rows.getLong("generation")||!state.owner.equals(rows.getString("owner"))
                     ||!state.status.equals(rows.getString("status"))||state.deadline!=rows.getLong("deadline")
                     ||state.leaseUntil!=rows.getLong("lease_until")) throw new WorkflowRefusal("STORE_CORRUPT","state and fencing columns disagree");
             loaded.put(state.id,new Fence(state.generation,state.owner,state.status,state.deadline,state.leaseUntil));
+            states.put(state.id,state);
             return state;
         }
         void insert(RunState state) throws Exception {
@@ -113,6 +118,36 @@ final class JdbcRunStore implements AutoCloseable {
                 s.setString(1,state.id);s.setString(2,state.key);s.setLong(3,state.generation);s.setString(4,state.owner);
                 s.setString(5,state.status);s.setLong(6,state.deadline);s.setLong(7,state.leaseUntil);s.setString(8,mapper.writeValueAsString(state));s.executeUpdate();
             }
+            states.put(state.id,state);
+            loaded.put(state.id,new Fence(state.generation,state.owner,state.status,state.deadline,state.leaseUntil));
+        }
+        /** Observe ancestor authority before allowing any descendant transition. */
+        void observe(RunState run) throws Exception {
+            if(!run.parentId.isEmpty()) {
+                RunState parent=get(run.parentId);
+                observe(parent);
+                if(!parent.active()&&run.active()) revoke(parent,run);
+            }
+            if(run.active()&&now>=run.deadline)
+                terminal(run,"FAILED","DEADLINE_EXCEEDED","absolute deadline reached","store");
+        }
+        /** Revoke and account for the entire affected local scope in this same transaction. */
+        void terminal(RunState run,String status,String code,String message,String actor) throws Exception {
+            if(!run.active()) return;
+            run.terminal(status,code,message,actor,now);
+            for(RunState child:all()) if(child.parentId.equals(run.id)) {
+                if(child.active()) revoke(run,child);
+                for(var call:run.invocations) if(call.childId.equals(child.id)&&call.settledAt==0) {
+                    call.childOutcome=child.status;call.childReason=child.reasonCode;call.settledAt=now;
+                    run.event("CHILD_SETTLED",now,call.id+":"+child.id+":"+call.status);
+                }
+            }
+            save(run);
+        }
+        private void revoke(RunState parent,RunState child) throws Exception {
+            boolean cancelled=parent.status.equals("CANCELLED");
+            String code=cancelled?"PARENT_CANCELLED":parent.reasonCode.equals("DEADLINE_EXCEEDED")?"DEADLINE_EXCEEDED":"PARENT_TERMINAL";
+            terminal(child,cancelled?"CANCELLED":"FAILED",code,"parent continuation revoked",parent.actor);
         }
         void save(RunState state) throws Exception {
             Fence prior=Objects.requireNonNull(loaded.get(state.id),"read required before update");

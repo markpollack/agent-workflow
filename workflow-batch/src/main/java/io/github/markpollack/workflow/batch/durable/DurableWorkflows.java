@@ -9,7 +9,7 @@ import io.github.markpollack.workflow.flows.compiler.*;
 import io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
 
 /**
- * Local durable lifecycle for compiler-validated sequential workflows. Start admits without
+ * Local durable lifecycle for compiler-validated sequential operations and local children. Start admits without
  * dispatch; discover finds admitted work; resume runs with finite renewable ownership. The
  * same database file can be reopened after process death. Concurrent handles are supported
  * within one JVM; embedded H2 excludes simultaneous writers in different JVMs.
@@ -45,18 +45,19 @@ public final class DurableWorkflows implements AutoCloseable {
         String compatibility=compatibility(workflow,requireDeployment().manifest(),policy);
         String admission=Digests.fields(compatibility,Digests.of(root));
         RunSnapshot result=store.transaction(tx->{
-            RunState existing=tx.byKey(idempotencyKey);
+            RunState existing=tx.byKey("root:"+idempotencyKey);
             if(existing!=null) {
                 compatible(existing,workflow);
                 if(!existing.admission.equals(admission)) throw new WorkflowRefusal("IDEMPOTENCY_CONFLICT","idempotency key has different admitted facts");
-                if(existing.expire(tx.now)) tx.save(existing);
+                tx.observe(existing);
                 return existing.snapshot();
             }
-            RunState run=new RunState();run.id=UUID.randomUUID().toString();run.key=idempotencyKey;run.admission=admission;
+            RunState run=new RunState();run.id=UUID.randomUUID().toString();run.rootId=run.id;run.key="root:"+idempotencyKey;run.admission=admission;
             run.compatibility=compatibility;run.display=displayName;run.authored=workflow.authoredIdentity();
             run.deployment=requireDeployment().manifest();
             run.admitted=tx.now;run.deadline=Math.addExact(tx.now,workflow.definition().deadline().toMillis());
             run.deadlineOrigin=workflow.deadlineOrigin();run.leaseMillis=policy.lease().toMillis();run.maximumDeliveries=policy.maximumDeliveries();
+            run.maximumChildDepth=policy.maximumChildDepth();run.maximumDescendants=policy.maximumDescendants();
             var rootRecipe=workflow.values().values().stream().filter(v->v.identity().role().equals("root")).findFirst()
                     .orElseThrow(()->new WorkflowRefusal("BINDING_INVALID","compiler root recipe missing"));
             putValue(run,rootRecipe,root,"");
@@ -68,14 +69,14 @@ public final class DurableWorkflows implements AutoCloseable {
 
     /** Inspect without loading application code. Expiry is materialized on observation. */
     public RunSnapshot inspect(String runId) {
-        return store.transaction(tx->{ RunState run=tx.get(runId);if(run.expire(tx.now)) tx.save(run);return run.snapshot(); });
+        return store.transaction(tx->{ RunState run=tx.get(runId);tx.observe(run);return run.snapshot(); });
     }
 
     /** Discover active admissions, including never-dispatched and expired-lease work; materialize run expiry. */
     public List<RunSnapshot> discover() {
         return store.transaction(tx->{
             List<RunSnapshot> result=new ArrayList<>();
-            for(RunState run:tx.all()) { if(run.expire(tx.now)) tx.save(run);if(run.active()) result.add(run.snapshot()); }
+            for(RunState run:tx.all()) { tx.observe(run);if(run.active()) result.add(run.snapshot()); }
             return List.copyOf(result);
         });
     }
@@ -85,20 +86,46 @@ public final class DurableWorkflows implements AutoCloseable {
         requireText(actor,"cancellation actor");requireText(reason,"cancellation reason");
         return store.transaction(tx->{
             RunState run=tx.get(runId);
-            if(run.expire(tx.now)) tx.save(run);
-            else if(run.active()) { run.terminal("CANCELLED","CANCELLED",reason,actor,tx.now);tx.save(run); }
+            tx.observe(run);
+            if(run.active()) tx.terminal(run,"CANCELLED","CANCELLED",reason,actor);
             return run.snapshot();
         });
     }
 
-    /** Continue under the original pinned selections, renewing ownership while the handler executes. */
+    /**
+     * Continue under the original selections, renewing ownership while a handler executes.
+     * Available children are driven after releasing the parent lease. If a child is owned by
+     * another worker, returns an active parent with its durable attachment instead of polling.
+     */
     public RunSnapshot resume(String runId,ValidatedWorkflow workflow) {
         return resume(runId,workflow,"worker-"+UUID.randomUUID());
     }
     public RunSnapshot resume(String runId,ValidatedWorkflow workflow,String worker) {
         resolve(runId,workflow);
-        RunSnapshot initial=inspect(runId);
-        if(initial.terminal()) return initial;
+        while(true) {
+            RunSnapshot initial=inspect(runId);
+            if(initial.terminal()) return initial;
+            RunSnapshot result=resumeOwned(runId,workflow,worker);
+            if(result.terminal()||!waiting(result)) return result;
+            if(waiting(result)) {
+                var call=result.invocations().get(result.nextOperation());
+                var child=workflow.children().get(workflow.invocations().get(result.nextOperation()).placement());
+                RunSnapshot childState=inspect(call.childRunId());
+                if(!childState.terminal()) {
+                    // The parent has released its lease and renewal thread before driving the child.
+                    // A child already owned elsewhere leaves this call discoverable, without polling.
+                    try { childState=resume(call.childRunId(),child,worker+"/child"); }
+                    catch(WorkflowRefusal ex) {
+                        if(ex.code().equals("NOT_CLAIMABLE")) return inspect(runId);
+                        throw ex;
+                    }
+                    if(!childState.terminal()) return inspect(runId);
+                }
+            }
+        }
+    }
+
+    private RunSnapshot resumeOwned(String runId,ValidatedWorkflow workflow,String worker) {
         Lease lease=claim(runId,workflow,worker);
         ScheduledExecutorService heartbeat=Executors.newSingleThreadScheduledExecutor(r->{
             Thread t=new Thread(r,"workflow-lease-renewal");t.setDaemon(true);return t;
@@ -109,7 +136,7 @@ public final class DurableWorkflows implements AutoCloseable {
         },interval,interval,TimeUnit.MILLISECONDS);
         try {
             RunSnapshot result;
-            do { result=advance(lease,workflow); } while(!result.terminal());
+            do { result=advance(lease,workflow); } while(!result.terminal()&&!waiting(result));
             return result;
         } finally {
             // Interrupting embedded-store I/O can close its shared file channel. Drain renewal instead.
@@ -140,7 +167,7 @@ public final class DurableWorkflows implements AutoCloseable {
         requireText(worker,"worker");resolve(runId,workflow);
         Lease result=store.transaction(tx->{
             RunState run=tx.get(runId);compatible(run,workflow);
-            if(run.expire(tx.now)) { tx.save(run);return null; }
+            tx.observe(run);
             if(!run.active()) return null;
             if(!run.owner.isEmpty()&&tx.now<run.leaseUntil) return null;
             run.generation=Math.incrementExact(run.generation);run.owner=worker;
@@ -166,14 +193,18 @@ public final class DurableWorkflows implements AutoCloseable {
         return result;
     }
 
-    /** Execute at most one physical delivery and commit its result, or commit an explicit terminal. */
+    /**
+     * Execute at most one physical delivery, or advance an engine child/terminal boundary.
+     * Child acceptance returns an active parent with no lease; drive its discoverable child
+     * separately, then claim the parent again to settle the saved outcome.
+     */
     public RunSnapshot advance(Lease lease,ValidatedWorkflow workflow) {
         ResolvedApplication resolved=resolve(lease.runId,workflow);
         Dispatch dispatch=store.transaction(tx->{
             RunState run=tx.get(lease.runId);compatible(run,workflow);
             if(!eligible(tx,run,lease)) return new Dispatch(null,null,null,run.snapshot());
             if(run.next==workflow.invocations().size()) {
-                finish(run,workflow,tx.now);tx.save(run);hooks.at("BEFORE_TERMINAL_COMMIT",run.id);
+                finish(tx,run,workflow);tx.save(run);hooks.at("BEFORE_TERMINAL_COMMIT",run.id);
                 return new Dispatch(null,null,null,run.snapshot());
             }
             var recipe=workflow.invocations().get(run.next);
@@ -184,16 +215,23 @@ public final class DurableWorkflows implements AutoCloseable {
                 try { materialize(run,recipe.input(),workflow,resolved,invocation.id); }
                 catch(WorkflowRefusal ex) {
                     if(ex.code().equals("DECODE_FAILED")||ex.code().equals("VALUE_CHANGED")||ex.code().equals("VALUE_MISSING")) throw ex;
-                    run.terminal("FAILED","INPUT_ENCODING_FAILED",ex.getMessage(),lease.owner,tx.now);tx.save(run);
+                    tx.terminal(run,"FAILED","INPUT_ENCODING_FAILED",ex.getMessage(),lease.owner);
                     return new Dispatch(null,null,null,run.snapshot());
                 }
                 run.invocations.add(invocation);
             } else invocation=run.invocations.get(run.next);
+            var child=workflow.children().get(recipe.placement());
+            if(child!=null) {
+                boolean accepting=invocation.childId.isEmpty();
+                LocalChildren.advance(tx,run,invocation,recipe,workflow,child,requireDeployment(),policy,hooks);
+                return new Dispatch(null,null,null,run.snapshot(),accepting?"AFTER_CHILD_ACCEPT_COMMIT":
+                        invocation.settledAt!=0?"AFTER_CHILD_SETTLEMENT_COMMIT":"AFTER_CHILD_WAIT_COMMIT");
+            }
             // A generation can charge this logical invocation at most once, even if a caller retries advance.
             if(invocation.deliveries.stream().anyMatch(d->d.generation==lease.generation))
                 throw new WorkflowRefusal("DELIVERY_IN_FLIGHT","this generation already dispatched the unresolved invocation");
             if(invocation.deliveries.size()>=run.maximumDeliveries) {
-                run.terminal("FAILED","DELIVERY_EXHAUSTED","finite physical delivery allowance exhausted",lease.owner,tx.now);tx.save(run);
+                tx.terminal(run,"FAILED","DELIVERY_EXHAUSTED","finite physical delivery allowance exhausted",lease.owner);
                 return new Dispatch(null,null,null,run.snapshot());
             }
             for(var previous:invocation.deliveries) if(previous.disposition.equals("UNRESOLVED")) previous.disposition="REDELIVERED";
@@ -206,6 +244,7 @@ public final class DurableWorkflows implements AutoCloseable {
             return new Dispatch(recipe,input,context,null);
         });
         if(dispatch.context==null) {
+            if(!dispatch.boundary.isEmpty()) { hooks.at(dispatch.boundary,lease.runId);return dispatch.snapshot; }
             if(dispatch.snapshot.terminal()) return dispatch.snapshot;
             throw new WorkflowRefusal("FENCED","dispatch has no current authority");
         }
@@ -229,7 +268,7 @@ public final class DurableWorkflows implements AutoCloseable {
             putValue(run,workflow.values().get(dispatch.recipe.output()),output,invocation.id);
             invocation.status="COMMITTED";invocation.deliveries.getLast().disposition="COMMITTED";
             run.next++;run.event("RESULT_COMMITTED",tx.now,invocation.id+":"+invocation.output);
-            if(run.next==workflow.invocations().size()) finish(run,workflow,tx.now);
+            if(run.next==workflow.invocations().size()) finish(tx,run,workflow);
             tx.save(run);hooks.at("BEFORE_RESULT_COMMIT",run.id);return run.snapshot();
         });
         hooks.at("AFTER_RESULT_COMMIT",lease.runId);return result;
@@ -250,7 +289,7 @@ public final class DurableWorkflows implements AutoCloseable {
         return store.transaction(tx->{
             RunState run=tx.get(lease.runId);compatible(run,lease.workflow);
             if(!eligible(tx,run,lease)) return run.snapshot();
-            current(run,context);run.terminal("FAILED",code,message,lease.owner,tx.now);tx.save(run);return run.snapshot();
+            current(run,context);tx.terminal(run,"FAILED",code,message,lease.owner);return run.snapshot();
         });
     }
     private ApplicationDeployment requireDeployment() {
@@ -263,7 +302,7 @@ public final class DurableWorkflows implements AutoCloseable {
         return new ResolvedApplication(supplied,workflow);
     }
     private boolean eligible(JdbcRunStore.Tx tx,RunState run,Lease lease) throws Exception {
-        if(run.expire(tx.now)) { tx.save(run);return false; }
+        tx.observe(run);
         return run.active()&&run.generation==lease.generation&&run.owner.equals(lease.owner)&&tx.now<run.leaseUntil;
     }
     private static RunState.Invocation current(RunState run,DeliveryContext context) {
@@ -273,13 +312,13 @@ public final class DurableWorkflows implements AutoCloseable {
                 ||!call.deliveries.getLast().id.equals(context.deliveryId())) throw new WorkflowRefusal("FENCED","delivery replaced or committed");
         return call;
     }
-    private static void finish(RunState run,ValidatedWorkflow workflow,long now) {
+    static void finish(JdbcRunStore.Tx tx,RunState run,ValidatedWorkflow workflow) throws Exception {
         var terminal=workflow.terminal();
         if(terminal.intent()==Terminal.SUCCEEDED) {
             run.output=valueId(terminal.successValue());
             if(!run.values.containsKey(run.output)) throw new WorkflowRefusal("VALUE_MISSING","successful terminal value missing");
         }
-        run.terminal(terminal.intent().name(),"AUTHORED_"+terminal.intent().name(),terminal.reason(),"workflow",now);
+        tx.terminal(run,terminal.intent().name(),"AUTHORED_"+terminal.intent().name(),terminal.reason(),"workflow");
     }
     private static void materialize(RunState run,ValueId id,ValidatedWorkflow workflow,ResolvedApplication resolved,String producer) {
         if(run.values.containsKey(valueId(id))) { verifyValue(run.values.get(valueId(id)),workflow.values().get(id));return; }
@@ -297,7 +336,7 @@ public final class DurableWorkflows implements AutoCloseable {
         RunState.Value value=run.values.get(valueId(id));var recipe=workflow.values().get(id);verifyValue(value,recipe);
         return resolved.decode(value.payload,recipe.declaration());
     }
-    private static void verifyValue(RunState.Value value,ValidatedWorkflow.ValueRecipe recipe) {
+    static void verifyValue(RunState.Value value,ValidatedWorkflow.ValueRecipe recipe) {
         if(value==null||recipe==null) throw new WorkflowRefusal("VALUE_MISSING","committed selected value is missing");
         if(!value.id.equals(valueId(recipe.identity()))||!value.type.equals(recipe.contract().javaType())
                 ||!value.shape.equals(recipe.contract().shapeDigest())||!value.codec.equals(codec(recipe.contract().codec()))
@@ -306,7 +345,7 @@ public final class DurableWorkflows implements AutoCloseable {
                 ||!value.consumed.equals(recipe.consumed().stream().map(DurableWorkflows::valueId).toList()))
             throw new WorkflowRefusal("VALUE_CHANGED","persisted value identity/type/codec/provenance differs");
     }
-    private static void putValue(RunState run,ValidatedWorkflow.ValueRecipe recipe,byte[] bytes,String producer) {
+    static void putValue(RunState run,ValidatedWorkflow.ValueRecipe recipe,byte[] bytes,String producer) {
         RunState.Value value=new RunState.Value();value.id=valueId(recipe.identity());value.type=recipe.contract().javaType();
         value.shape=recipe.contract().shapeDigest();value.codec=codec(recipe.contract().codec());value.digest=Digests.of(bytes);
         value.payload=bytes.clone();value.producer=producer;value.components=recipe.components().stream().map(DurableWorkflows::valueId).toList();
@@ -316,11 +355,15 @@ public final class DurableWorkflows implements AutoCloseable {
     static String valueId(ValueId id) { return Digests.fields(id.placement().graphName(),id.role(),id.phase()); }
     private static String invocationId(String run,Placement placement) { return Digests.fields(run,placement.graphName(),"root"); }
     private static String codec(TypeContracts.CodecIdentity codec) { return Digests.fields(codec.name(),codec.version(),codec.configuration()); }
-    private static String compatibility(ValidatedWorkflow workflow,ApplicationDeployment.Manifest manifest,ExecutionPolicy policy) {
+    static String compatibility(ValidatedWorkflow workflow,ApplicationDeployment.Manifest manifest,ExecutionPolicy policy) {
         StringBuilder entries=new StringBuilder();
-        for(var call:workflow.invocations()) entries.append(Digests.fields(call.placement().graphName(),call.executable().entryPoint(),
-                call.executable().deploymentManifestDigest(),call.executable().configurationDigest()));
-        return Digests.fields("durable-run-v2",workflow.authoredIdentity(),entries.toString(),manifest.identity(),
+        for(var call:workflow.invocations()) {
+            var child=workflow.children().get(call.placement());
+            if(child!=null) entries.append(Digests.fields(call.placement().graphName(),"child",compatibility(child,manifest,policy)));
+            else entries.append(Digests.fields(call.placement().graphName(),call.executable().entryPoint(),
+                    call.executable().deploymentManifestDigest(),call.executable().configurationDigest()));
+        }
+        return Digests.fields("durable-run-v3",workflow.authoredIdentity(),entries.toString(),manifest.identity(),
                 codec(workflow.codecIdentity()),policy.identity());
     }
     private void compatible(RunState run,ValidatedWorkflow workflow) {
@@ -331,6 +374,14 @@ public final class DurableWorkflows implements AutoCloseable {
             throw new WorkflowRefusal("COMPATIBILITY","authored behavior, operation selection or execution policy differs");
     }
     private static void requireText(String text,String field) { if(text==null||text.isBlank()) throw new IllegalArgumentException(field+" required"); }
-    private record Dispatch(ValidatedWorkflow.InvocationRecipe recipe,Object input,DeliveryContext context,RunSnapshot snapshot) {}
+    private static boolean waiting(RunSnapshot run) {
+        return !run.terminal()&&run.nextOperation()<run.invocations().size()
+                &&!run.invocations().get(run.nextOperation()).childRunId().isEmpty();
+    }
+    private record Dispatch(ValidatedWorkflow.InvocationRecipe recipe,Object input,DeliveryContext context,RunSnapshot snapshot,String boundary) {
+        Dispatch(ValidatedWorkflow.InvocationRecipe recipe,Object input,DeliveryContext context,RunSnapshot snapshot) {
+            this(recipe,input,context,snapshot,"");
+        }
+    }
     @Override public void close() { store.close(); }
 }

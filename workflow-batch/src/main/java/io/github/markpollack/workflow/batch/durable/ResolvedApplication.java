@@ -33,6 +33,8 @@ final class ResolvedApplication {
                 }
             }
             for (var call : workflow.invocations()) {
+                var child=workflow.children().get(call.placement());
+                if(child!=null) { new ResolvedApplication(deployment,child);continue; }
                 var selected = call.executable();
                 if (!deployment.manifest().deploymentDigest().equals(selected.deploymentManifestDigest())
                         || !deployment.manifest().configurationDigest().equals(selected.configurationDigest())) {

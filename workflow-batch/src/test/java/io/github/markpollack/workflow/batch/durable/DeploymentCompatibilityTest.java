@@ -198,7 +198,7 @@ class DeploymentCompatibilityTest {
     }
 
     @Test void oldAbsentUnknownAndNonIntegerFormatsRefuseWithoutSchemaOrRowMigration() throws Exception {
-        for(String header:List.of("\"format\":1,","","\"format\":3,","\"format\":2.5,","\"format\":4294967298,")) {
+        for(String header:List.of("\"format\":1,","\"format\":2,","","\"format\":4,","\"format\":3.5,","\"format\":4294967299,")) {
             Path file=directory.resolve("format-"+Math.abs(header.hashCode()));String json="{"+header+"\"id\":\"old-run\"}";
             try(var c=connect(file);var statement=c.createStatement()) {
                 statement.execute("CREATE TABLE aw_run (state CLOB NOT NULL)");
