@@ -93,6 +93,7 @@ public final class ValidatedWorkflow {
      * Compiles and checks one owned definition for the fixed initial capability set.
      * Selections are deployment attestations keyed by stable authored call placements.
      * Unsupported composition refuses; support can expand only with compiler/runtime proof.
+     * Authored identity fields must contain well-formed Unicode; valid text is not normalized.
      */
     public static ValidatedWorkflow compile(Definition<?,?> source,Map<Placement,ExecutableIdentity> selections) {
         return compile(source,selections,DeadlinePolicy.DEFAULT);

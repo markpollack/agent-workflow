@@ -5,6 +5,11 @@ It accepts `ValidatedWorkflow` only. Legacy graphs, runners and checkpoint rows 
 inputs. Decisions, verdicts, parallel groups, fan-out, loops, children and timers currently refuse
 validated execution admission.
 
+Authored identity fields (including definition names, placement IDs, terminal reasons and deadline
+policy profiles) must contain well-formed Unicode. Malformed surrogate sequences refuse before a
+validated executable workflow is returned. Valid supplementary characters are supported; text is
+not normalized and existing identities for well-formed definitions are unchanged.
+
 The ordinary lifecycle is:
 
 ```java
