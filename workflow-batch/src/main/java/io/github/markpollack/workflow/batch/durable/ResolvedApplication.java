@@ -31,10 +31,10 @@ final class ResolvedApplication {
 	private final Map<String, Step<?, ?>> operations = new HashMap<>();
 
 	/**
-	 * Validate the supplied deployment against every saved definition contract without
-	 * executing application steps. Entry IDs select exact registered instances. Full
-	 * generic Types, not erased classes or object-supplied hints, must agree with the
-	 * definition.
+	 * Validate the supplied deployment against every immutable definition contract
+	 * without executing application steps. Entry IDs select exact registered instances.
+	 * Full generic Types, not erased classes or object-supplied hints, must agree with
+	 * the definition.
 	 * @throws WorkflowRefusal for changed codecs/types, unavailable registrations or a
 	 * supplied Step declaration that differs from the selected executable contract
 	 */
@@ -74,11 +74,11 @@ final class ResolvedApplication {
 	}
 
 	/**
-	 * Reconstruct an exact typed value after DurableWorkflows has checked its saved
-	 * identity, digest, type/codec and provenance. The strict codec also verifies
-	 * lossless reconstruction, including concrete generic element types.
-	 * @throws WorkflowRefusal with DECODE_FAILED if saved bytes cannot satisfy the
-	 * declaration
+	 * Reconstruct an exact typed value. Admission uses this to round-trip the freshly
+	 * encoded root before it is saved. For recovered values, DurableWorkflows first
+	 * checks saved identity, digest, type/codec and provenance. The strict codec checks
+	 * lossless reconstruction in both cases, including concrete generic element types.
+	 * @throws WorkflowRefusal with DECODE_FAILED if bytes cannot satisfy the declaration
 	 */
 	Object decode(byte[] bytes, Type declaration) {
 		try {

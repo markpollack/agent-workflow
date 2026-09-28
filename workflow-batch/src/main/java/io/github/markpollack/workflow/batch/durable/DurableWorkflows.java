@@ -14,7 +14,7 @@ import io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
  * scheduler. Process death releases ownership; compatible applications can recover
  * unfinished progress.
  * <p>
- * ApplicationDeployment owns supplied objects and declared compatibility.
+ * ApplicationDeployment retains supplied registrations and declared compatibility.
  * ValidatedWorkflow owns the checked definition and binding recipes. This front door
  * coordinates their use with RuntimeLifecycle (whole-call drainage and same-run
  * exclusion), StoreOwnership (exclusive process-held database lock) and JdbcRunStore
@@ -269,7 +269,8 @@ public final class DurableWorkflows implements AutoCloseable {
 	 */
 	private RunSnapshot advanceOwned(String runId, ValidatedWorkflow workflow, ResolvedApplication resolved,
 			RuntimeLifecycle.Activity activity) {
-		// Preparation commits exact input and a charged attempt, never application code.
+		// Preparation commits exact input and a charged attempt; it never calls
+		// Step.execute.
 		Advancement prepared = store.transaction(tx -> prepareAdvance(tx, runId, workflow, resolved));
 		if (prepared instanceof Progress progress)
 			return progress.snapshot;
@@ -480,9 +481,10 @@ public final class DurableWorkflows implements AutoCloseable {
 	}
 
 	/**
-	 * Check supported capability and supplied object contracts, then compare the run's
-	 * saved compatibility in a transaction. A saved manifest never vouches for the
-	 * current deployment.
+	 * Require supported capability and a supplied deployment, then compare saved run
+	 * compatibility in a transaction. Only after that transaction returns, resolve and
+	 * check actual Step objects and type/codec contracts. Saved metadata never vouches
+	 * for the current objects or deployment.
 	 */
 	private ResolvedApplication resolve(String runId, ValidatedWorkflow workflow) {
 		requireSequential(workflow);
