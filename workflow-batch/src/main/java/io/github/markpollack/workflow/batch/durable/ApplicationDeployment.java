@@ -23,7 +23,9 @@ import io.github.markpollack.workflow.flows.compiler.TypeContracts;
  * closes a supplied object. SequentialWorkflow uses these registrations to build a
  * definition; ResolvedApplication checks them again for admission and execution. The same
  * supplied instance can serve concurrent runs, so its thread safety is the application's
- * responsibility.
+ * responsibility. Registration names select objects; map iteration order never determines
+ * workflow execution order. A supplied object's Java identity is not persisted, so a new
+ * compatible application process supplies new instances under the same stable names.
  */
 public final class ApplicationDeployment {
 
@@ -139,10 +141,12 @@ public final class ApplicationDeployment {
 	}
 
 	/**
-	 * Begin a mutable sequential definition builder bound to these registrations. The
-	 * builder's build() validates structure, full input bindings and durable shapes and
-	 * returns an immutable ValidatedWorkflow. This is workflow-definition validation, not
-	 * javac type checking; no run is created and no Step executes during building.
+	 * Begin a mutable sequential definition builder bound to these registrations. This
+	 * convenience entry uses the deployment to discover full Step types and record
+	 * executable selections; it is not a workflow-definition registry. The builder's
+	 * build() validates structure, full input bindings and durable shapes and returns an
+	 * immutable ValidatedWorkflow. This is workflow-definition validation, not javac type
+	 * checking; no run is created and no Step executes during building.
 	 * @param name stable authored workflow name, included in compatibility identity
 	 * @return an application-local builder; do not share it concurrently
 	 */

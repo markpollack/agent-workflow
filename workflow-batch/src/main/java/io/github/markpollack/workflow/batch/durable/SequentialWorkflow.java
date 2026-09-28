@@ -11,7 +11,11 @@ import io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
  * build() delegates binding, structural and codec validation to the existing compiler
  * foundation. The result owns immutable definition/selection data, not a mutable builder
  * or run state. This builder is not thread safe and neither persists facts nor executes
- * application code.
+ * application Step code. Registration supplies types and implementation selection; it
+ * does not determine order. This convenience facade exposes a single mutable stage, so
+ * its fluent call order is guarded at build time rather than by staged Java interfaces.
+ * For programmatic construction, create WorkflowModel.Definition/Call data and call
+ * ValidatedWorkflow.compileSequential through the same validation boundary.
  */
 public final class SequentialWorkflow {
 
@@ -40,7 +44,12 @@ public final class SequentialWorkflow {
 		return then(registration, registration);
 	}
 
-	/** Place the selected supplied step at a stable authored location. */
+	/**
+	 * Place the selected supplied step at a stable authored location. The placement is
+	 * distinct from the lookup name: then("first", "greet") and then("second", "greet")
+	 * select the same object but produce distinct logical invocations. A rebuilt
+	 * definition preserves these locations when its name, order and labels are unchanged.
+	 */
 	public SequentialWorkflow then(String placement, String registration) {
 		if (end != null)
 			throw new IllegalStateException("definition is already terminated");
@@ -58,7 +67,12 @@ public final class SequentialWorkflow {
 		return this;
 	}
 
-	/** Declare explicit successful or unsuccessful completion. */
+	/**
+	 * Add an explicit terminal declaration. This convenience method supplies no reason,
+	 * so only SUCCEEDED can pass validation; FAILED and CANCELLED require a reason in a
+	 * programmatically constructed WorkflowModel.End. A terminal is never inferred from
+	 * the last step or from calling build().
+	 */
 	public SequentialWorkflow terminate(Terminal terminal) {
 		if (end != null)
 			throw new IllegalStateException("terminal already configured");
