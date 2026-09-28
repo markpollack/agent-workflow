@@ -1,8 +1,47 @@
 # Agent Workflow
 
-Typed Java steps with compiler-validated bindings and durable local execution. The application supplies its step objects and dependencies. The runtime saves exact inputs, results and progress in an embedded H2 database.
+Agent Workflow is a Java library for composing application services and AI-powered steps into readable, durable workflows.
 
-This checkout is an unreleased development version. Its executable workflow path supports sequential steps and explicit terminal outcomes. The compiler also contains structural analysis for broader compositions; those constructs are refused by the durable runtime.
+Write each step as an ordinary Java object with typed inputs, typed outputs and constructor-injected dependencies. Describe the workflow with a fluent Java DSL. The engine connects compatible values, validates the definition before execution, and saves progress so completed work can survive a process restart.
+
+The design brings familiar batch-processing ideas—steps, execution records and saved progress—to workflows that include agent calls, evaluation and decisions.
+
+## Readable control flow, explicit data flow
+
+A workflow should make its sequence and choices easy to see. Connecting its data should not require string-keyed context lookups or repetitive mapping functions.
+
+Agent Workflow derives step inputs from declared Java types and the values available along the workflow's execution paths. A step can consume a preceding result, an earlier available result, or a domain record combining several required values. When those values do not identify a unique valid input, validation rejects the definition rather than guessing. These checks happen when the workflow is built and validated; `javac` alone does not check the entire workflow.
+
+Business data travels through inputs and return values. `StepContext` carries execution metadata, deadline and declared configuration. Application dependencies arrive through constructors.
+
+The broader R1 DSL is intended to express decisions, verdict-based routing, parallel branches, bounded iteration, reusable workflows and durable waits while keeping these data-flow rules consistent.
+
+## Current development status
+
+R1 is under development and unreleased. This checkout supports durable sequential execution with application-supplied step instances and explicit terminal outcomes. Broader composition constructs and the complete authoring DSL remain planned work.
+
+The examples below describe the supported sequential behavior. The current API selects supplied steps by registration name; it is a development API, not the final authoring surface.
+
+## Reuse earlier values
+
+The existing [saved-input recovery fixture](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/durable/KernelFixtures.java) runs five steps: `first → second → third → fourth → fifth`. Two input records express the data needed beyond the immediately preceding result:
+
+```java
+public record SecondInput(First first, Request original) {}
+public record FifthInput(Fourth latest, SecondInput earlier) {}
+```
+
+| Step | Declared input → output |
+|------|-------------------------|
+| `first` | `Request → First` |
+| `second` | `SecondInput → Second` |
+| `third` | `Second → Third` |
+| `fourth` | `Third → Fourth` |
+| `fifth` | `FifthInput → Reply` |
+
+For `second`, the engine combines the first result with the original request. For `fifth`, it combines the latest result with the **exact input previously supplied to `second`**. The author declares those record types; no context keys or mapping functions connect them.
+
+That earlier input is a saved value. Recovery reuses it instead of rebuilding it from newer data. [ProcessRecoveryIT](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/durable/ProcessRecoveryIT.java) exercises a stricter variant that produces newer `Request` and `First` values before the final step. After killing and reopening the JVM, it verifies that the final step still receives the original saved `SecondInput`.
 
 ## Define and execute
 
@@ -19,7 +58,7 @@ final class Greet implements Step<Request, Greeting> {
 }
 ```
 
-Register supplied objects, compile the definition, then open one runtime for the database:
+Register supplied objects, build and validate the workflow, then open one runtime for the database:
 
 ```java
 var deployment = new ApplicationDeployment("greetings", "build-17",
@@ -36,17 +75,17 @@ try (var runtime = DurableWorkflows.open(database, deployment)) {
 
 See the complete, compiling [SequentialRecoveryExample](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/SequentialRecoveryExample.java) for imports, service implementation, registration and a process-death demonstration.
 
-`StepContext` carries run, logical invocation and physical attempt identities, deadline and declared configuration. Business results travel through typed return values and compiler-derived inputs.
+`StepContext` identifies the run, logical step invocation and physical execution attempt. Business inputs are resolved from the validated workflow definition.
 
 ## Execution and recovery
 
-`resume` runs directly on its calling Java thread until terminal completion or an application interrupt. `advance` executes at most one step. Neither hands work to an executor. Different caller threads can advance different runs concurrently; a competing call for the same run refuses before charging another attempt. Supplied steps and their dependencies must support whatever concurrency the application uses.
+`resume` executes steps directly on the calling Java thread until the run finishes or an application interrupt stops continuation. `advance` executes at most one step. Neither hands work to an executor. Different caller threads can execute different runs concurrently; competing execution of the same run refuses. One local runtime owns the database.
 
-One runtime owns a canonical database path until shutdown or process death. There are no renewable run leases or runtime scheduling threads. The embedded database may own storage-maintenance threads. `shutdown(Duration)` rejects new calls, drains existing calls and returns false if the timeout expires; incomplete shutdown retains database ownership. The runtime never closes supplied dependencies or interrupts application code to force drainage.
+Progress and outcomes commit atomically, with `Step.execute` outside persistence transactions. After process death, a compatible application can reopen and resume unfinished work using committed results. An attempt whose outcome was not committed may execute again within its finite allowance, so external effects need application-level idempotency.
 
-Progress and outcomes commit atomically. The runtime calls `Step.execute` outside persistence transactions. A compatible application can reopen after process death and `resume` an unfinished run. Committed steps are reused. A charged attempt with no committed outcome may execute again within its finite attempt allowance, so external effects need application-level idempotency. Known step failures are terminal; `resume` does not repair or restart a terminal run. Cancellation and deadline expiry prevent further accepted results but do not stop already running application code.
+Crash recovery is distinct from retrying a known failure or restarting a terminal run. Known step failures are currently terminal; `resume` does not reopen them. Cancellation and deadline expiry prevent further accepted results but do not stop already running application code.
 
-The application declares compatible build and configuration identities; the runtime also checks the saved definition, selected type/codec contracts, runtime metadata and execution policy. It does not archive executable code or dependency objects. Existing incompatible store formats refuse without migration.
+See [runtime lifecycle and recovery details](workflow-batch/README-durable.md) for shutdown, concurrency, database paths, compatibility and storage limits.
 
 ## Run the recovery example
 
@@ -68,7 +107,7 @@ The automated `SequentialExampleIT` performs the kill, rejects a second live own
 
 | Module | Responsibility |
 |--------|----------------|
-| `workflow-flows` | Step/StepContext, typed workflow compiler and leaf step adapters |
+| `workflow-flows` | Step/StepContext, workflow validation and input binding, and leaf step adapters |
 | `workflow-batch` | Durable local runtime and JDBC progress store; recovery example in test sources |
 | `workflow-journal` | Journal recording support |
 | `workflow-api`, `workflow-core` | Agent APIs and lower-level computation patterns |

@@ -1,209 +1,85 @@
-# Local durable workflows
+# Local runtime lifecycle and recovery
 
-`DurableWorkflows` runs compiler-validated sequential workflows and local child calls using a separate H2 file schema.
-It accepts `ValidatedWorkflow` only. Legacy graphs, runners and checkpoint rows are not admission
-inputs. Decisions, verdicts, parallel groups, fan-out, loops and timers currently refuse
-validated execution admission.
+This developer guide describes the current sequential runtime. Start with the [project README](../README.md) for workflow authoring and the runnable recovery example.
 
-Authored identity fields (including definition names, placement IDs, terminal reasons and deadline
-policy profiles) must contain well-formed Unicode. Malformed surrogate sequences refuse before a
-validated executable workflow is returned. Valid supplementary characters are supported; text is
-not normalized and existing identities for well-formed definitions are unchanged.
+[`DurableWorkflows`](src/main/java/io/github/markpollack/workflow/batch/durable/DurableWorkflows.java) accepts immutable `ValidatedWorkflow` definitions containing sequential steps and explicit terminal outcomes. Decisions, verdict routing, parallel groups, fan-out, loops, timers and reusable workflow composition are not executable on this path yet. Submitting a definition with unsupported constructs refuses admission.
 
-The ordinary lifecycle is:
+## Application-supplied steps
 
-```java
-var deployment = new ApplicationDeployment("my-application", "immutable-build-123",
-        Map.of("endpoint", "https://example.test"), List.of(MyOperation.class));
-// Use deployment.selection(MyOperation.class, Input.class, Output.class)
-// for the corresponding placement when compiling validated.
-try (var runs = DurableWorkflows.open(Path.of("data/workflows"), deployment)) {
-    var admitted = runs.start(validated, "request-123", request);
-    var progress = runs.inspect(admitted.runId());
-    var completed = runs.resume(admitted.runId(), validated);
-    if (completed.status() == RunSnapshot.Status.SUCCEEDED) {
-        Object reply = runs.result(admitted.runId(), validated);
-    }
-}
-```
+Implement `Step<I,O>` with concrete input/output types and register supplied objects in `ApplicationDeployment`. Constructor dependencies are ordinary application objects, including objects obtained from a DI container. The runtime calls the registered instance directly; it does not require a public no-argument constructor, construct a fresh step per attempt or close its dependencies.
 
-`start` commits admission without invoking a handler. Repeating an idempotency key with the same
-input and compatibility facts returns its existing run; conflicting reuse refuses. `discover()`
-returns active admissions, including accepted work that has never been dispatched. A replacement
-process opens the same file with the compatible deployed application and supplies the same validated
-workflow to `resume`. The application supplies its executable code and dependencies after restart.
-`cancel(runId, actor, reason)` records a permanent cancellation when it wins the store transition.
-`inspect` exposes immutable values/provenance, deliveries, events, deadlines and terminal reasons.
-The optional display-name argument to `start` is presentation; authored definition/placement names
-remain stable execution identifiers.
+`deployment.define(name).then(registration).terminate(...).build()` builds and validates a sequential workflow. Concrete step declarations supply the types; authors do not write explicit fluent generic arguments. `then(placement, registration)` gives repeated uses of one registration distinct authored locations. Names and identity/configuration strings must contain well-formed Unicode; validation does not normalize them.
 
-## Application deployment
+`StepContext` carries the run ID, stable logical invocation ID, unique physical attempt ID/number, absolute deadline and immutable declared configuration. It is not a business-result map or a live cancellation token. Business inputs come from the validated bindings and saved values.
 
-An ordinary implementation directly implements `DurableOperation<Input, Output>` with concrete
-declared contracts and a public no-argument constructor. A fresh instance receives the exact
-decoded input, a `DeliveryContext` and immutable `Map<String,String>` configuration per delivery.
-The context distinguishes logical invocation, physical delivery, generation and absolute deadline.
+## Calls and execution threads
 
-`ApplicationDeployment` copies the configuration and explicit operation classes. Bind it to a
-runtime handle with `open(database, deployment[, policy])`. Its `selection(operationClass,
-inputType, outputType)` supplies the compiler's `ExecutableIdentity` for a selected placement.
-The fixed registration governs both compatibility checks and actual invocation. Classes use their
-ordinary application loader; Workflow does not switch the thread context loader, scan dependencies,
-archive JARs or load retained classes. Construction/placement selection remains in the compiler API.
+| Entry point | Behavior |
+|-------------|----------|
+| `start` | Atomically admits a run and exact root input; executes no step. Reusing an idempotency key with identical input and compatibility facts returns the existing run. Conflicting reuse refuses. |
+| `resume` | Advances the run synchronously until terminal completion or an application interrupt stops continuation; returns a `RunSnapshot`. |
+| `advance` | Executes at most one step or engine boundary on the caller; returns saved progress. |
+| `inspect` | Returns durable values, provenance, attempts, events and status; observes expiry without executing steps. |
+| `discover` | Returns unfinished runs after observing expiry; does not schedule them. |
+| `cancel` | Permanently records cancellation if the run is still active; sends no Java interrupt. |
+| `result` | Decodes the accepted successful result using the compatible supplied deployment and definition. |
 
-Admission verifies selected class names, public constructors, direct concrete generic signatures,
-selected value type/shape/codec contracts and lossless root encoding/decoding. Known mismatches
-refuse before delivery. Deeper missing methods or dependencies discovered during invocation record
-an explicit handler failure, subject to ownership fencing; exhaustive preflight linkage is unsupported.
+`resume` and `advance` execute `Step.execute` on the calling Java thread with **no executor handoff**. The runtime creates no scheduling or lease-renewal threads. H2 owns its internal storage-maintenance threads. Ordinary application code that blocks inside a step continues to occupy its caller.
 
-Identity and configuration strings must contain well-formed Unicode; malformed surrogate sequences
-refuse before hashing. The durable manifest records application ID, immutable build ID, a digest of the exact copied
-configuration supplied to handlers, the fixed codec contract, observed Jackson core/databind
-versions, and Java runtime version/vendor/VM name. Recovery compares the handle's current supplied
-manifest with the saved manifest using exact equality, alongside authored behavior, operation
-selection and finite policy identity. A changed build ID refuses even if its code might be compatible.
-Terminal resume/result access, admission reuse and lease renewal enforce compatibility too.
-`inspect` exposes the manifest independently from authored identity and run identity.
+[`RuntimeLifecycle`](src/main/java/io/github/markpollack/workflow/batch/durable/RuntimeLifecycle.java) prevents overlapping execution calls for the same run for the duration of the whole call. A competing caller receives `RUN_BUSY` before another attempt is charged. Different runs can execute application code concurrently on different caller threads; supplied steps and dependencies must support that concurrency. Inspection and cancellation can occur while a step is running.
 
-The application must assign a new immutable build ID when code, dependencies, codec implementation
-or relevant deployment specification changes, and supply the corresponding complete deployment.
-A mutable label or a source commit that can produce different builds is insufficient. Workflow
-compares declared identity and the concrete contracts/configuration it can check; it does not prove
-that every executable byte or dependency is unchanged. Reusing a build ID for changed code violates
-the deployment contract and cannot generally be detected. Reported version metadata is not binary
-measurement. Environment, static/DI state, instrumentation, external services and effects remain
-application/deployment responsibilities. Relevant immutable behavior configuration must be explicit.
+No workflow timers, waiting joins or background resume facility exist here. After a process restart, the application opens the runtime and calls `resume` with the compatible definition. Discovery alone does not continue execution.
 
-`open(database[, policy])` provides management-only inspection, discovery and cancellation.
-Execution requires a deployment registration. There is no force-resume, alternate retained-code
-mode, executable reconstruction, codec plugin loader or checkpoint migration.
+## Atomic progress and exact values
 
-## Values, ownership and time
+The execution sequence separates saved state from application execution:
 
-Root, effective input and output payloads are immutable snapshots with declared generic type,
-shape/codec identity, payload digest and compiler-selected component/consumption provenance.
-Application records, supported scalars and concrete lists use the fixed strict Jackson contract;
-null application values/items, arbitrary POJOs, raw/wildcard generics and unsupported bounds refuse.
-Both encoding and decoding check lossless reconstruction. A missing or incompatible committed
-value refuses recovery; historical assembled inputs are never reconstructed from newer values.
+1. Validate compatibility and resolve the supplied step contracts.
+2. In a transaction, select or recover the exact input and charge a physical attempt.
+3. In a separate transaction, recheck eligibility immediately before application entry.
+4. Call `Step.execute` and encode its returned value outside those transactions.
+5. In a transaction, recheck eligibility and atomically accept the outcome, values, progress and events.
 
-The default maximum run duration is one hour (`DeadlinePolicy.DEFAULT`, profile `local-v1`). A null
-authored duration selects that default; a shorter authored duration tightens it. A longer duration
-is capped. A validated `DeadlinePolicy` may select another positive finite maximum. Admission
-persists the absolute deadline and DEFAULT/AUTHORED/POLICY_CAP origin. Recovery and renewal never
-extend it. Execution policy defaults to a thirty-second lease and three total charged physical
-deliveries per logical invocation. Validated overrides are part of same-run compatibility.
+[`JdbcRunStore`](src/main/java/io/github/markpollack/workflow/batch/durable/JdbcRunStore.java) serializes state transactions across runs through a database transition lock. The lock does not span step execution. Typed decoding and record assembly may occur inside preparation transactions; the outside-transaction guarantee applies to `Step.execute`.
 
-`resume` renews ownership while a handler runs and drains renewal without interrupting database
-I/O when it returns. `claim`, `renew` and `advance` additionally support controlled worker loops;
-one generation can dispatch a given unresolved invocation only once. Reclaim at lease equality
-increments the persisted generation. Result, renewal and continuation require the live owner,
-generation, lease and run deadline. Stale output cannot overwrite a replacement's accepted state.
+Root inputs, effective step inputs and outputs are immutable snapshots with type/codec identity, payload digest and source provenance. Supported values include records, supported scalars and concrete lists under the fixed strict Jackson contract. Null application values/items, arbitrary POJOs and raw/wildcard generic contracts refuse. Both encoding and decoding check lossless reconstruction.
 
-Every transition acquires the database transition lock, then samples a database-side wall clock
-with a persisted high-water mark. That sample is its eligibility/linearization instant; it is not
-a claim about the later physical fsync completion instant. At equality with the run deadline,
-progress/success is ineligible. First valid terminal transition wins permanently. Discovery and
-inspection materialize unobserved expiry. Backward clock changes do not move the stored clock
-backward; forward clock changes can expire work early. Operate the local host clock accordingly.
+An earlier assembled input remains its own saved value. A later step can consume it whole; recovery does not rebuild it from newer results. Missing or incompatible committed values refuse recovery. The [saved-input process test](src/test/java/io/github/markpollack/workflow/batch/durable/ProcessRecoveryIT.java) checks this across actual JVM kills.
 
-State, immutable value references/payloads, continuation, delivery accounting and ordered events
-commit together. The deployment manifest joins the admission transaction. No database
-transaction spans handler construction or execution. A charged but unresolved delivery may be
-redelivered after replacement; its saved effective input is reused. Exhaustion fails explicitly.
-This guarantees committed-result reuse and fenced commits, not exactly-once external effects.
-Use the stable logical invocation ID for external idempotency where supported. Business exceptions
-fail immediately; there is no engine retry/backoff feature.
+## Crash recovery, failure and time
 
-## Local children
+A compatible application can reopen after process death and continue unfinished runs. Committed results are reused. A charged attempt without a committed outcome may execute again with its saved input. `ExecutionPolicy.DEFAULT` permits three total physical attempts per logical invocation; exhausting the allowance fails the run. A changed allowance is a compatibility change.
 
-`ValidatedWorkflow.compileWithChildren` accepts ordinary operation selections and an exact map
-from parent child-call placements to validated child workflows. The embedded child definition must
-agree with its selected workflow. Children currently support sequential operations and explicit
-terminals; nested child calls and other structured combinations refuse compilation. The ordinary
-`compile` entry point retains its sequential capability set.
+This is not exactly-once external execution. If a process dies after an external effect but before its result commits, recovery can repeat that effect. Use the stable invocation ID for external idempotency where supported. Known step exceptions fail the run immediately; there is no engine retry/backoff facility. `resume` returns a terminal run unchanged and does not provide saved-progress restart after terminal failure.
 
-Child execution uses the same supplied application deployment. The parent compatibility identity
-includes child behavior and selections; missing child registrations and changed child selections
-refuse before execution. Child values occupy their own run namespace. The parent communicates
-through the selected call input/output, and can retain its own exact assembled call input for later
-operations.
+The default maximum duration is one hour (`DeadlinePolicy.DEFAULT`, profile `local-v1`). An authored shorter duration tightens it; a longer duration is capped. The lower-level validation API accepts another positive finite `DeadlinePolicy`. Admission saves an absolute deadline and its origin, which recovery never extends.
 
-One store transaction records the child reservation, exact input, child run, parent/root lineage,
-minimum inherited deadline, parent attachment and one descendant charge. Defaults allow one child
-level and 64 total descendants per root. The four-argument `ExecutionPolicy` can tighten those
-resource limits; zero disables child creation. Raising a limit does not enable unsupported nesting.
-Root submission keys and child reservation keys occupy separate namespaces.
+Each serialized transition samples the database-side wall clock with a persisted high-water mark. At equality with the deadline, success/progress is ineligible. This sample is the transition's eligibility instant, not its later physical fsync time. Backward clock movement does not rewind the saved clock; forward movement can expire runs early. Expiry is observed during runtime calls rather than by a background timer. The first valid terminal transition wins permanently.
 
-`advance` returns after child acceptance with an active parent and a released parent lease. Its
-invocation exposes `childRunId`; `discover` finds both parent and child. A scheduler can resume the
-child using the selected child workflow, then reclaim/advance the parent. Convenience `resume`
-drives an available child after draining the parent's renewal thread. If another worker owns the
-child, it returns the active waiting parent without polling. Repeated
-reattachment checks the saved identity/input/lineage and never creates or charges another child.
+Cancellation and expiry reject later result acceptance; neither stops already running application code. A caller already interrupted on entry is refused. If a step returns normally with the interrupt flag set, its outcome is processed, `resume` stops before a successor and the flag is restored after persistence/guard cleanup. A thrown `InterruptedException` records step failure, unless another terminal outcome already won, and restores the flag. Arbitrary asynchronous interruption of database I/O is not a cancellation mechanism.
 
-Directly discovered child execution checks the reciprocal parent attachment, exact input and
-lineage before claiming, charging, entering application code or committing a result. Copied child
-outputs retain checked source links when selected by later operations or read as a terminal result.
+## Ownership and shutdown
 
-Parent settlement uses the child's saved terminal evidence once. Successful output retains exact
-bytes plus child run/value provenance; child failure or cancellation fails the parent call, with
-the child's own outcome preserved. Global parent cancellation/expiry atomically revokes child
-authority and accounts for the unresolved call. A child already completed remains evidence, but
-cannot revive its terminal parent. Inspection of a child also observes ancestor expiry.
+[`StoreOwnership`](src/main/java/io/github/markpollack/workflow/batch/durable/StoreOwnership.java) holds a process-level file lock for one canonical database path. A second runtime, in this JVM or another, refuses with `OWNER_ACTIVE`. Ownership has no per-run expiry or renewal and cannot be taken over from a live owner. Process death releases the lock so a replacement process can reopen.
 
-## Java threads and lifecycle
+Pass the database base path, without H2's `.mv.db` suffix. Parent directories and an existing database symlink are resolved to their real paths before locking. The sidecar is `<base>.workflow-owner.lock`; the held OS lock, not the mere presence of that file, establishes ownership. Semicolons in supplied or resolved paths refuse to prevent JDBC URL options from changing the database target.
 
-`resume` and `advance` construct and execute operations directly on their calling Java thread.
-There is no operation executor handoff. Convenience `resume(parent)` releases the parent lease,
-drains its renewal task, then calls `resume(child)` synchronously on that same thread. Releasing
-a lease changes stored ownership; it does not suspend, unblock or free a Java thread. `advance`
-returns after acceptance so the application can schedule the discovered child on another thread.
-An available child driven through `resume` occupies its caller until its operation returns.
+`shutdown(Duration)` stops admission of all new calls, including inspection and cancellation, then drains entered calls. It does not stop an entered `resume` after its current step: that call retains its normal continuation rules. Once calls drain, shutdown closes the store and releases ownership. A timeout returns `false`, leaves the runtime closing and retains ownership/resources; call shutdown again after application work returns. Supplied dependencies remain application-owned.
 
-Each active `resumeOwned` creates one daemon `workflow-lease-renewal` scheduled executor. Its only
-task is renewing that run's lease, starting after one third of the lease duration. The same call's
-`finally` cancels future renewals without interruption, shuts down and drains the executor. A
-parent's renewal ends before convenience child execution starts; child renewal has its own lease.
-`advance` alone creates no executor or heartbeat; its caller must arrange renewal for long calls.
-H2 separately owns its database background threads. Workflow has no Reactor scheduler.
+`close()` uses a thirty-second drainage timeout and throws `SHUTDOWN_INCOMPLETE` if calls remain. Shutdown never forcibly interrupts steps or cancels runs. Attempting shutdown from inside an active call on the same thread refuses rather than waiting on itself.
 
-Concurrent callers can execute different runs' application code at the same time. All database
-transitions serialize through the store lock, and leases prevent two live owners from advancing
-the same run. After lease loss, old application code may overlap a replacement's delivery, but
-generation checks reject its late commit. No transaction stays open while a handler executes.
+## Deployment compatibility
 
-Cancellation and deadline expiry revoke durable continuation and result authority; they do not
-interrupt application code or impose a Java call timeout. A blocked operation can keep its caller
-and renewal executor alive until it returns. External interruption follows the application's Java
-behavior: an uncaught `InterruptedException` is recorded as `HANDLER_FAILED` if still eligible;
-this path does not restore an interrupt flag cleared by the application wait. Interruption while
-draining renewal is handled separately and the flag is restored after drainage.
+[`ApplicationDeployment`](src/main/java/io/github/markpollack/workflow/batch/durable/ApplicationDeployment.java) copies the named step registration and declared configuration. The manifest records application/build identities, the exact configuration digest, fixed codec identity, Jackson core/databind versions and Java runtime version/vendor/VM name. Admission, execution, admission reuse and terminal resume/result access compare supplied compatibility facts against the saved run. Authored definition, selected registrations/types and execution policy also participate in compatibility checks.
 
-`close()` closes only the store keeper connection. It does not cancel runs, interrupt handlers or
-shut down renewal executors owned by active `resume` calls, and is not a barrier preventing later
-method calls. Applications should finish/join their calls before closing the handle. No workflow
-scheduler, parallel-branch executor or global thread/admission limit is provided by this slice.
+The application must assign a new immutable build ID when code, dependencies, codec implementation or relevant deployment specification changes. Even a plausibly compatible build with a different ID refuses recovery. The runtime checks declared identities and observable contracts; it does not prove that dependency bytes or external services are unchanged. Relevant immutable behavior configuration must be explicit. Reusing a build ID for changed code violates this contract and cannot generally be detected.
 
-## Store envelope
+Steps use the ordinary application class loader. Workflow does not archive executable code or dependency objects, scan dependency graphs, recreate DI containers or switch loaders for recovery. The application supplies the compatible deployment again.
 
-The supported store is H2 2.4.240 embedded file mode with `WRITE_DELAY=0`, file locking and short
-transactions. Concurrent handles/workers share one JVM; after process death another JVM can reopen
-the file. Simultaneous embedded writers in different processes, remote workers and old-checkpoint
-migration are unsupported. Cancellation revokes durable authority without interrupting database
-threads; physical interruption of external work is not guaranteed.
+`open(database[, policy])` without a deployment provides exclusive management-only inspection, discovery and cancellation. It does not enable execution or result decoding without compatible steps.
 
-A global transition lock serializes state changes and inspection across runs. The initial schema
-stores one format-3 aggregate per run, with no executable artifact store. Old, absent or unknown
-run-format versions refuse before schema initialization; existing rows are not migrated. Values
-and events are retained indefinitely; no pruning or migration API is provided. This favors a
-bounded, inspectable local implementation over throughput or large-history optimization. Filesystem
-and hardware durability remain within H2's guarantees; process-kill tests are not power-loss tests.
+## Store and verification limits
 
-Format 3 adds child lineage, source-value references and settlement facts. Format 2 databases
-require their existing runtime; opening them here refuses before schema bootstrap. There is no
-automatic conversion or migration.
+The store uses H2 embedded file mode with `WRITE_DELAY=0` and format-4 run aggregates. Old, incomplete or unknown store formats refuse before writable initialization; there is no checkpoint migration or automatic conversion. Remote workers and simultaneous embedded owners are unsupported. Values and events are retained indefinitely; no pruning API is provided. Filesystem/hardware durability remains within H2's guarantees; JVM-kill tests are not power-loss tests.
 
-Run `./mvnw -pl workflow-batch -am verify` for unit, consumer and separate-JVM recovery tests.
-The integration harness records PIDs, force-kill boundaries, recovered database facts and external
-invocation counts under `workflow-batch/target/durable-evidence/`.
+Run `./mvnw -pl workflow-batch -am verify` from the project root for unit, consumer and separate-JVM recovery checks. The process harness records PIDs, kill boundaries, recovered facts and external invocation counts under `workflow-batch/target/durable-evidence/`. The full project gate is `./mvnw verify`.
