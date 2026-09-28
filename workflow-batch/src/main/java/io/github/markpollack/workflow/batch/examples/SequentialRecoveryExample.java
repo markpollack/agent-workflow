@@ -64,7 +64,8 @@ public final class SequentialRecoveryExample {
         System.out.printf("PROCESS pid=%d thread=%s mode=%s%n",ProcessHandle.current().pid(),Thread.currentThread().getName(),mode);
         try(var runtime=DurableWorkflows.open(directory.resolve("runs"),deployment)) {
             var admitted=runtime.start(workflow,"customer-17",new Request("Ada"));
-            System.out.printf("SAVED run=%s next=%d status=%s%n",admitted.runId(),admitted.nextOperation(),admitted.status());
+            var saved=runtime.inspect(admitted.runId());
+            System.out.printf("SAVED run=%s next=%d status=%s%n",saved.runId(),saved.nextOperation(),saved.status());
             if(mode.equals("pause-after-first")) {
                 var progress=runtime.advance(admitted.runId(),workflow);
                 Files.writeString(directory.resolve("ready.txt"),ProcessHandle.current().pid()+" "+admitted.runId()+" "+progress.nextOperation());

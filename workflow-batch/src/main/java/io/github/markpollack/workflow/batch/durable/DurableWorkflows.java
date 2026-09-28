@@ -277,7 +277,7 @@ public final class DurableWorkflows implements AutoCloseable {
         var terminal=workflow.terminal();
         if(terminal.intent()==Terminal.SUCCEEDED) {
             run.output=valueId(terminal.successValue());
-            if(!run.values.containsKey(run.output)) throw new WorkflowRefusal("VALUE_MISSING","successful terminal value missing");
+            verifyValue(run.id,run.values.get(run.output),workflow.values().get(terminal.successValue()));
         }
         tx.terminal(run,terminal.intent().name(),"AUTHORED_"+terminal.intent().name(),terminal.reason(),"workflow");
     }
@@ -299,12 +299,13 @@ public final class DurableWorkflows implements AutoCloseable {
     }
     private RunState.Value verifiedValue(JdbcRunStore.Tx tx,RunState run,ValueId id,ValidatedWorkflow workflow) {
         RunState.Value value=run.values.get(valueId(id));
-        verifyValue(value,workflow.values().get(id));
+        verifyValue(run.id,value,workflow.values().get(id));
         return value;
     }
-    static void verifyValue(RunState.Value value,ValidatedWorkflow.ValueRecipe recipe) {
+    static void verifyValue(String runId,RunState.Value value,ValidatedWorkflow.ValueRecipe recipe) {
         if(value==null||recipe==null) throw new WorkflowRefusal("VALUE_MISSING","committed selected value is missing");
-        if(!value.id.equals(valueId(recipe.identity()))||!value.type.equals(recipe.contract().javaType())
+        String producer=recipe.identity().role().equals("root")?"":invocationId(runId,recipe.identity().placement());
+        if(!producer.equals(value.producer)||!value.id.equals(valueId(recipe.identity()))||!value.type.equals(recipe.contract().javaType())
                 ||!value.shape.equals(recipe.contract().shapeDigest())||!value.codec.equals(codec(recipe.contract().codec()))
                 ||!value.digest.equals(Digests.of(value.payload))
                 ||!value.components.equals(recipe.components().stream().map(DurableWorkflows::valueId).toList())

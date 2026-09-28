@@ -192,7 +192,7 @@ class DeploymentCompatibilityTest {
         }
     }
 
-    @Test void oldAbsentUnknownAndNonIntegerFormatsRefuseWithoutSchemaOrRowMigration() throws Exception {
+    @Test void legacySchemaRefusesWithoutSchemaOrRowMigration() throws Exception {
         for(String header:List.of("\"format\":1,","\"format\":2,","","\"format\":4,","\"format\":3.5,","\"format\":4294967299,")) {
             Path file=directory.resolve("format-"+Math.abs(header.hashCode()));String json="{"+header+"\"id\":\"old-run\"}";
             try(var c=connect(file);var statement=c.createStatement()) {
@@ -205,6 +205,63 @@ class DeploymentCompatibilityTest {
                 try(var rows=statement.executeQuery("SELECT table_name FROM information_schema.tables WHERE table_schema='PUBLIC'")) {
                     List<String> names=new ArrayList<>();while(rows.next())names.add(rows.getString(1));assertThat(names).containsExactly("AW_RUN");
                 }
+            }
+        }
+    }
+
+    @Test void malformedRunHeadersInSupportedStoreRefuseWithoutChangingDatabaseBytes() throws Exception {
+        int sequence=0;
+        for(String header:List.of("old","absent","unknown","fraction","overflow","string")) {
+            Path file=directory.resolve("supported-format-"+(sequence++));
+            var deployment=deployment(Map.of());var workflow=echo(deployment,Echo.class,null);String id;
+            try(var runtime=DurableWorkflows.open(file,deployment)) {id=runtime.start(workflow,"one",new Request("x")).runId();}
+            mutate(file,id,state->{
+                ObjectNode object=(ObjectNode)state;
+                switch(header) {
+                    case "old" -> object.put("format",3);
+                    case "absent" -> object.remove("format");
+                    case "unknown" -> object.put("format",5);
+                    case "fraction" -> object.put("format",4.5);
+                    case "overflow" -> object.put("format",4294967300L);
+                    case "string" -> object.put("format","4");
+                    default -> throw new AssertionError(header);
+                }
+            });
+            byte[] before=Files.readAllBytes(Path.of(file+".mv.db"));
+            for(int attempt=0;attempt<2;attempt++) {
+                assertThatThrownBy(()->DurableWorkflows.open(file)).isInstanceOfSatisfying(WorkflowRefusal.class,
+                        ex->assertThat(ex.code()).isEqualTo("STORE_FORMAT"));
+                assertThat(Files.readAllBytes(Path.of(file+".mv.db"))).isEqualTo(before);
+            }
+        }
+    }
+
+    @Test void falseProducerRefusesBeforeEntryHistoricalConsumptionOrResultAccess() throws Exception {
+        for(String stage:List.of("root","output","assembled","terminal","terminal-only")) {
+            Path file=directory.resolve("producer-"+stage),effects=directory.resolve("producer-effects-"+stage);
+            var deployment=deployment(Map.of("evidence",effects.toString()));
+            var workflow=stage.equals("terminal-only")?ValidatedWorkflow.compile(new Definition<>("terminal-only",Request.class,Request.class,
+                    List.<Node>of(new End(Terminal.SUCCEEDED,"")),null),Map.of()):o01(deployment,true);
+            try(var runtime=DurableWorkflows.open(file,deployment)) {
+                var run=runtime.start(workflow,"one",new Request("original"));
+                int steps=switch(stage) {case "output" -> 1;case "assembled" -> 4;case "terminal" -> 5;default -> 0;};
+                for(int i=0;i<steps;i++)runtime.advance(run.runId(),workflow);
+                var saved=runtime.inspect(run.runId());
+                String value=switch(stage) {
+                    case "output" -> saved.invocations().getFirst().outputValue();
+                    case "assembled" -> saved.invocations().get(1).inputValue();
+                    case "terminal" -> saved.invocations().getLast().outputValue();
+                    default -> saved.values().getFirst().valueId();
+                };
+                mutate(file,run.runId(),state->((ObjectNode)state.path("values").path(value)).put("producer","nonexistent-invocation"));
+                String before=state(file,run.runId());
+                if(stage.equals("terminal")) assertThatThrownBy(()->runtime.result(run.runId(),workflow))
+                        .isInstanceOfSatisfying(WorkflowRefusal.class,ex->assertThat(ex.code()).isEqualTo("VALUE_CHANGED"));
+                else assertThatThrownBy(()->runtime.resume(run.runId(),workflow))
+                        .isInstanceOfSatisfying(WorkflowRefusal.class,ex->assertThat(ex.code()).isEqualTo("VALUE_CHANGED"));
+                assertThat(state(file,run.runId())).isEqualTo(before);
+                String next=switch(stage) {case "output" -> "second";case "assembled" -> "fifth";default -> "first";};
+                if(!stage.equals("terminal"))assertThat(Files.exists(effects.resolve(next+".calls"))).isFalse();
             }
         }
     }
