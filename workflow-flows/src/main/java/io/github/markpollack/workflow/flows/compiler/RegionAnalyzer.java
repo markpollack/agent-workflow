@@ -19,8 +19,6 @@ import java.util.stream.Collectors;
 import io.github.markpollack.judge.jury.Verdict;
 import io.github.markpollack.judge.jury.interpretation.Interpretation;
 import io.github.markpollack.judge.jury.interpretation.VerdictReading;
-import io.github.markpollack.workflow.core.AgentContext;
-import io.github.markpollack.workflow.flows.Step;
 
 import io.github.markpollack.workflow.flows.workflow.EdgeCondition;
 import io.github.markpollack.workflow.flows.workflow.WorkflowEdge;

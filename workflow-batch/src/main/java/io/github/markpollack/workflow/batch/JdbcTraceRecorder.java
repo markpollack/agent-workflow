@@ -18,7 +18,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 /**
  * JDBC-backed {@link TraceRecorder} that persists {@link StepTransition} records to
  * a {@code step_transitions} table. Shares the same {@code DataSource} as the
- * {@link CheckpointingStepRunner}.
+ * durable runtime checkpoints.
  *
  * <p>
  * The table is auto-created on first use if it does not exist.

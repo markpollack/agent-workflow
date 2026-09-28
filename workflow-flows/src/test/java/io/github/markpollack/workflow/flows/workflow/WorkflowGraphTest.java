@@ -13,7 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class WorkflowGraphTest {
 
-    private final Step<String, String> dummyStep = Step.named("dummy", (ctx, in) -> in);
+    private final Step<String, String> dummyStep = (ctx, in) -> in;
 
     // -------------------------------------------------------------------------
     // Construction

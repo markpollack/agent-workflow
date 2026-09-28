@@ -15,14 +15,14 @@
  */
 package io.github.markpollack.workflow.flows.steps;
 
-import io.github.markpollack.workflow.core.AgentContext;
+import io.github.markpollack.workflow.flows.StepContext;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class AgentClientStepTest {
 
-    private final AgentContext ctx = AgentContext.create();
+    private final StepContext ctx = new StepContext("run", "invocation", "attempt", 1, java.time.Instant.MAX, java.util.Map.of());
 
     @Test
     void ofShouldSubstituteInputInPromptTemplate() {
@@ -34,7 +34,7 @@ class AgentClientStepTest {
 
     @Test
     void ofShouldPassContextToClient() {
-        AgentContext namedCtx = AgentContext.withRunId("run-test");
+        StepContext namedCtx = new StepContext("run-test", "invocation", "attempt", 1, java.time.Instant.MAX, java.util.Map.of());
         AgentClient captureCtxClient = (prompt, c) -> c.runId();
         AgentClientStep step = AgentClientStep.of(captureCtxClient, "prompt: {input}");
 
@@ -58,15 +58,15 @@ class AgentClientStepTest {
     }
 
     @Test
-    void executeForResultShouldPropagateTracePathToContext() {
+    void executeForResultReturnsTextWithoutChangingContext() {
         AgentClient traceClient = new AgentClient() {
             @Override
-            public String execute(String prompt, AgentContext c) {
+            public String execute(String prompt, StepContext c) {
                 return "text";
             }
 
             @Override
-            public ExecutionResult executeForResult(String prompt, AgentContext c) {
+            public ExecutionResult executeForResult(String prompt, StepContext c) {
                 return new ExecutionResult("analyzed", "/tmp/traces/step-001.jsonl");
             }
         };
@@ -75,19 +75,8 @@ class AgentClientStepTest {
         String result = step.execute(ctx, "data");
         assertThat(result).isEqualTo("analyzed");
 
-        AgentContext updated = step.updateContext(ctx, result);
-        assertThat(updated.get(AgentContext.TRACE_PATH))
-                .hasValue("/tmp/traces/step-001.jsonl");
+        assertThat(ctx.runId()).isEqualTo("run");
+
     }
 
-    @Test
-    void lambdaClientShouldNotSetTracePath() {
-        AgentClient lambda = (prompt, c) -> "response";
-        AgentClientStep step = AgentClientStep.of(lambda, "{input}");
-
-        String result = step.execute(ctx, "hello");
-        AgentContext updated = step.updateContext(ctx, result);
-
-        assertThat(updated.get(AgentContext.TRACE_PATH)).isEmpty();
-    }
 }

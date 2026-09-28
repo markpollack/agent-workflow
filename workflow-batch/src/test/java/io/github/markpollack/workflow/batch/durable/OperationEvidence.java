@@ -2,14 +2,15 @@ package io.github.markpollack.workflow.batch.durable;
 
 import java.nio.file.*;
 import java.util.Map;
+import io.github.markpollack.workflow.flows.StepContext;
 
 public final class OperationEvidence {
     private OperationEvidence() {}
-    public static void count(Map<String,String> configuration,String operation,DeliveryContext context,String input) throws Exception {
+    public static void count(Map<String,String> configuration,String operation,StepContext context,String input) throws Exception {
         String directory=configuration.get("evidence");
         if(directory!=null) {
             Path dir=Path.of(directory);Files.createDirectories(dir);
-            Files.writeString(dir.resolve(operation+".calls"),context.invocationId()+" "+context.deliveryId()+" "+context.generation()+" "+input+"\n",
+            Files.writeString(dir.resolve(operation+".calls"),context.invocationId()+" "+context.attemptId()+" "+context.attemptNumber()+" "+input+"\n",
                     StandardOpenOption.CREATE,StandardOpenOption.APPEND);
         }
     }

@@ -13,7 +13,7 @@ public final class ProcessWorker {
         Path directory=Path.of(args[0]);String mode=args[1],boundary=args[2];int occurrence=Integer.parseInt(args[3]);
         Files.createDirectories(directory);Path database=directory.resolve("runs");
         var deployment=deployment(mode.equals("mismatch")?"fixture-v2":"fixture-v1",Map.of("evidence",directory.toString()));var workflow=o01(deployment,true);
-        var policy=new ExecutionPolicy(Duration.ofSeconds(2),3);
+        var policy=new ExecutionPolicy(3);
         AtomicInteger seen=new AtomicInteger();ObjectMapper mapper=new ObjectMapper();
         BoundaryHooks hooks=(point,run)->{
             if(mode.equals("crash")&&point.equals(boundary)&&seen.incrementAndGet()==occurrence) {
@@ -49,8 +49,7 @@ public final class ProcessWorker {
             Files.writeString(directory.resolve("run-id.txt"),run.runId());
             Files.writeString(directory.resolve(mode+"-before.json"),StoreTestSupport.state(database,run.runId()));
             if(mode.equals("admit")) return;
-            while(run.leaseUntil()!=null&&Instant.now().isBefore(run.leaseUntil())) { Thread.sleep(10);run=runtime.inspect(run.runId()); }
-            var result=runtime.resume(run.runId(),workflow,"process-"+ProcessHandle.current().pid());
+            var result=runtime.resume(run.runId(),workflow);
             Files.writeString(directory.resolve(mode+"-after.json"),StoreTestSupport.state(database,run.runId()));
             Files.writeString(directory.resolve(mode+"-result.json"),mapper.writeValueAsString(Map.of("pid",ProcessHandle.current().pid(),"status",result.status().name(),
                     "result",runtime.result(run.runId(),workflow).toString())));

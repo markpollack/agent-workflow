@@ -41,7 +41,7 @@ public sealed interface WorkflowNode permits
 
     // -- Variants --
 
-    /** A regular step — executor calls step.execute() via StepRunner. */
+    /** A regular step node used by graph construction and analysis. */
     record StepNode(String name, NodeType type, Step<?, ?> step) implements WorkflowNode {}
 
     /** Deterministic routing — evaluates predicate, routes on BooleanGuard edges. Value passed unchanged. */

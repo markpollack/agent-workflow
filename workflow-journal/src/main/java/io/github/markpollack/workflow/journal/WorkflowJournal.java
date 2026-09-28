@@ -10,18 +10,8 @@ import io.github.markpollack.workflow.flows.workflow.TraceRecorder;
  * <p>Call {@link #registerEventType()} once at application startup so the journal's
  * JSON storage can deserialize {@link WorkflowStepEvent} entries back to their typed form.
  *
- * <pre>{@code
- * // At startup (after Journal.configure):
- * WorkflowJournal.registerEventType();
- *
- * try (Run run = Journal.run("bom-sync").start()) {
- *     WorkflowExecutor executor = new WorkflowExecutor(
- *         new LocalStepRunner(),
- *         WorkflowJournal.forRun(run)
- *     );
- *     // workflow steps are recorded as typed WorkflowStepEvents in the run
- * }
- * }</pre>
+ * <p>The application submits observations to the recorder explicitly. This recorder
+ * is not connected to durable workflow execution and does not own checkpoints.
  */
 public final class WorkflowJournal {
 

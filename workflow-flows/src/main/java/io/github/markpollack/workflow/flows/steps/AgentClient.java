@@ -15,7 +15,7 @@
  */
 package io.github.markpollack.workflow.flows.steps;
 
-import io.github.markpollack.workflow.core.AgentContext;
+import io.github.markpollack.workflow.flows.StepContext;
 
 /**
  * Abstraction over any agent backend that accepts a prompt and returns text.
@@ -42,7 +42,7 @@ public interface AgentClient {
      * @param ctx    the shared execution context for this flow run
      * @return the agent's text response
      */
-    String execute(String prompt, AgentContext ctx);
+    String execute(String prompt, StepContext ctx);
 
     /**
      * Result of an agent execution including optional trace metadata.
@@ -55,7 +55,7 @@ public interface AgentClient {
     /**
      * Executes the agent and returns the text result with optional trace metadata.
      * <p>
-     * The default implementation delegates to {@link #execute(String, AgentContext)}
+     * The default implementation delegates to {@link #execute(String, StepContext)}
      * with no trace path. Override in trace-aware implementations to return the
      * trace file path alongside the response text.
      *
@@ -63,7 +63,7 @@ public interface AgentClient {
      * @param ctx    the shared execution context
      * @return the execution result with text and optional trace path
      */
-    default ExecutionResult executeForResult(String prompt, AgentContext ctx) {
+    default ExecutionResult executeForResult(String prompt, StepContext ctx) {
         return new ExecutionResult(execute(prompt, ctx), null);
     }
 }

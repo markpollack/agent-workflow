@@ -5,40 +5,34 @@ import java.util.*;
 
 /** Store format, kept separate from both compiler analysis and public inspection. */
 final class RunState {
-    public int format=3;
+    public int format=4;
     public String id,key,admission,compatibility,display,authored,deadlineOrigin;
     public ApplicationDeployment.Manifest deployment;
-    public long admitted,deadline,generation,leaseUntil,leaseMillis;
-    public String owner="",status="ACTIVE",reasonCode="",reasonMessage="",actor="",output="";
+    public long admitted,deadline,revision;
+    public String status="ACTIVE",reasonCode="",reasonMessage="",actor="",output="";
     public long terminalAt;
-    public int next,maximumDeliveries;
-    public String rootId="",parentId="",parentInvocation="";
-    public int depth,descendants,maximumChildDepth,maximumDescendants;
+    public int next,maximumAttempts;
     public Map<String,Value> values=new LinkedHashMap<>();
     public List<Invocation> invocations=new ArrayList<>();
     public List<Event> events=new ArrayList<>();
 
     public static final class Value {
         public String id,type,shape,codec,digest,producer;
-        public String sourceRun="",sourceValue="";
         public byte[] payload;
         public List<String> components=new ArrayList<>(),consumed=new ArrayList<>();
-        RunSnapshot.Value snapshot() { return new RunSnapshot.Value(id,type,shape,codec,digest,payload,components,consumed,producer,sourceRun,sourceValue); }
+        RunSnapshot.Value snapshot() { return new RunSnapshot.Value(id,type,shape,codec,digest,payload,components,consumed,producer); }
     }
     public static final class Invocation {
         public String id,placement,input,output,status="UNRESOLVED";
-        public String childId="",childOutcome="",childReason="";
-        public long settledAt;
-        public List<Delivery> deliveries=new ArrayList<>();
+        public List<Attempt> attempts=new ArrayList<>();
         RunSnapshot.Invocation snapshot() { return new RunSnapshot.Invocation(id,placement,input,output,status,
-                deliveries.stream().map(Delivery::snapshot).toList(),childId,childOutcome,childReason,
-                settledAt==0?null:Instant.ofEpochMilli(settledAt)); }
+                attempts.stream().map(Attempt::snapshot).toList()); }
     }
-    public static final class Delivery {
+    public static final class Attempt {
         public String id,disposition="UNRESOLVED";
         public int number;
-        public long generation,charged;
-        RunSnapshot.Delivery snapshot() { return new RunSnapshot.Delivery(id,number,generation,Instant.ofEpochMilli(charged),disposition); }
+        public long charged;
+        RunSnapshot.Attempt snapshot() { return new RunSnapshot.Attempt(id,number,Instant.ofEpochMilli(charged),disposition); }
     }
     public static final class Event {
         public long sequence,time;
@@ -49,30 +43,20 @@ final class RunState {
         Event e=new Event();e.sequence=events.size()+1L;e.time=time;e.kind=kind;e.detail=detail;events.add(e);
     }
     boolean active() { return status.equals("ACTIVE"); }
-    void settleChild(Invocation call, RunState child, long now) {
-        if (call.settledAt != 0) return;
-        call.childOutcome = child.status;
-        call.childReason = child.reasonCode;
-        call.settledAt = now;
-        event("CHILD_SETTLED", now, call.id + ":" + child.id + ":" + child.status);
-    }
     void terminal(String outcome,String code,String message,String actor,long now) {
         if(!active()) return;
         status=outcome;reasonCode=code;reasonMessage=message;this.actor=actor;terminalAt=now;
-        generation=Math.incrementExact(generation);owner="";leaseUntil=0;
         for(Invocation call:invocations) if(call.status.equals("UNRESOLVED")) {
             call.status=outcome;
-            for(Delivery delivery:call.deliveries) if(delivery.disposition.equals("UNRESOLVED")) delivery.disposition=code;
+            for(Attempt attempt:call.attempts) if(attempt.disposition.equals("UNRESOLVED")) attempt.disposition=code;
         }
         event(outcome,now,code+":"+message);
     }
     RunSnapshot snapshot() {
         return new RunSnapshot(id,display,RunSnapshot.Status.valueOf(status),Instant.ofEpochMilli(admitted),
-                Instant.ofEpochMilli(deadline),deadlineOrigin,authored,deployment,generation,owner,
-                leaseUntil==0?null:Instant.ofEpochMilli(leaseUntil),next,
+                Instant.ofEpochMilli(deadline),deadlineOrigin,authored,deployment,next,
                 active()?null:new RunSnapshot.Reason(reasonCode,reasonMessage,actor,Instant.ofEpochMilli(terminalAt)),
                 invocations.stream().map(Invocation::snapshot).toList(),values.values().stream().map(Value::snapshot).toList(),
-                events.stream().map(Event::snapshot).toList(),new RunSnapshot.Lineage(rootId,parentId,parentInvocation,
-                depth,descendants,maximumChildDepth,maximumDescendants));
+                events.stream().map(Event::snapshot).toList());
     }
 }

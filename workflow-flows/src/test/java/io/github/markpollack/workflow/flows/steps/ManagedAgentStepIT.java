@@ -21,7 +21,7 @@ import com.anthropic.models.beta.agents.AgentCreateParams;
 import com.anthropic.models.beta.agents.BetaManagedAgentsModel;
 import com.anthropic.models.beta.environments.BetaCloudConfigParams;
 import com.anthropic.models.beta.environments.EnvironmentCreateParams;
-import io.github.markpollack.workflow.core.AgentContext;
+import io.github.markpollack.workflow.flows.StepContext;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -85,7 +85,7 @@ class ManagedAgentStepIT {
 			.name("it-agent")
 			.timeout(Duration.ofMinutes(3));
 
-		String result = step.execute(AgentContext.create(), "What is 2+2? Reply with just the number.");
+		String result = step.execute(new StepContext("run", "invocation", "attempt", 1, java.time.Instant.MAX, java.util.Map.of()), "What is 2+2? Reply with just the number.");
 
 		assertThat(result).isNotBlank();
 		assertThat(result).contains("4");

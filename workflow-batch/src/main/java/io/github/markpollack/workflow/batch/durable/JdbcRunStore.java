@@ -1,167 +1,161 @@
 package io.github.markpollack.workflow.batch.durable;
 
-import java.nio.file.Path;
+import java.nio.file.*;
 import java.sql.*;
 import java.util.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-/** H2 file store with a serialized transition clock, immutable values and explicit fencing columns. */
+/** Local H2 state transitions with an authoritative serialized clock and immutable value snapshots. */
 final class JdbcRunStore implements AutoCloseable {
+    private static final int FORMAT = 4;
     private final String url;
     private final Connection keeper;
-    private final ObjectMapper mapper=new ObjectMapper();
+    private final ObjectMapper mapper = new ObjectMapper();
 
-    JdbcRunStore(Path file) {
-        String path=file.toAbsolutePath().normalize().toString();
-        if(path.contains(";")) throw new IllegalArgumentException("database path cannot contain semicolon");
-        url="jdbc:h2:file:"+path+";WRITE_DELAY=0;LOCK_TIMEOUT=10000;DB_CLOSE_ON_EXIT=FALSE";
-        synchronized(JdbcRunStore.class) { keeper=initialize(); }
+    JdbcRunStore(Path canonicalFile) {
+        String base = "jdbc:h2:file:" + canonicalFile;
+        url = base + ";WRITE_DELAY=0;LOCK_TIMEOUT=10000;DB_CLOSE_ON_EXIT=FALSE";
+        boolean existing = Files.exists(Path.of(canonicalFile + ".mv.db"));
+        if (existing) {
+            // Refuse incompatible stores before any writable connection or schema bootstrap.
+            try (Connection read = DriverManager.getConnection(base + ";IFEXISTS=TRUE;ACCESS_MODE_DATA=r;DB_CLOSE_ON_EXIT=FALSE", "sa", "")) {
+                verifyFormat(read);
+            } catch (WorkflowRefusal ex) { throw ex; }
+            catch (Exception ex) { throw new WorkflowRefusal("STORE_UNAVAILABLE", "cannot inspect existing database", ex); }
+        }
+        keeper = initialize(existing);
     }
-    private Connection initialize() {
-        Connection opened=null;
+
+    private Connection initialize(boolean existing) {
+        Connection opened = null;
         try {
-            opened=DriverManager.getConnection(url,"sa","");
-            verifyFormats(opened);
-            try(Statement s=opened.createStatement()) {
-                s.execute("CREATE TABLE IF NOT EXISTS aw_transition_lock (id INT PRIMARY KEY, tick BIGINT NOT NULL)");
-                s.execute("INSERT INTO aw_transition_lock SELECT 1,0 WHERE NOT EXISTS(SELECT 1 FROM aw_transition_lock WHERE id=1)");
-                s.execute("CREATE ALIAS IF NOT EXISTS AW_CLOCK FOR 'java.lang.System.currentTimeMillis'");
-                s.execute("CREATE TABLE IF NOT EXISTS aw_run (id VARCHAR PRIMARY KEY, idempotency VARCHAR NOT NULL UNIQUE, "
-                        +"generation BIGINT NOT NULL, owner VARCHAR NOT NULL, status VARCHAR NOT NULL, deadline BIGINT NOT NULL, "
-                        +"lease_until BIGINT NOT NULL, state CLOB NOT NULL)");
+            opened = DriverManager.getConnection(url, "sa", "");
+            if (existing) verifyFormat(opened);
+            else try (Statement s = opened.createStatement()) {
+                s.execute("CREATE TABLE aw_transition_lock (id INT PRIMARY KEY, tick BIGINT NOT NULL)");
+                s.execute("INSERT INTO aw_transition_lock VALUES(1,0)");
+                s.execute("CREATE ALIAS AW_CLOCK FOR 'java.lang.System.currentTimeMillis'");
+                s.execute("CREATE TABLE aw_run (id VARCHAR PRIMARY KEY, idempotency VARCHAR NOT NULL UNIQUE, "
+                        + "revision BIGINT NOT NULL, status VARCHAR NOT NULL, deadline BIGINT NOT NULL, state CLOB NOT NULL)");
+                s.execute("CREATE TABLE aw_store_format (id INT PRIMARY KEY, version INT NOT NULL)");
+                s.execute("INSERT INTO aw_store_format VALUES(1," + FORMAT + ")");
             }
             return opened;
-        } catch(Exception ex) {
-            if(opened!=null) try {opened.close();}catch(SQLException close){ex.addSuppressed(close);}
-            if(ex instanceof WorkflowRefusal refusal) throw refusal;
-            throw new WorkflowRefusal("STORE_UNAVAILABLE","cannot open durable database",ex);
+        } catch (Exception ex) {
+            if (opened != null) try { opened.close(); } catch (SQLException close) { ex.addSuppressed(close); }
+            if (ex instanceof WorkflowRefusal refusal) throw refusal;
+            throw new WorkflowRefusal("STORE_UNAVAILABLE", "cannot open durable database", ex);
         }
     }
-    // Check the explicit header before schema bootstrap or binding defaults to a new state object.
+
     private com.fasterxml.jackson.databind.JsonNode checkedState(String json) throws Exception {
-        var state=mapper.readTree(json);
-        var format=state==null?null:state.get("format");
-        if(format==null||!format.isIntegralNumber()||!format.canConvertToInt()||format.intValue()!=3)
-            throw new WorkflowRefusal("STORE_FORMAT","unsupported durable run format; migration is not available");
+        var state = mapper.readTree(json);
+        var format = state == null ? null : state.get("format");
+        if (format == null || !format.isIntegralNumber() || !format.canConvertToInt() || format.intValue() != FORMAT)
+            throw new WorkflowRefusal("STORE_FORMAT", "unsupported durable run format; migration is not available");
         return state;
     }
-    private void verifyFormats(Connection connection) throws Exception {
-        try(ResultSet tables=connection.getMetaData().getTables(null,"PUBLIC","AW_RUN",new String[]{"TABLE"})) {
-            if(!tables.next()) return;
+    private void verifyFormat(Connection connection) throws Exception {
+        for (String table : List.of("AW_STORE_FORMAT", "AW_RUN", "AW_TRANSITION_LOCK")) {
+            try (ResultSet tables = connection.getMetaData().getTables(null, "PUBLIC", table, new String[]{"TABLE"})) {
+                if (!tables.next()) throw new WorkflowRefusal("STORE_FORMAT", "unsupported or incomplete store schema");
+            }
         }
-        try(Statement statement=connection.createStatement();ResultSet rows=statement.executeQuery("SELECT state FROM aw_run")) {
-            while(rows.next()) checkedState(rows.getString(1));
+        try (Statement s = connection.createStatement(); ResultSet rows = s.executeQuery("SELECT id,version FROM aw_store_format")) {
+            if (!rows.next() || rows.getInt(1) != 1 || rows.getInt(2) != FORMAT || rows.next())
+                throw new WorkflowRefusal("STORE_FORMAT", "unsupported store format");
+        }
+        try (Statement s = connection.createStatement(); ResultSet rows = s.executeQuery("SELECT state FROM aw_run")) {
+            while (rows.next()) checkedState(rows.getString(1));
         }
     }
+
     interface Work<T> { T run(Tx tx) throws Exception; }
     <T> T transaction(Work<T> work) {
-        try(Connection c=DriverManager.getConnection(url,"sa","")) {
+        try (Connection c = DriverManager.getConnection(url, "sa", "")) {
             c.setAutoCommit(false);
             try {
                 long previous;
-                try(Statement s=c.createStatement();ResultSet rows=s.executeQuery("SELECT tick FROM aw_transition_lock WHERE id=1 FOR UPDATE")) {
-                    rows.next();previous=rows.getLong(1);
+                try (Statement s = c.createStatement(); ResultSet rows = s.executeQuery("SELECT tick FROM aw_transition_lock WHERE id=1 FOR UPDATE")) {
+                    if (!rows.next()) throw new WorkflowRefusal("STORE_CORRUPT", "transition clock missing");
+                    previous = rows.getLong(1);
                 }
                 long now;
-                try(Statement s=c.createStatement();ResultSet rows=s.executeQuery("CALL AW_CLOCK()")) { rows.next();now=Math.max(previous,rows.getLong(1)); }
-                try(PreparedStatement s=c.prepareStatement("UPDATE aw_transition_lock SET tick=? WHERE id=1")) { s.setLong(1,now);s.executeUpdate(); }
-                T result=work.run(new Tx(c,now));
+                try (Statement s = c.createStatement(); ResultSet rows = s.executeQuery("CALL AW_CLOCK()")) { rows.next(); now = Math.max(previous, rows.getLong(1)); }
+                try (PreparedStatement s = c.prepareStatement("UPDATE aw_transition_lock SET tick=? WHERE id=1")) { s.setLong(1, now); s.executeUpdate(); }
+                T result = work.run(new Tx(c, now));
                 c.commit(); return result;
-            } catch(Throwable ex) {
-                try { c.rollback(); } catch(SQLException rollback) { ex.addSuppressed(rollback); }
-                if(ex instanceof Error error) throw error;
-                if(ex instanceof RuntimeException runtime) throw runtime;
-                throw new WorkflowRefusal("STORE_TRANSACTION","durable transition failed",ex);
+            } catch (Throwable ex) {
+                try { c.rollback(); } catch (SQLException rollback) { ex.addSuppressed(rollback); }
+                if (ex instanceof Error error) throw error;
+                if (ex instanceof RuntimeException runtime) throw runtime;
+                throw new WorkflowRefusal("STORE_TRANSACTION", "durable transition failed", ex);
             }
-        } catch(SQLException ex) { throw new WorkflowRefusal("STORE_UNAVAILABLE","durable transaction unavailable",ex); }
+        } catch (SQLException ex) { throw new WorkflowRefusal("STORE_UNAVAILABLE", "durable transaction unavailable", ex); }
     }
+
     final class Tx {
         final Connection c;
         final long now;
-        private final Map<String,Fence> loaded=new HashMap<>();
-        private final Map<String,RunState> states=new HashMap<>();
-        Tx(Connection c,long now) { this.c=c;this.now=now; }
+        private final Map<String, Long> loaded = new HashMap<>();
+        private final Map<String, RunState> states = new HashMap<>();
+        Tx(Connection c, long now) { this.c = c; this.now = now; }
         RunState get(String id) throws Exception {
-            if(states.containsKey(id)) return states.get(id);
-            RunState state=find("id",id);
-            if(state==null) throw new WorkflowRefusal("RUN_NOT_FOUND","unknown durable run: "+id);
+            if (states.containsKey(id)) return states.get(id);
+            RunState state = find("id", id);
+            if (state == null) throw new WorkflowRefusal("RUN_NOT_FOUND", "unknown durable run: " + id);
             return state;
         }
-        RunState byKey(String key) throws Exception { return find("idempotency",key); }
-        private RunState find(String column,String value) throws Exception {
-            try(PreparedStatement s=c.prepareStatement("SELECT * FROM aw_run WHERE "+column+"=?")) {
-                s.setString(1,value);
-                try(ResultSet rows=s.executeQuery()) { return rows.next()?read(rows):null; }
+        RunState byKey(String key) throws Exception { return find("idempotency", key); }
+        private RunState find(String column, String value) throws Exception {
+            try (PreparedStatement s = c.prepareStatement("SELECT * FROM aw_run WHERE " + column + "=?")) {
+                s.setString(1, value);
+                try (ResultSet rows = s.executeQuery()) { return rows.next() ? read(rows) : null; }
             }
         }
         List<RunState> all() throws Exception {
-            List<RunState> result=new ArrayList<>();
-            try(Statement s=c.createStatement();ResultSet rows=s.executeQuery("SELECT * FROM aw_run ORDER BY id")) {
-                while(rows.next()) result.add(read(rows));
+            List<RunState> result = new ArrayList<>();
+            try (Statement s = c.createStatement(); ResultSet rows = s.executeQuery("SELECT * FROM aw_run ORDER BY id")) {
+                while (rows.next()) result.add(read(rows));
             }
             return result;
         }
         private RunState read(ResultSet rows) throws Exception {
-            String id=rows.getString("id");
-            if(states.containsKey(id)) return states.get(id);
-            RunState state=mapper.treeToValue(checkedState(rows.getString("state")),RunState.class);
-            if(!state.id.equals(rows.getString("id"))||!state.key.equals(rows.getString("idempotency"))
-                    ||state.generation!=rows.getLong("generation")||!state.owner.equals(rows.getString("owner"))
-                    ||!state.status.equals(rows.getString("status"))||state.deadline!=rows.getLong("deadline")
-                    ||state.leaseUntil!=rows.getLong("lease_until")) throw new WorkflowRefusal("STORE_CORRUPT","state and fencing columns disagree");
-            loaded.put(state.id,new Fence(state.generation,state.owner,state.status,state.deadline,state.leaseUntil));
-            states.put(state.id,state);
-            return state;
+            String id = rows.getString("id");
+            if (states.containsKey(id)) return states.get(id);
+            RunState state = mapper.treeToValue(checkedState(rows.getString("state")), RunState.class);
+            if (!state.id.equals(id) || !state.key.equals(rows.getString("idempotency"))
+                    || state.revision != rows.getLong("revision") || !state.status.equals(rows.getString("status"))
+                    || state.deadline != rows.getLong("deadline"))
+                throw new WorkflowRefusal("STORE_CORRUPT", "state and transition columns disagree");
+            loaded.put(id, state.revision); states.put(id, state); return state;
         }
         void insert(RunState state) throws Exception {
-            try(PreparedStatement s=c.prepareStatement("INSERT INTO aw_run(id,idempotency,generation,owner,status,deadline,lease_until,state) VALUES(?,?,?,?,?,?,?,?)")) {
-                s.setString(1,state.id);s.setString(2,state.key);s.setLong(3,state.generation);s.setString(4,state.owner);
-                s.setString(5,state.status);s.setLong(6,state.deadline);s.setLong(7,state.leaseUntil);s.setString(8,mapper.writeValueAsString(state));s.executeUpdate();
+            try (PreparedStatement s = c.prepareStatement("INSERT INTO aw_run(id,idempotency,revision,status,deadline,state) VALUES(?,?,?,?,?,?)")) {
+                s.setString(1,state.id); s.setString(2,state.key); s.setLong(3,state.revision);
+                s.setString(4,state.status); s.setLong(5,state.deadline); s.setString(6,mapper.writeValueAsString(state)); s.executeUpdate();
             }
-            states.put(state.id,state);
-            loaded.put(state.id,new Fence(state.generation,state.owner,state.status,state.deadline,state.leaseUntil));
+            states.put(state.id,state); loaded.put(state.id,state.revision);
         }
-        /** Observe ancestor authority before allowing any descendant transition. */
         void observe(RunState run) throws Exception {
-            if(!run.parentId.isEmpty()) {
-                RunState parent=get(run.parentId);
-                observe(parent);
-                if(!parent.active()&&run.active()) revoke(parent,run);
-            }
-            if(run.active()&&now>=run.deadline)
-                terminal(run,"FAILED","DEADLINE_EXCEEDED","absolute deadline reached","store");
+            if (run.active() && now >= run.deadline) terminal(run,"FAILED","DEADLINE_EXCEEDED","absolute deadline reached","store");
         }
-        /** Revoke and account for the entire affected local scope in this same transaction. */
         void terminal(RunState run,String status,String code,String message,String actor) throws Exception {
-            if(!run.active()) return;
-            run.terminal(status,code,message,actor,now);
-            for(RunState child:all()) if(child.parentId.equals(run.id)) {
-                if(child.active()) revoke(run,child);
-                for(var call:run.invocations) if(call.childId.equals(child.id)&&call.settledAt==0) {
-                    run.settleChild(call,child,now);
-                }
-            }
-            save(run);
-        }
-        private void revoke(RunState parent,RunState child) throws Exception {
-            boolean cancelled=parent.status.equals("CANCELLED");
-            String code=cancelled?"PARENT_CANCELLED":parent.reasonCode.equals("DEADLINE_EXCEEDED")?"DEADLINE_EXCEEDED":"PARENT_TERMINAL";
-            terminal(child,cancelled?"CANCELLED":"FAILED",code,"parent continuation revoked",parent.actor);
+            if (!run.active()) return;
+            run.terminal(status,code,message,actor,now); save(run);
         }
         void save(RunState state) throws Exception {
-            Fence prior=Objects.requireNonNull(loaded.get(state.id),"read required before update");
-            try(PreparedStatement s=c.prepareStatement("UPDATE aw_run SET generation=?,owner=?,status=?,deadline=?,lease_until=?,state=? "
-                    +"WHERE id=? AND generation=? AND owner=? AND status=? AND deadline=? AND lease_until=?")) {
-                s.setLong(1,state.generation);s.setString(2,state.owner);s.setString(3,state.status);s.setLong(4,state.deadline);
-                s.setLong(5,state.leaseUntil);s.setString(6,mapper.writeValueAsString(state));s.setString(7,state.id);
-                s.setLong(8,prior.generation);s.setString(9,prior.owner);s.setString(10,prior.status);s.setLong(11,prior.deadline);s.setLong(12,prior.lease);
-                if(s.executeUpdate()!=1) throw new WorkflowRefusal("FENCED","storage ownership comparison failed");
+            long previous = Objects.requireNonNull(loaded.get(state.id),"read required before update");
+            state.revision = Math.incrementExact(previous);
+            try (PreparedStatement s = c.prepareStatement("UPDATE aw_run SET revision=?,status=?,deadline=?,state=? WHERE id=? AND revision=?")) {
+                s.setLong(1,state.revision); s.setString(2,state.status); s.setLong(3,state.deadline);
+                s.setString(4,mapper.writeValueAsString(state)); s.setString(5,state.id); s.setLong(6,previous);
+                if (s.executeUpdate() != 1) throw new WorkflowRefusal("STATE_CHANGED","concurrent state transition refused");
             }
-            loaded.put(state.id,new Fence(state.generation,state.owner,state.status,state.deadline,state.leaseUntil));
+            loaded.put(state.id,state.revision);
         }
     }
-    private record Fence(long generation,String owner,String status,long deadline,long lease) {}
     @Override public void close() {
-        try { keeper.close(); } catch(SQLException ex) { throw new WorkflowRefusal("STORE_CLOSE","database close failed",ex); }
+        try { keeper.close(); } catch (SQLException ex) { throw new WorkflowRefusal("STORE_CLOSE","database close failed",ex); }
     }
 }

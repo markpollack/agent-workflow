@@ -12,13 +12,13 @@ import io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
 
 class DurableLifecycleTest {
     @TempDir Path directory;
-    @Test void automaticRenewalCoversSlowHandlerWithoutMovingDeadline() throws Exception {
+    @Test void slowStepCompletesWithoutOwnershipRenewalOrMovingDeadline() throws Exception {
         var deployment=deployment(Map.of());var workflow=echo(deployment,Slow.class,null);
-        try(var runtime=DurableWorkflows.open(directory.resolve("runs"),deployment,new ExecutionPolicy(Duration.ofSeconds(1),3))) {
+        try(var runtime=DurableWorkflows.open(directory.resolve("runs"),deployment,new ExecutionPolicy(3))) {
             var admitted=runtime.start(workflow,"slow",new Request("x"));
             var result=runtime.resume(admitted.runId(),workflow);
             assertThat(result.status()).isEqualTo(RunSnapshot.Status.SUCCEEDED);assertThat(result.deadline()).isEqualTo(admitted.deadline());
-            assertThat(result.events()).anyMatch(e->e.kind().equals("RENEWED"));assertThat(result.invocations().getFirst().deliveries()).hasSize(1);
+            assertThat(result.events()).noneMatch(e->e.kind().equals("RENEWED"));assertThat(result.invocations().getFirst().attempts()).hasSize(1);
         }
     }
     @Test void terminalOnlyAndDefaultPolicyRemainFiniteAndExplicit() throws Exception {
@@ -53,7 +53,7 @@ class DurableLifecycleTest {
             assertThat(runtime.result(admitted.runId(),workflow)).isEqualTo(new Request("hello!"));
             assertThat(completed.deadline()).isEqualTo(admitted.deadline());
             assertThat(completed.invocations()).hasSize(1);
-            assertThat(completed.invocations().getFirst().deliveries()).hasSize(1);
+            assertThat(completed.invocations().getFirst().attempts()).hasSize(1);
             assertThat(runtime.resume(admitted.runId(),workflow)).isEqualTo(completed);
             assertThat(runtime.cancel(admitted.runId(),"owner","late").status()).isEqualTo(RunSnapshot.Status.SUCCEEDED);
         }

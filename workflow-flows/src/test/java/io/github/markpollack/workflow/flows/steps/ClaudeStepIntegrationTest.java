@@ -1,6 +1,6 @@
 package io.github.markpollack.workflow.flows.steps;
 
-import io.github.markpollack.workflow.core.AgentContext;
+import io.github.markpollack.workflow.flows.StepContext;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @EnabledIfEnvironmentVariable(named = "CLAUDE_STEP_IT", matches = "true")
 class ClaudeStepIntegrationTest {
 
-    private final AgentContext ctx = AgentContext.create();
+    private final StepContext ctx = new StepContext("run", "invocation", "attempt", 1, java.time.Instant.MAX, java.util.Map.of());
 
     @Test
     void subprocessRunsWithWorkingDirectory(@TempDir Path tempDir) {

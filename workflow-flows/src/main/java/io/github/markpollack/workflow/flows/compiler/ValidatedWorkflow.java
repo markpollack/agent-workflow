@@ -125,6 +125,23 @@ public final class ValidatedWorkflow {
         return new ValidatedWorkflow(compiled,selected,Map.of(),policy,authored);
     }
 
+    /** Compile a sequential definition with executable selections in authored call order. */
+    public static ValidatedWorkflow compileSequential(Definition<?,?> source,List<ExecutableIdentity> selections,
+            DeadlinePolicy policy) {
+        Definition<?,?> owned=DefinitionOwnership.acquire(source);
+        Map<Placement,ExecutableIdentity> selected=new LinkedHashMap<>();
+        int call=0;
+        for(int i=0;i<owned.nodes().size();i++) {
+            Node node=owned.nodes().get(i);
+            if(node instanceof Call) {
+                if(call==selections.size()) throw new IllegalArgumentException("missing sequential selection");
+                selected.put(Coordinates.node(Coordinates.root(owned),node,i),selections.get(call++));
+            }
+        }
+        if(call!=selections.size()) throw new IllegalArgumentException("extraneous sequential selection");
+        return compile(owned,selected,policy);
+    }
+
     /**
      * Compile a sequential parent with local child calls. Child selections are keyed by the
      * parent's call placement, and must match the authored child definition exactly. Each child

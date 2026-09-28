@@ -1,6 +1,6 @@
 package io.github.markpollack.workflow.flows.agent;
 
-import io.github.markpollack.workflow.core.AgentContext;
+import io.github.markpollack.workflow.flows.StepContext;
 import io.github.markpollack.workflow.core.StepName;
 import io.github.markpollack.workflow.flows.Step;
 import org.junit.jupiter.api.DisplayName;
@@ -14,7 +14,7 @@ class StepNamesTest {
     @StepName("stable-analyze")
     static class AnnotatedStep implements Step<String, String> {
         @Override
-        public String execute(AgentContext ctx, String input) {
+        public String execute(StepContext ctx, String input) {
             return input;
         }
 
@@ -26,7 +26,7 @@ class StepNamesTest {
 
     static class PlainStep implements Step<String, String> {
         @Override
-        public String execute(AgentContext ctx, String input) {
+        public String execute(StepContext ctx, String input) {
             return input;
         }
 

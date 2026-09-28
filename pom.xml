@@ -44,7 +44,6 @@
         <module>workflow-examples</module>
         <module>workflow-flows</module>
         <module>workflow-batch</module>
-        <module>workflow-temporal</module>
         <module>workflow-journal</module>
     </modules>
 
@@ -132,11 +131,6 @@
             <dependency>
                 <groupId>io.github.markpollack</groupId>
                 <artifactId>workflow-batch</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.github.markpollack</groupId>
-                <artifactId>workflow-temporal</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

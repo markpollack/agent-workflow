@@ -9,7 +9,7 @@ import java.util.Objects;
 /**
  * The atomic unit of the workflow trajectory trace.
  * <p>
- * Recorded by the {@link WorkflowExecutor} after each node is processed.
+ * An explicit observation accepted by TraceRecorder implementations; not a durable checkpoint.
  *
  * @param workflowRunId unique identifier for this workflow execution
  * @param workflowName  the workflow name

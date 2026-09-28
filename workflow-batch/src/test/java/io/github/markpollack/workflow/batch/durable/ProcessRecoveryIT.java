@@ -64,7 +64,7 @@ class ProcessRecoveryIT {
                 }
             }
             Set<String> deliveries=new HashSet<>();
-            for(JsonNode call:after.path("invocations")) for(JsonNode delivery:call.path("deliveries")) assertThat(deliveries.add(delivery.path("id").asText())).isTrue();
+            for(JsonNode call:after.path("invocations")) for(JsonNode delivery:call.path("attempts")) assertThat(deliveries.add(delivery.path("id").asText())).isTrue();
             long expectedSequence=1;for(JsonNode event:after.path("events")) assertThat(event.path("sequence").asLong()).isEqualTo(expectedSequence++);
             assertThat(Files.readString(directory.resolve("recover-result.json"))).contains("first:original/original/changed-first");
         } finally {if(worker.isAlive())worker.destroyForcibly();}

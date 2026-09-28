@@ -1,9 +1,9 @@
 package io.github.markpollack.workflow.batch.durable;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
+import io.github.markpollack.workflow.flows.Step;
+import io.github.markpollack.workflow.flows.StepContext;
 import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Type;
 import java.util.Arrays;
@@ -14,14 +14,12 @@ import java.util.Map;
 import io.github.markpollack.workflow.flows.compiler.TypeContracts;
 import io.github.markpollack.workflow.flows.compiler.ValidatedWorkflow;
 
-/** Direct contract checks and invocation of the handle's registered application classes. */
+/** Contract checks and direct invocation of application-supplied step instances. */
 final class ResolvedApplication {
     private final TypeContracts codec = new TypeContracts();
-    private final Map<String, String> configuration;
-    private final Map<String, Constructor<?>> operations = new HashMap<>();
+    private final Map<String, Step<?, ?>> operations = new HashMap<>();
 
     ResolvedApplication(ApplicationDeployment deployment, ValidatedWorkflow workflow) {
-        configuration = deployment.configuration();
         if (!codec.identity().equals(workflow.codecIdentity())
                 || !codec.identity().equals(deployment.manifest().codec())) {
             throw new WorkflowRefusal("CODEC_CHANGED", "deployed codec contract differs");
@@ -33,32 +31,20 @@ final class ResolvedApplication {
                 }
             }
             for (var call : workflow.invocations()) {
-                var child=workflow.children().get(call.placement());
-                if(child!=null) { new ResolvedApplication(deployment,child);continue; }
                 var selected = call.executable();
                 if (!deployment.manifest().deploymentDigest().equals(selected.deploymentManifestDigest())
                         || !deployment.manifest().configurationDigest().equals(selected.configurationDigest())) {
                     throw new WorkflowRefusal("EXECUTABLE_CHANGED", "selected deployment/configuration differs at " + call.placement());
                 }
-                Class<?> operation = deployment.operation(selected.entryPoint());
-                if (!Modifier.isPublic(operation.getModifiers()) || Modifier.isAbstract(operation.getModifiers())) {
-                    throw new WorkflowRefusal("EXECUTABLE_CONTRACT", "concrete public operation required");
+                Step<?, ?> step = deployment.step(selected.entryPoint());
+                StepTypes actual = StepTypes.of(step.getClass());
+                if (!actual.input().equals(selected.input()) || !actual.output().equals(selected.output())) {
+                    throw new WorkflowRefusal("STEP_CONTRACT", "supplied Step contract differs: " + selected.entryPoint());
                 }
-                Constructor<?> constructor = operation.getConstructor();
-                boolean witnessed = false;
-                for (Type parent : operation.getGenericInterfaces()) {
-                    if (parent instanceof ParameterizedType p && p.getRawType() == DurableOperation.class) {
-                        Type[] args = p.getActualTypeArguments();
-                        witnessed = args[0].equals(selected.input()) && args[1].equals(selected.output());
-                    }
-                }
-                if (!witnessed) {
-                    throw new WorkflowRefusal("EXECUTABLE_CONTRACT", "direct concrete DurableOperation contract required: " + selected.entryPoint());
-                }
-                operations.put(selected.entryPoint(), constructor);
+                operations.put(selected.entryPoint(), step);
             }
-        } catch (ReflectiveOperationException | LinkageError ex) {
-            throw new WorkflowRefusal("OPERATION_UNAVAILABLE", "deployed operation/type resolution failed", ex);
+        } catch (LinkageError ex) {
+            throw new WorkflowRefusal("STEP_UNAVAILABLE", "deployed operation/type resolution failed", ex);
         } catch (IllegalArgumentException ex) {
             throw new WorkflowRefusal("TYPE_CHANGED", "deployed type contract refused", ex);
         }
@@ -89,16 +75,9 @@ final class ResolvedApplication {
         }
     }
 
-    @SuppressWarnings("unchecked") // The exact registered class and direct concrete signature were checked above.
-    Object execute(String entry, Object input, DeliveryContext context) throws Exception {
-        try {
-            DurableOperation<Object, Object> operation = (DurableOperation<Object, Object>) operations.get(entry).newInstance();
-            return operation.execute(input, context, configuration);
-        } catch (InvocationTargetException ex) {
-            if (ex.getCause() instanceof Exception cause) throw cause;
-            if (ex.getCause() instanceof Error cause) throw cause;
-            throw ex;
-        }
+    @SuppressWarnings("unchecked") // Concrete generic declarations were checked against compiler selections above.
+    Object execute(String entry, Object input, StepContext context) throws Exception {
+        return ((Step<Object, Object>) operations.get(entry)).execute(context, input);
     }
 
     private static Throwable unwrap(Throwable ex) {

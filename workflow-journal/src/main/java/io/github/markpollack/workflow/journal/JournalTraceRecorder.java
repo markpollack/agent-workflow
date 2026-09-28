@@ -22,22 +22,8 @@ import java.util.Objects;
  * </ul>
  *
  * <h2>Usage</h2>
- * <pre>{@code
- * Journal.configure(new JsonFileStorage(path));
- * Journal.registerEventType("workflow_step", WorkflowStepEvent.class);
- *
- * try (Run run = Journal.run("bom-sync").start()) {
- *     WorkflowExecutor executor = new WorkflowExecutor(
- *         new LocalStepRunner(),
- *         WorkflowJournal.forRun(run)
- *     );
- *     MyState result = Workflow.<MyState, MyState>define("bom-sync")
- *         .withExecutor(executor)
- *         .step(fetchVersions)
- *         .step(updateBom)
- *         .run(initialState);
- * }
- * }</pre>
+ * <p>The application submits observations to the recorder explicitly. This recorder
+ * is not connected to durable workflow execution and does not own checkpoints.
  *
  * <p>{@link #getTrace(String)} returns an empty list — the journal is the source of
  * truth. Use {@link TraceRecorder#inMemory()} when trace replay is also needed.

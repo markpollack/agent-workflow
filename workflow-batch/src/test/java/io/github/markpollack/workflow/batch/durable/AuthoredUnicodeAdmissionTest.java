@@ -1,6 +1,8 @@
 package io.github.markpollack.workflow.batch.durable;
 
 import java.nio.file.Path;
+import io.github.markpollack.workflow.flows.Step;
+import io.github.markpollack.workflow.flows.StepContext;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -18,20 +20,20 @@ import static org.assertj.core.api.Assertions.*;
 
 class AuthoredUnicodeAdmissionTest {
     @TempDir Path directory;
-    public static class Echo implements DurableOperation<String,String> {
+    public static class Echo implements Step<String,String> {
         static final AtomicInteger calls=new AtomicInteger();
-        public String execute(String input,DeliveryContext context,Map<String,String> config) {
+        public String execute(StepContext context,String input) {
             calls.incrementAndGet();return input;
         }
     }
     private static ApplicationDeployment deployment() {
-        return new ApplicationDeployment("authored-unicode","immutable-build",Map.of(),List.of(Echo.class));
+        return new ApplicationDeployment("authored-unicode","immutable-build",Map.of(),Map.of(Echo.class.getName(),new Echo()));
     }
     private static ValidatedWorkflow workflow(ApplicationDeployment deployment,String name,String call,String reason,String profile) {
         var definition=new Definition<>(name,String.class,String.class,
                 List.of(new Call(call,Op.declared("work",String.class,String.class)),new End(Terminal.SUCCEEDED,reason)),Duration.ofMinutes(2));
         var placement=StructuredWorkflowCompiler.compile(definition).bindings().getFirst().placement();
-        return ValidatedWorkflow.compile(definition,Map.of(placement,deployment.selection(Echo.class,String.class,String.class)),
+        return ValidatedWorkflow.compile(definition,Map.of(placement,deployment.selection(Echo.class.getName(),String.class,String.class)),
                 new DeadlinePolicy(profile,Duration.ofHours(1)));
     }
     private static ValidatedWorkflow changed(ApplicationDeployment deployment,int field,String text) {

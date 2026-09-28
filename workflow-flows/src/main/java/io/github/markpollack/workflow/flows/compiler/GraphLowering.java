@@ -19,7 +19,7 @@ import java.util.stream.Collectors;
 import io.github.markpollack.judge.jury.Verdict;
 import io.github.markpollack.judge.jury.interpretation.Interpretation;
 import io.github.markpollack.judge.jury.interpretation.VerdictReading;
-import io.github.markpollack.workflow.core.AgentContext;
+import io.github.markpollack.workflow.flows.StepContext;
 import io.github.markpollack.workflow.flows.Step;
 
 import io.github.markpollack.workflow.flows.workflow.EdgeCondition;
@@ -159,7 +159,7 @@ final class GraphLowering {
         }
     }
     private record RefusingStep(String name,Type input,Type output) implements Step<Object,Object> {
-        @Override public Object execute(AgentContext context,Object input) { throw new UnsupportedOperationException("compiled graph requires the validated durable runtime boundary"); }
+        @Override public Object execute(StepContext context,Object input) { throw new UnsupportedOperationException("compiled graph requires the validated durable runtime boundary"); }
         @Override public Class<?> inputType() { return raw(input); }
         @Override public Class<?> outputType() { return raw(output); }
         private static Class<?> raw(Type type) { return type instanceof Class<?> c?c:type instanceof ParameterizedType p?(Class<?>)p.getRawType():Void.class; }

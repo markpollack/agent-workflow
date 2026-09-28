@@ -16,7 +16,7 @@
 package io.github.markpollack.workflow.flows.steps;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.github.markpollack.workflow.core.AgentContext;
+import io.github.markpollack.workflow.flows.StepContext;
 import io.github.markpollack.workflow.flows.AgentStep;
 import io.github.markpollack.workflow.flows.AgentStepException;
 import io.github.markpollack.workflow.flows.Step;
@@ -159,7 +159,7 @@ public class ClaudeStep implements Step<String, String>, AgentStep {
     }
 
     @Override
-    public String execute(AgentContext ctx, String input) {
+    public String execute(StepContext ctx, String input) {
         String resolved = promptTemplate.replace("{input}", input != null ? input : "");
         if (client != null) {
             return client.run(resolved, workingDirectory, List.copyOf(mcpConfigs), permissionMode);

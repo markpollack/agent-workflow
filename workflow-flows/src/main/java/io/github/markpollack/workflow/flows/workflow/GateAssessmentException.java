@@ -7,7 +7,7 @@ import io.github.markpollack.judge.jury.Verdict;
  *
  * <p>This is <em>transport</em>, not the evaluation model. The v1 engine routes and terminates
  * through exceptions, so an inconclusive {@link GateAssessment} needs a signal to travel on once
- * {@link WorkflowExecutor} has captured the verdict, written it to the context and recorded the
+ * the former graph executor has captured the verdict, written it to the context and recorded the
  * gate's transition. What the engine knows is in the evidence it has already written; this only
  * carries the run out.
  *

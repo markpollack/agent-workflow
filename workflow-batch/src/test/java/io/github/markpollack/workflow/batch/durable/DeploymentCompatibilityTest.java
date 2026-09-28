@@ -4,6 +4,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.*;
+import io.github.markpollack.workflow.flows.Step;
+import io.github.markpollack.workflow.flows.StepContext;
 import java.nio.charset.StandardCharsets;
 import java.time.*;
 import java.util.*;
@@ -23,7 +25,7 @@ class DeploymentCompatibilityTest {
             Path file=directory.resolve(change);
             try(var runtime=DurableWorkflows.open(file,deployment)) {
                 controlledClock(file,8_000_000);var admitted=runtime.start(workflow,"run",new Request("original"));
-                var lease=runtime.claim(admitted.runId(),workflow,"one");
+                String lease=admitted.runId();
                 for(int i=0;i<4;i++) runtime.advance(lease,workflow);
                 var before=runtime.inspect(admitted.runId());String input=before.invocations().get(1).inputValue();
                 mutate(file,admitted.runId(),state->{
@@ -41,62 +43,55 @@ class DeploymentCompatibilityTest {
 
     @Test void changedBehaviorSelectionConfigurationBuildAndPolicyRefuseWithoutChangingRun() throws Exception {
         Path file=directory.resolve("runs");var deployment=deployment(Map.of("suffix","a"));var workflow=echo(deployment,Echo.class,null);
+        RunSnapshot admitted;
         try(var runtime=DurableWorkflows.open(file,deployment)) {
-            var run=runtime.start(workflow,"run",new Request("x"));
+            admitted=runtime.start(workflow,"run",new Request("x"));
             for(var changed:List.of(echo(deployment,Echo.class,Duration.ofMinutes(5)),echo(deployment,Throws.class,null))) {
-                assertThatThrownBy(()->runtime.resume(run.runId(),changed)).isInstanceOf(WorkflowRefusal.class);
-                assertThat(runtime.inspect(run.runId())).isEqualTo(run);
+                assertThatThrownBy(()->runtime.resume(admitted.runId(),changed)).isInstanceOf(WorkflowRefusal.class);
+                assertThat(runtime.inspect(admitted.runId())).isEqualTo(admitted);
             }
-            var lease=runtime.claim(run.runId(),workflow,"one");
-            var claimed=runtime.inspect(run.runId());
+        }
+        for(boolean terminal:List.of(false,true)) {
+            if(terminal) try(var runtime=DurableWorkflows.open(file,deployment)) {runtime.resume(admitted.runId(),workflow);}
+            String before=state(file,admitted.runId());
             for(var changed:List.of(deployment(Map.of("suffix","b")),deployment("fixture-v2",Map.of("suffix","a")))) {
                 try(var other=DurableWorkflows.open(file,changed)) {
                     var selected=echo(changed,Echo.class,null);
-                    assertThatThrownBy(()->other.renew(lease)).isInstanceOf(WorkflowRefusal.class);
-                    assertThatThrownBy(()->other.claim(run.runId(),selected,"two")).isInstanceOf(WorkflowRefusal.class);
-                    assertThatThrownBy(()->other.advance(lease,selected)).isInstanceOf(WorkflowRefusal.class);
-                    assertThatThrownBy(()->other.resume(run.runId(),selected)).isInstanceOf(WorkflowRefusal.class);
+                    assertThatThrownBy(()->other.advance(admitted.runId(),selected)).isInstanceOf(WorkflowRefusal.class);
+                    assertThatThrownBy(()->other.resume(admitted.runId(),selected)).isInstanceOf(WorkflowRefusal.class);
+                    assertThatThrownBy(()->other.result(admitted.runId(),selected)).isInstanceOf(WorkflowRefusal.class);
                     assertThatThrownBy(()->other.start(selected,"run",new Request("x"))).isInstanceOf(WorkflowRefusal.class);
-                    assertThat(other.inspect(run.runId())).isEqualTo(claimed);
+                    assertThat(state(file,admitted.runId())).isEqualTo(before);
                 }
             }
-            try(var other=DurableWorkflows.open(file,deployment,new ExecutionPolicy(Duration.ofSeconds(10),2))) {
-                assertThatThrownBy(()->other.renew(lease)).isInstanceOf(WorkflowRefusal.class);
-                assertThat(other.inspect(run.runId())).isEqualTo(claimed);
-            }
-            runtime.advance(lease,workflow);var completed=runtime.inspect(run.runId());
-            try(var other=DurableWorkflows.open(file,deployment("fixture-v2",Map.of("suffix","a")))) {
-                assertThatThrownBy(()->other.resume(run.runId(),workflow)).isInstanceOf(WorkflowRefusal.class);
-                assertThatThrownBy(()->other.result(run.runId(),workflow)).isInstanceOf(WorkflowRefusal.class);
-                assertThatThrownBy(()->other.start(workflow,"run",new Request("x"))).isInstanceOf(WorkflowRefusal.class);
-                assertThat(other.inspect(run.runId())).isEqualTo(completed);
+            try(var other=DurableWorkflows.open(file,deployment,new ExecutionPolicy(2))) {
+                assertThatThrownBy(()->other.resume(admitted.runId(),workflow)).isInstanceOf(WorkflowRefusal.class);
+                assertThat(state(file,admitted.runId())).isEqualTo(before);
             }
         }
     }
 
-    @Test void missingRegistrationAndManagementOnlyHandleCannotExecuteOrRenew() throws Exception {
+    @Test void missingRegistrationAndManagementOnlyHandleCannotExecute() throws Exception {
         Path file=directory.resolve("runs");var deployment=deployment(Map.of());var workflow=echo(deployment,Echo.class,null);
-        try(var runtime=DurableWorkflows.open(file,deployment)) {
-            var run=runtime.start(workflow,"run",new Request("x"));var lease=runtime.claim(run.runId(),workflow,"one");
-            var claimed=runtime.inspect(run.runId());
-            var missing=new ApplicationDeployment("kernel-fixtures","fixture-v1",Map.of(),List.of());
-            try(var other=DurableWorkflows.open(file,missing);var management=DurableWorkflows.open(file)) {
-                for(var handle:List.of(other,management)) {
-                    assertThatThrownBy(()->handle.start(workflow,"new",new Request("x"))).isInstanceOf(WorkflowRefusal.class);
-                    assertThatThrownBy(()->handle.resume(run.runId(),workflow)).isInstanceOf(WorkflowRefusal.class);
-                    assertThatThrownBy(()->handle.renew(lease)).isInstanceOf(WorkflowRefusal.class);
-                    assertThat(handle.inspect(run.runId())).isEqualTo(claimed);
-                }
-                assertThat(management.discover()).hasSize(1);
-                assertThat(management.cancel(run.runId(),"owner","stop").status()).isEqualTo(RunSnapshot.Status.CANCELLED);
-            }
+        RunSnapshot admitted;
+        try(var runtime=DurableWorkflows.open(file,deployment)) {admitted=runtime.start(workflow,"run",new Request("x"));}
+        var missing=new ApplicationDeployment("kernel-fixtures","fixture-v1",Map.of(),Map.of());
+        try(var other=DurableWorkflows.open(file,missing)) {
+            assertThatThrownBy(()->other.start(workflow,"new",new Request("x"))).isInstanceOf(WorkflowRefusal.class);
+            assertThatThrownBy(()->other.resume(admitted.runId(),workflow)).isInstanceOf(WorkflowRefusal.class);
+            assertThat(other.inspect(admitted.runId())).isEqualTo(admitted);
+        }
+        try(var management=DurableWorkflows.open(file)) {
+            assertThatThrownBy(()->management.resume(admitted.runId(),workflow)).isInstanceOf(WorkflowRefusal.class);
+            assertThat(management.discover()).hasSize(1);
+            assertThat(management.cancel(admitted.runId(),"owner","stop").status()).isEqualTo(RunSnapshot.Status.CANCELLED);
         }
     }
 
-    public static class Counting implements DurableOperation<Request,Request> {
+    public static class Counting implements Step<Request,Request> {
         static int constructions, executions;
         public Counting() { constructions++; }
-        public Request execute(Request input,DeliveryContext context,Map<String,String> config) {
+        public Request execute(StepContext context,Request input) { Map<String,String> config=context.configuration();
             executions++;
             assertThatThrownBy(()->config.put("suffix","mutation")).isInstanceOf(UnsupportedOperationException.class);
             return new Request(input.text()+config.get("suffix"));
@@ -105,15 +100,15 @@ class DeploymentCompatibilityTest {
     @Test void fixedRegistrationAndConfigurationGovernActualApplicationInvocation() throws Exception {
         Counting.constructions=0;Counting.executions=0;
         var config=new HashMap<>(Map.of("suffix","original"));
-        List<Class<? extends DurableOperation<?,?>>> operations=new ArrayList<>(List.of(Counting.class));
+        Map<String,Step<?,?>> operations=new HashMap<>(steps(new Counting()));
         var deployment=new ApplicationDeployment("application","immutable-build",config,operations);
         config.put("suffix","changed");operations.clear();
         assertThat(deployment.manifest().configurationDigest()).isEqualTo(
-                new ApplicationDeployment("application","immutable-build",Map.of("suffix","original"),List.of()).manifest().configurationDigest());
+                new ApplicationDeployment("application","immutable-build",Map.of("suffix","original"),Map.of()).manifest().configurationDigest());
         var workflow=echo(deployment,Counting.class,null);
         try(var runtime=DurableWorkflows.open(directory.resolve("runs"),deployment)) {
             var run=runtime.start(workflow,"run",new Request("x"));
-            assertThat(Counting.constructions).isZero();assertThat(Counting.executions).isZero();
+            assertThat(Counting.constructions).isEqualTo(1);assertThat(Counting.executions).isZero();
             runtime.resume(run.runId(),workflow);
             assertThat(runtime.result(run.runId(),workflow)).isEqualTo(new Request("xoriginal"));
             assertThat(Counting.constructions).isEqualTo(1);assertThat(Counting.executions).isEqualTo(1);
@@ -122,9 +117,9 @@ class DeploymentCompatibilityTest {
     }
 
     @Test void duplicateMissingAndWrongConcreteTypeRegistrationsRefuse() throws Exception {
-        assertThatThrownBy(()->new ApplicationDeployment("app","v1",Map.of(),List.of(Echo.class,Echo.class))).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(()->new ApplicationDeployment("app","v1",Map.of(),Map.of("",new Echo()))).isInstanceOf(IllegalArgumentException.class);
         var deployment=deployment(Map.of());
-        assertThatThrownBy(()->deployment.selection(Counting.class,Request.class,Request.class)).isInstanceOf(WorkflowRefusal.class);
+        assertThatThrownBy(()->deployment.selection(Counting.class.getName(),Request.class,Request.class)).isInstanceOf(WorkflowRefusal.class);
         var wrong=single(deployment,Echo.class,First.class,First.class,null,Terminal.SUCCEEDED);
         try(var runtime=DurableWorkflows.open(directory.resolve("runs"),deployment)) {
             assertThatThrownBy(()->runtime.start(wrong,"wrong",new First("x"))).isInstanceOf(WorkflowRefusal.class);
@@ -152,28 +147,28 @@ class DeploymentCompatibilityTest {
         }
     }
 
-    public static class LinkageFailure implements DurableOperation<Request,Request> {
-        public Request execute(Request input,DeliveryContext context,Map<String,String> config) { throw new NoSuchMethodError("deployment omitted method"); }
+    public static class LinkageFailure implements Step<Request,Request> {
+        public Request execute(StepContext context,Request input) { Map<String,String> config=context.configuration(); throw new NoSuchMethodError("deployment omitted method"); }
     }
     @Test void runtimeLinkageFailureIsExplicitAndCannotProduceSuccess() throws Exception {
-        var deployment=new ApplicationDeployment("app","v1",Map.of(),List.of(LinkageFailure.class));
+        var deployment=new ApplicationDeployment("app","v1",Map.of(),steps(new LinkageFailure()));
         var workflow=echo(deployment,LinkageFailure.class,null);
         try(var runtime=DurableWorkflows.open(directory.resolve("runs"),deployment)) {
             var run=runtime.start(workflow,"run",new Request("x"));var after=runtime.resume(run.runId(),workflow);
             assertThat(after.status()).isEqualTo(RunSnapshot.Status.FAILED);
-            assertThat(after.reason().code()).isEqualTo("HANDLER_FAILED");
+            assertThat(after.reason().code()).isEqualTo("STEP_FAILED");
             assertThat(after.reason().message()).contains("NoSuchMethodError");
-            assertThat(after.nextOperation()).isZero();assertThat(after.invocations().getFirst().deliveries()).hasSize(1);
+            assertThat(after.nextOperation()).isZero();assertThat(after.invocations().getFirst().attempts()).hasSize(1);
             assertThatThrownBy(()->runtime.result(run.runId(),workflow)).isInstanceOf(WorkflowRefusal.class);
         }
     }
 
     public record Upper(String text) { public Upper { text=text.toUpperCase(Locale.ROOT); } }
-    public static class UpperEcho implements DurableOperation<Upper,Upper> {
-        public Upper execute(Upper input,DeliveryContext context,Map<String,String> config) {return input;}
+    public static class UpperEcho implements Step<Upper,Upper> {
+        public Upper execute(StepContext context,Upper input) { Map<String,String> config=context.configuration();return input;}
     }
     @Test void sameShapeConstructorTransformationsCannotChangeSavedInputOrResult() throws Exception {
-        var deployment=new ApplicationDeployment("app","v1",Map.of(),List.of(UpperEcho.class));
+        var deployment=new ApplicationDeployment("app","v1",Map.of(),steps(new UpperEcho()));
         var workflow=single(deployment,UpperEcho.class,Upper.class,Upper.class,null,Terminal.SUCCEEDED);
         for(boolean terminal:List.of(false,true)) {
             Path file=directory.resolve("transform-"+terminal);
@@ -189,7 +184,7 @@ class DeploymentCompatibilityTest {
                 String before=state(file,run.runId());
                 if(terminal) assertThatThrownBy(()->runtime.result(run.runId(),workflow)).isInstanceOf(WorkflowRefusal.class).hasMessageContaining("decode");
                 else {
-                    var lease=runtime.claim(run.runId(),workflow,"one");before=state(file,run.runId());
+                    String lease=run.runId();before=state(file,run.runId());
                     assertThatThrownBy(()->runtime.advance(lease,workflow)).isInstanceOf(WorkflowRefusal.class).hasMessageContaining("decode");
                 }
                 assertThat(state(file,run.runId())).isEqualTo(before);
@@ -219,14 +214,14 @@ class DeploymentCompatibilityTest {
         try(var runtime=DurableWorkflows.open(file);var c=connect(file);var s=c.createStatement();
                 var rows=s.executeQuery("SELECT table_name FROM information_schema.tables WHERE table_schema='PUBLIC'")) {
             List<String> names=new ArrayList<>();while(rows.next())names.add(rows.getString(1));
-            assertThat(names).containsExactlyInAnyOrder("AW_RUN","AW_TRANSITION_LOCK");
+            assertThat(names).containsExactlyInAnyOrder("AW_RUN","AW_TRANSITION_LOCK","AW_STORE_FORMAT");
         }
     }
 
     @Test @SuppressWarnings("unchecked")
     void sameNameTypesFromDifferentApplicationLoadersRefuse() throws Exception {
         Map<String,String> sources=Map.of("app/Request.java","package app; public record Request(String text) {}",
-                "app/Operation.java","package app; import io.github.markpollack.workflow.batch.durable.*; import java.util.Map; public class Operation implements DurableOperation<Request,Request> { public Request execute(Request input,DeliveryContext context,Map<String,String> config){return input;} }");
+                "app/Operation.java","package app; import io.github.markpollack.workflow.flows.*; import java.util.Map; public class Operation implements Step<Request,Request> { public Request execute(StepContext context,Request input){return input;} }");
         Path classes=directory.resolve("classes");Files.createDirectories(classes);
         List<String> args=new ArrayList<>(List.of("--release","21","-proc:none","-classpath",System.getProperty("java.class.path"),"-d",classes.toString()));
         for(var entry:sources.entrySet()) {Path file=directory.resolve("src").resolve(entry.getKey());Files.createDirectories(file.getParent());Files.writeString(file,entry.getValue());args.add(file.toString());}
@@ -234,12 +229,12 @@ class DeploymentCompatibilityTest {
         try(var first=new java.net.URLClassLoader(new java.net.URL[]{classes.toUri().toURL()},getClass().getClassLoader());
                 var second=new java.net.URLClassLoader(new java.net.URL[]{classes.toUri().toURL()},getClass().getClassLoader())) {
             Class<?> type=first.loadClass("app.Request");
-            var operation=(Class<? extends DurableOperation<?,?>>)second.loadClass("app.Operation");
-            var deployment=new ApplicationDeployment("app","v1",Map.of(),List.of(operation));
+            var operation=(Class<? extends Step<?,?>>)second.loadClass("app.Operation");
+            var deployment=new ApplicationDeployment("app","v1",Map.of(),steps(operation.getConstructor().newInstance()));
             var workflow=single(deployment,operation,type,type,null,Terminal.SUCCEEDED);
             try(var runtime=DurableWorkflows.open(directory.resolve("runs"),deployment)) {
                 Object input=type.getConstructor(String.class).newInstance("x");
-                assertThatThrownBy(()->runtime.start(workflow,"run",input)).isInstanceOfSatisfying(WorkflowRefusal.class,ex->assertThat(ex.code()).isEqualTo("EXECUTABLE_CONTRACT"));
+                assertThatThrownBy(()->runtime.start(workflow,"run",input)).isInstanceOfSatisfying(WorkflowRefusal.class,ex->assertThat(ex.code()).isEqualTo("STEP_CONTRACT"));
                 assertThat(runtime.discover()).isEmpty();
             }
         }
@@ -249,7 +244,7 @@ class DeploymentCompatibilityTest {
         String malformed=String.valueOf((char)0xD800);
         for(var config:List.of(Map.of("value",malformed),Map.of(malformed,"value")))
             assertThatThrownBy(()->deployment(config)).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Unicode");
-        assertThatThrownBy(()->new ApplicationDeployment("app",malformed,Map.of(),List.of())).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(()->new ApplicationDeployment("app",malformed,Map.of(),Map.of())).isInstanceOf(IllegalArgumentException.class);
         assertThat(deployment(Map.of("value","?")).manifest().configurationDigest())
                 .isNotEqualTo(deployment(Map.of("value","\uD83D\uDE00")).manifest().configurationDigest());
         var first=new LinkedHashMap<String,String>();first.put("b","two");first.put("a","one");

@@ -15,7 +15,7 @@
  */
 package io.github.markpollack.workflow.flows.steps;
 
-import io.github.markpollack.workflow.core.AgentContext;
+import io.github.markpollack.workflow.flows.StepContext;
 import io.github.markpollack.workflow.flows.AgentStep;
 import io.github.markpollack.workflow.flows.Step;
 
@@ -129,7 +129,7 @@ public class A2AStep implements Step<String, String>, AgentStep {
     }
 
     @Override
-    public String execute(AgentContext ctx, String input) {
+    public String execute(StepContext ctx, String input) {
         logger.debug("A2AStep '{}' sending message: {}", name,
                 input != null && input.length() > 100 ? input.substring(0, 100) + "..." : input);
         try {

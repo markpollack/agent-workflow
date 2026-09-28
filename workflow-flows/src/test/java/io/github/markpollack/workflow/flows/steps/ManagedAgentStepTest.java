@@ -15,7 +15,7 @@
  */
 package io.github.markpollack.workflow.flows.steps;
 
-import io.github.markpollack.workflow.core.AgentContext;
+import io.github.markpollack.workflow.flows.StepContext;
 import io.github.markpollack.workflow.flows.AgentStep;
 import org.junit.jupiter.api.Test;
 
@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ManagedAgentStepTest {
 
-	private final AgentContext ctx = AgentContext.create();
+	private final StepContext ctx = new StepContext("run", "invocation", "attempt", 1, java.time.Instant.MAX, java.util.Map.of());
 
 	@Test
 	void executeShouldDelegateToRunnerAndReturnResponse() {

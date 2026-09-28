@@ -1,9 +1,9 @@
 package io.github.markpollack.workflow.batch.durable;
 
 import java.lang.reflect.Type;
-import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import io.github.markpollack.workflow.flows.Step;
 import java.util.TreeMap;
 
 import com.fasterxml.jackson.core.JsonFactory;
@@ -12,7 +12,7 @@ import io.github.markpollack.workflow.flows.compiler.ExecutableIdentity;
 import io.github.markpollack.workflow.flows.compiler.TypeContracts;
 
 /**
- * Immutable registration of the application classes and configuration used by a runtime handle.
+ * Immutable registration of the application-supplied steps and configuration used by a runtime handle.
  * The application supplies a distinct immutable build ID when code or dependencies change.
  * Identity comparison is not verification of executable bytes or external dependencies.
  */
@@ -59,28 +59,24 @@ public final class ApplicationDeployment {
 
     private final Manifest manifest;
     private final Map<String, String> configuration;
-    private final Map<String, Class<? extends DurableOperation<?, ?>>> operations;
+    private final Map<String, Step<?, ?>> steps;
 
     /**
-     * Snapshot one deployment. Classes are supplied by the application's ordinary class loader.
-     * No operation is constructed or invoked here.
+     * Register named application-supplied steps. The application owns constructor injection
+     * and dependency lifecycle; this runtime neither constructs nor closes those objects.
+     * Multiple runs may invoke a registered step concurrently.
      *
      * @param applicationId application namespace
-     * @param buildId immutable build identifier, compared by exact equality
-     * @param configuration immutable behavior inputs, copied before hashing and execution
-     * @param operations explicitly available operation classes; duplicate names refuse
+     * @param buildId immutable code/dependency build identity
+     * @param configuration copied declared configuration used for compatibility
+     * @param steps stable registration IDs and their supplied instances
      */
     public ApplicationDeployment(String applicationId, String buildId, Map<String, String> configuration,
-            Collection<? extends Class<? extends DurableOperation<?, ?>>> operations) {
+            Map<String, ? extends Step<?, ?>> steps) {
         this.configuration = Map.copyOf(configuration);
         this.configuration.forEach((key, value) -> { requireUnicode(key); requireUnicode(value); });
-        Map<String, Class<? extends DurableOperation<?, ?>>> registered = new LinkedHashMap<>();
-        for (Class<? extends DurableOperation<?, ?>> operation : operations) {
-            if (registered.putIfAbsent(operation.getName(), operation) != null) {
-                throw new IllegalArgumentException("duplicate operation registration: " + operation.getName());
-            }
-        }
-        this.operations = Map.copyOf(registered);
+        steps.keySet().forEach(id -> requireText(id, "step registration ID"));
+        this.steps = Map.copyOf(steps);
         String[] fields = new TreeMap<>(this.configuration).entrySet().stream()
                 .flatMap(entry -> java.util.stream.Stream.of(entry.getKey(), entry.getValue()))
                 .toArray(String[]::new);
@@ -93,20 +89,26 @@ public final class ApplicationDeployment {
     /** Returns immutable declaration/configuration/codec/runtime metadata for inspection. */
     public Manifest manifest() { return manifest; }
 
-    /** Select a registered class and concrete contracts for the validated compiler boundary. */
-    public ExecutableIdentity selection(Class<? extends DurableOperation<?, ?>> operation, Type input, Type output) {
-        if (operations.get(operation.getName()) != operation) {
-            throw new WorkflowRefusal("OPERATION_UNAVAILABLE", "class is not registered: " + operation.getName());
-        }
-        return new ExecutableIdentity(operation.getName(), manifest.deploymentDigest(),
-                manifest.configurationDigest(), input, output);
+    /** Select the supplied step's concrete generic contracts without invoking it. */
+    public ExecutableIdentity selection(String id) {
+        StepTypes types = StepTypes.of(step(id).getClass());
+        return selection(id, types.input(), types.output());
     }
 
+    /** Select explicit compiler contracts; admission verifies them against the supplied instance. */
+    public ExecutableIdentity selection(String id, Type input, Type output) {
+        step(id);
+        return new ExecutableIdentity(id, manifest.deploymentDigest(), manifest.configurationDigest(), input, output);
+    }
+
+    /** Begin a sequential definition on the same validated compiler used by runtime admission. */
+    public SequentialWorkflow define(String name) { return new SequentialWorkflow(this, name); }
+
     Map<String, String> configuration() { return configuration; }
-    Class<? extends DurableOperation<?, ?>> operation(String entryPoint) {
-        Class<? extends DurableOperation<?, ?>> operation = operations.get(entryPoint);
-        if (operation == null) throw new WorkflowRefusal("OPERATION_UNAVAILABLE", "operation is not registered: " + entryPoint);
-        return operation;
+    Step<?, ?> step(String id) {
+        Step<?, ?> step = steps.get(id);
+        if (step == null) throw new WorkflowRefusal("STEP_UNAVAILABLE", "step is not registered: " + id);
+        return step;
     }
 
     private static void requireUnicode(String text) {

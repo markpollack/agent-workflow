@@ -15,7 +15,7 @@
  */
 package io.github.markpollack.workflow.flows.steps;
 
-import io.github.markpollack.workflow.core.AgentContext;
+import io.github.markpollack.workflow.flows.StepContext;
 import io.github.markpollack.workflow.flows.AgentStep;
 import io.github.markpollack.workflow.flows.Step;
 import org.springframework.ai.chat.client.ChatClient;
@@ -90,7 +90,7 @@ public class ChatClientStep implements Step<String, String>, AgentStep {
     }
 
     @Override
-    public String execute(AgentContext ctx, String input) {
+    public String execute(StepContext ctx, String input) {
         String resolved = resolve(promptTemplate, input);
         return chatClient.prompt().user(resolved).call().content();
     }

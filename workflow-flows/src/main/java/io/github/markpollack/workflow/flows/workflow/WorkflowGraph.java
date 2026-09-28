@@ -11,7 +11,7 @@ import java.util.Optional;
  * The compiled intermediate representation of a workflow.
  * <p>
  * Pure data structure — no execution logic, no Spring AI dependencies.
- * The DSL builds it; the {@code WorkflowExecutor} runs it; the
+ * The compiler builds and verifies it; the
  * {@code TraceRecorder} reads it.
  *
  * @param name       the workflow identifier

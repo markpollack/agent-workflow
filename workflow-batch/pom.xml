@@ -12,7 +12,7 @@
 
     <artifactId>workflow-batch</artifactId>
     <name>Workflow Batch</name>
-    <description>Crash-resistant durability layer for agent workflows (CheckpointingStepRunner, JDBC persistence)</description>
+    <description>Local durable execution of validated workflows with JDBC saved progress</description>
 
     <dependencies>
         <!-- Consumer-visible floors for runtime families otherwise governed only by the parent. -->
@@ -37,34 +37,10 @@
             <version>${json-schema-validator.version}</version>
         </dependency>
 
-        <!-- workflow-flows provides Step, StepRunner, AgentContext -->
+        <!-- workflow-flows provides Step, StepContext and the validating compiler -->
         <dependency>
             <groupId>io.github.markpollack</groupId>
             <artifactId>workflow-flows</artifactId>
-        </dependency>
-
-        <!-- Hibernate ORM for JPA entities (@Entity, @UuidGenerator, @UpdateTimestamp) -->
-        <dependency>
-            <groupId>org.hibernate.orm</groupId>
-            <artifactId>hibernate-core</artifactId>
-            <version>6.6.56.Final</version>
-            <optional>true</optional>
-        </dependency>
-
-        <!-- Spring Data JPA for repositories (optional — only needed if using CheckpointingStepRunner) -->
-        <dependency>
-            <groupId>org.springframework.data</groupId>
-            <artifactId>spring-data-jpa</artifactId>
-            <version>3.5.13</version>
-            <optional>true</optional>
-        </dependency>
-
-        <!-- Spring TX for @Transactional on repositories -->
-        <dependency>
-            <groupId>org.springframework</groupId>
-            <artifactId>spring-tx</artifactId>
-            <version>6.2.19</version>
-            <optional>true</optional>
         </dependency>
 
         <!-- Spring JDBC for JdbcTraceRecorder -->
@@ -95,19 +71,6 @@
         <dependency>
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <!-- Spring Boot Test slice for @DataJpaTest -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-test</artifactId>
-            <version>3.5.16</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-data-jpa</artifactId>
-            <version>3.5.16</version>
             <scope>test</scope>
         </dependency>
         <!-- Embedded durable store; synchronous file persistence is selected by DurableWorkflows. -->
