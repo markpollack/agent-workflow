@@ -2,19 +2,19 @@
 
 Typed Java steps with compiler-validated bindings and durable local execution. The application supplies its step objects and dependencies. The runtime saves exact inputs, results and progress in an embedded H2 database.
 
-The executable workflow path in this checkout supports sequential steps and explicit terminal outcomes. The compiler also contains structural analysis for broader compositions; those constructs are refused by the durable runtime.
+This checkout is an unreleased development version. Its executable workflow path supports sequential steps and explicit terminal outcomes. The compiler also contains structural analysis for broader compositions; those constructs are refused by the durable runtime.
 
 ## Define and execute
 
-Implement `Step<I,O>` with concrete input/output types. Constructors may take application dependencies:
+Implement `Step<I,O>` with concrete input/output types. Constructors may take application dependencies. These excerpts omit imports and domain/service declarations; the complete runnable example is linked below:
 
 ```java
 final class Greet implements Step<Request, Greeting> {
     private final GreetingService service;
     Greet(GreetingService service) { this.service = service; }
 
-    public Greeting execute(StepContext context, Request input) {
-        return service.greet(input.customer());
+    public Greeting execute(StepContext context, Request input) throws Exception {
+        return service.greet(input.customer(), context);
     }
 }
 ```
@@ -44,13 +44,13 @@ See the complete, compiling [SequentialRecoveryExample](workflow-batch/src/test/
 
 One runtime owns a canonical database path until shutdown or process death. There are no renewable run leases or runtime scheduling threads. The embedded database may own storage-maintenance threads. `shutdown(Duration)` rejects new calls, drains existing calls and returns false if the timeout expires; incomplete shutdown retains database ownership. The runtime never closes supplied dependencies or interrupts application code to force drainage.
 
-Progress and outcomes commit atomically, with application code outside transactions. A compatible application can reopen after process death and `resume` an unfinished run. Committed steps are reused. A charged attempt with no committed outcome may execute again within its finite attempt allowance, so external effects need application-level idempotency. Known step failures are terminal; `resume` does not repair or restart a terminal run. Cancellation and deadline expiry prevent further accepted results but do not stop already running application code.
+Progress and outcomes commit atomically. The runtime calls `Step.execute` outside persistence transactions. A compatible application can reopen after process death and `resume` an unfinished run. Committed steps are reused. A charged attempt with no committed outcome may execute again within its finite attempt allowance, so external effects need application-level idempotency. Known step failures are terminal; `resume` does not repair or restart a terminal run. Cancellation and deadline expiry prevent further accepted results but do not stop already running application code.
 
-The declared build and configuration identify compatibility; the runtime does not archive executable code or dependency objects. Existing incompatible store formats refuse without migration.
+The application declares compatible build and configuration identities; the runtime also checks the saved definition, selected type/codec contracts, runtime metadata and execution policy. It does not archive executable code or dependency objects. Existing incompatible store formats refuse without migration.
 
 ## Run the recovery example
 
-Requires Java 21 or later. The runnable example lives in test sources and is excluded from the published library JAR. In IntelliJ, run its `main` using the workflow-batch test classpath. From this checkout:
+Requires Java 21 or later. The runnable example lives in test sources and is excluded from the published library JAR. In IntelliJ, run its `main` using the workflow-batch test classpath. Use a fresh directory for each demonstration and recover before the saved deadline (one hour by default). From this checkout:
 
 ```bash
 ./mvnw -q -pl workflow-batch -am install -DskipTests
@@ -69,11 +69,13 @@ The automated `SequentialExampleIT` performs the kill, rejects a second live own
 | Module | Responsibility |
 |--------|----------------|
 | `workflow-flows` | Step/StepContext, typed workflow compiler and leaf step adapters |
-| `workflow-batch` | Durable local runtime, JDBC progress store and recovery example |
+| `workflow-batch` | Durable local runtime and JDBC progress store; recovery example in test sources |
 | `workflow-journal` | Journal recording support |
 | `workflow-api`, `workflow-core` | Agent APIs and lower-level computation patterns |
 | `workflow-tools`, `workflow-agents` | Agent tools and implementations |
 | `workflow-examples` | Additional agent examples |
+
+The Journal recorder is available for explicitly submitted observations; it is not yet connected to this durable runtime. The runtime's JDBC store owns checkpoints and recovery.
 
 ## Verification
 
