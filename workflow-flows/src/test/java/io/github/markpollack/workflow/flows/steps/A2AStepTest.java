@@ -27,71 +27,97 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class A2AStepTest {
 
-    private final StepContext ctx = new StepContext("run", "invocation", "attempt", 1, java.time.Instant.MAX, java.util.Map.of());
+	private final StepContext ctx = new StepContext("run", "invocation", "attempt", 1, java.time.Instant.MAX,
+			java.util.Map.of());
 
-    @Test
-    void executeShouldDelegateToSenderAndReturnResponse() {
-        A2AStep step = new A2AStep("test-agent", (text, timeout) -> "response: " + text, Duration.ofSeconds(10));
+	@Test
+	void executeShouldDelegateToSenderAndReturnResponse() {
+		A2AStep step = new A2AStep("test-agent", (text, timeout) -> "response: " + text, Duration.ofSeconds(10));
 
-        String result = step.execute(ctx, "hello");
+		String result = step.execute(ctx, "hello");
 
-        assertThat(result).isEqualTo("response: hello");
-    }
+		assertThat(result).isEqualTo("response: hello");
+	}
 
-    @Test
-    void nameShouldReturnConfiguredName() {
-        A2AStep step = new A2AStep("my-agent", (text, timeout) -> "", Duration.ofSeconds(10));
+	@Test
+	void nameShouldReturnConfiguredName() {
+		A2AStep step = new A2AStep("my-agent", (text, timeout) -> "", Duration.ofSeconds(10));
 
-        assertThat(step.name()).isEqualTo("my-agent");
-    }
+		assertThat(step.name()).isEqualTo("my-agent");
+	}
 
-    @Test
-    void nameOverrideShouldReturnNewInstance() {
-        A2AStep original = new A2AStep("original", (text, timeout) -> "ok", Duration.ofSeconds(10));
-        A2AStep renamed = original.name("renamed");
+	@Test
+	void nameOverrideShouldReturnNewInstance() {
+		A2AStep original = new A2AStep("original", (text, timeout) -> "ok", Duration.ofSeconds(10));
+		A2AStep renamed = original.name("renamed");
 
-        assertThat(renamed.name()).isEqualTo("renamed");
-        assertThat(original.name()).isEqualTo("original");
-        // Sender is preserved — same behavior
-        assertThat(renamed.execute(ctx, "test")).isEqualTo("ok");
-    }
+		assertThat(renamed.name()).isEqualTo("renamed");
+		assertThat(original.name()).isEqualTo("original");
+		// Sender is preserved — same behavior
+		assertThat(renamed.execute(ctx, "test")).isEqualTo("ok");
+	}
 
-    @Test
-    void timeoutOverrideShouldReturnNewInstance() {
-        A2AStep original = new A2AStep("agent", (text, timeout) -> {
-            assertThat(timeout).isEqualTo(Duration.ofSeconds(30));
-            return "ok";
-        }, Duration.ofSeconds(10));
+	@Test
+	void timeoutOverrideShouldReturnNewInstance() {
+		A2AStep original = new A2AStep("agent", (text, timeout) -> {
+			assertThat(timeout).isEqualTo(Duration.ofSeconds(30));
+			return "ok";
+		}, Duration.ofSeconds(10));
 
-        A2AStep withTimeout = original.timeout(Duration.ofSeconds(30));
-        assertThat(withTimeout.execute(ctx, "test")).isEqualTo("ok");
-    }
+		A2AStep withTimeout = original.timeout(Duration.ofSeconds(30));
+		assertThat(withTimeout.execute(ctx, "test")).isEqualTo("ok");
+	}
 
-    @Test
-    void executeShouldWrapSenderException() {
-        A2AStep step = new A2AStep("failing-agent", (text, timeout) -> {
-            throw new TimeoutException("connection timed out");
-        }, Duration.ofSeconds(10));
+	@Test
+	void executeShouldWrapSenderException() {
+		A2AStep step = new A2AStep("failing-agent", (text, timeout) -> {
+			throw new TimeoutException("connection timed out");
+		}, Duration.ofSeconds(10));
 
-        assertThatThrownBy(() -> step.execute(ctx, "hello"))
-                .isInstanceOf(RuntimeException.class)
-                .hasMessageContaining("A2AStep 'failing-agent' failed")
-                .hasCauseInstanceOf(TimeoutException.class);
-    }
+		assertThatThrownBy(() -> step.execute(ctx, "hello")).isInstanceOf(RuntimeException.class)
+			.hasMessageContaining("A2AStep 'failing-agent' failed")
+			.hasCauseInstanceOf(TimeoutException.class);
+	}
 
-    @Test
-    void executeShouldHandleNullInput() {
-        A2AStep step = new A2AStep("agent", (text, timeout) -> "got: " + text, Duration.ofSeconds(10));
+	@Test
+	void executeShouldHandleNullInput() {
+		A2AStep step = new A2AStep("agent", (text, timeout) -> "got: " + text, Duration.ofSeconds(10));
 
-        String result = step.execute(ctx, null);
+		String result = step.execute(ctx, null);
 
-        assertThat(result).isEqualTo("got: ");
-    }
+		assertThat(result).isEqualTo("got: ");
+	}
 
-    @Test
-    void shouldImplementAgentStepMarker() {
-        A2AStep step = new A2AStep("agent", (text, timeout) -> "", Duration.ofSeconds(10));
+	@Test
+	void shouldImplementAgentStepMarker() {
+		A2AStep step = new A2AStep("agent", (text, timeout) -> "", Duration.ofSeconds(10));
 
-        assertThat(step).isInstanceOf(AgentStep.class);
-    }
+		assertThat(step).isInstanceOf(AgentStep.class);
+	}
+
+	@Test
+	void interruptedWaitPreservesOriginalCauseAndRestoresFlag() {
+		var original = new java.util.concurrent.atomic.AtomicReference<InterruptedException>();
+		var step = new A2AStep("interrupted", (text, timeout) -> {
+			Thread.currentThread().interrupt();
+			try {
+				new java.util.concurrent.CountDownLatch(1).await();
+				throw new AssertionError("unreachable");
+			}
+			catch (InterruptedException failure) {
+				assertThat(Thread.currentThread().isInterrupted()).isFalse();
+				original.set(failure);
+				throw failure;
+			}
+		}, Duration.ofSeconds(10));
+		try {
+			assertThatThrownBy(() -> step.execute(ctx, "hello")).isInstanceOf(RuntimeException.class)
+				.satisfies(failure -> assertThat(failure.getCause()).isSameAs(original.get()).isNotNull());
+			assertThat(Thread.currentThread().isInterrupted()).isTrue();
+		}
+		finally {
+			Thread.interrupted();
+		}
+	}
+
 }

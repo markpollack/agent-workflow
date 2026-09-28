@@ -61,6 +61,28 @@ class ProductionBindingTest {
                 new Member("logs", List.of(call("logs", Request.class, Logs.class)))));
     }
 
+    @Test
+    void graphAdapterCannotChangeGenericArgumentsWhileKeepingTheSameRawClass() {
+        Type requests = new TypeRef<List<Request>>() {}.type();
+        Type replies = new TypeRef<List<Reply>>() {}.type();
+        Compilation<?, ?> built = build(Request.class, replies,
+                call("reply", Request.class, replies), success());
+        String target = binding(built, "reply").placement().graphName();
+        List<WorkflowNode> nodes = built.graph().nodes().stream()
+                .map(node -> node.name().equals(target)
+                        ? WorkflowNode.deterministic(target,
+                                new GraphLowering.RefusingStep(target, Request.class, requests))
+                        : node)
+                .toList();
+        var changed = io.github.markpollack.workflow.flows.workflow.WorkflowGraph.of("consumer", nodes,
+                built.graph().edges(), built.graph().startNode(), built.graph().finishNode());
+        assertThatThrownBy(() -> GraphVerification.verify(changed, built.metadata(), built.summaries(),
+                built.bindings(), built.captures(), built.products(), built.phaseMetadata(),
+                java.util.Set.of(), built.definition()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("graph adapter type disagreement");
+    }
+
     @Test void rejectsUnboundOperationThroughTheCompleteBuild() {
         assertThatThrownBy(() -> build(Request.class, Reply.class,
                 call("first", Request.class, First.class), call("report", Missing.class, Reply.class), success()))

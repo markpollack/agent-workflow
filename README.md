@@ -52,7 +52,7 @@ final class Greet implements Step<Request, Greeting> {
     private final GreetingService service;
     Greet(GreetingService service) { this.service = service; }
 
-    public Greeting execute(StepContext context, Request input) throws Exception {
+    public Greeting execute(StepContext context, Request input) {
         return service.greet(input.customer(), context);
     }
 }

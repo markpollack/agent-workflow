@@ -37,9 +37,9 @@ import java.util.Objects;
 /**
  * A {@link Step} that delegates to an Anthropic Managed Agent.
  * <p>
- * Creates a session per execution, streams events until the agent is idle or
- * terminated, and returns the collected text output. The workflow graph stays
- * in charge — this step makes Managed Agents just another execution substrate.
+ * Creates a session per execution, streams events until the agent is idle or terminated,
+ * and returns the collected text output. The workflow graph stays in charge — this step
+ * makes Managed Agents just another execution substrate.
  *
  * <pre>{@code
  * // Reference a pre-created agent and environment
@@ -50,8 +50,7 @@ import java.util.Objects;
  * String result = step.execute(ctx, "Fix the failing test in AuthService.java");
  * }</pre>
  *
- * <h2>Workflow DSL usage</h2>
- * <pre>{@code
+ * <h2>Workflow DSL usage</h2> <pre>{@code
  * var workflow = WorkflowGraph.builder()
  *     .step("analyze", analyzeStep)
  *     .step("remediate", ManagedAgentStep.of(agentId, envId).name("fix"))
@@ -93,11 +92,10 @@ public class ManagedAgentStep implements Step<String, String>, AgentStep {
 	/**
 	 * Creates a step that references a pre-existing Managed Agent and environment.
 	 * <p>
-	 * The agent and environment must already exist in the Anthropic API. A new session
-	 * is created on each {@link #execute} call. The Anthropic client is created from
-	 * the {@code ANTHROPIC_API_KEY} environment variable.
-	 *
-	 * @param agentId       the ID of the pre-created agent (e.g. {@code "agent_01ABC..."})
+	 * The agent and environment must already exist in the Anthropic API. A new session is
+	 * created on each {@link #execute} call. The Anthropic client is created from the
+	 * {@code ANTHROPIC_API_KEY} environment variable.
+	 * @param agentId the ID of the pre-created agent (e.g. {@code "agent_01ABC..."})
 	 * @param environmentId the ID of the environment (e.g. {@code "env_01ABC..."})
 	 * @return a new ManagedAgentStep
 	 */
@@ -110,16 +108,15 @@ public class ManagedAgentStep implements Step<String, String>, AgentStep {
 	}
 
 	/**
-	 * Creates a step that provisions a new Managed Agent with the given model and
-	 * system prompt. The agent is created immediately and includes the default agent
-	 * toolset (bash, read, write, edit, glob, grep, web_fetch, web_search).
+	 * Creates a step that provisions a new Managed Agent with the given model and system
+	 * prompt. The agent is created immediately and includes the default agent toolset
+	 * (bash, read, write, edit, glob, grep, web_fetch, web_search).
 	 * <p>
-	 * The agent persists in the Anthropic API and is reused across executions. For
-	 * agents with custom tool configurations, pre-create the agent via the SDK and
-	 * use {@link #of(String, String)} instead.
-	 *
-	 * @param model         the model ID (e.g. {@code "claude-sonnet-4-6"})
-	 * @param systemPrompt  the system prompt for the agent
+	 * The agent persists in the Anthropic API and is reused across executions. For agents
+	 * with custom tool configurations, pre-create the agent via the SDK and use
+	 * {@link #of(String, String)} instead.
+	 * @param model the model ID (e.g. {@code "claude-sonnet-4-6"})
+	 * @param systemPrompt the system prompt for the agent
 	 * @param environmentId the ID of the environment to run sessions in
 	 * @return a new ManagedAgentStep
 	 */
@@ -128,16 +125,17 @@ public class ManagedAgentStep implements Step<String, String>, AgentStep {
 		Objects.requireNonNull(systemPrompt, "systemPrompt must not be null");
 		Objects.requireNonNull(environmentId, "environmentId must not be null");
 		AnthropicClient client = AnthropicOkHttpClient.fromEnv();
-		var agent = client.beta().agents().create(AgentCreateParams.builder()
-			.model(BetaManagedAgentsModel.of(model))
-			.name("managed-agent")
-			.system(systemPrompt)
-			.addTool(BetaManagedAgentsAgentToolset20260401Params.builder()
-				.type(BetaManagedAgentsAgentToolset20260401Params.Type.AGENT_TOOLSET_20260401)
-				.build())
-			.build());
-		logger.info("Created managed agent '{}' (id={}, version={})", agent.name(), agent.id(),
-				agent.version());
+		var agent = client.beta()
+			.agents()
+			.create(AgentCreateParams.builder()
+				.model(BetaManagedAgentsModel.of(model))
+				.name("managed-agent")
+				.system(systemPrompt)
+				.addTool(BetaManagedAgentsAgentToolset20260401Params.builder()
+					.type(BetaManagedAgentsAgentToolset20260401Params.Type.AGENT_TOOLSET_20260401)
+					.build())
+				.build());
+		logger.info("Created managed agent '{}' (id={}, version={})", agent.name(), agent.id(), agent.version());
 		SessionRunner runner = createRunner(client, agent.id(), environmentId);
 		return new ManagedAgentStep(agent.name(), runner, DEFAULT_TIMEOUT);
 	}
@@ -171,6 +169,10 @@ public class ManagedAgentStep implements Step<String, String>, AgentStep {
 					result != null && result.length() > 100 ? result.substring(0, 100) + "..." : result);
 			return result;
 		}
+		catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new RuntimeException("ManagedAgentStep '" + name + "' interrupted", e);
+		}
 		catch (Exception e) {
 			throw new RuntimeException("ManagedAgentStep '" + name + "' failed", e);
 		}
@@ -178,20 +180,23 @@ public class ManagedAgentStep implements Step<String, String>, AgentStep {
 
 	private static SessionRunner createRunner(AnthropicClient client, String agentId, String environmentId) {
 		return (input, timeout) -> {
-			var session = client.beta().sessions().create(SessionCreateParams.builder()
-				.agent(agentId)
-				.environmentId(environmentId)
-				.build());
+			var session = client.beta()
+				.sessions()
+				.create(SessionCreateParams.builder().agent(agentId).environmentId(environmentId).build());
 			logger.debug("Created session {} for agent {}", session.id(), agentId);
 
 			try (var stream = client.beta().sessions().events().streamStreaming(session.id())) {
 				// Send user message after stream is open (stream-first pattern)
-				client.beta().sessions().events().send(session.id(), EventSendParams.builder()
-					.addEvent(BetaManagedAgentsUserMessageEventParams.builder()
-						.type(BetaManagedAgentsUserMessageEventParams.Type.USER_MESSAGE)
-						.addTextContent(input)
-						.build())
-					.build());
+				client.beta()
+					.sessions()
+					.events()
+					.send(session.id(),
+							EventSendParams.builder()
+								.addEvent(BetaManagedAgentsUserMessageEventParams.builder()
+									.type(BetaManagedAgentsUserMessageEventParams.Type.USER_MESSAGE)
+									.addTextContent(input)
+									.build())
+								.build());
 
 				StringBuilder result = new StringBuilder();
 				for (var event : (Iterable<BetaManagedAgentsStreamSessionEvents>) stream.stream()::iterator) {
@@ -208,8 +213,7 @@ public class ManagedAgentStep implements Step<String, String>, AgentStep {
 						break;
 					}
 					else if (event.isSessionError()) {
-						throw new RuntimeException(
-								"Session error in managed agent (session=" + session.id() + ")");
+						throw new RuntimeException("Session error in managed agent (session=" + session.id() + ")");
 					}
 				}
 				return result.toString();

@@ -55,8 +55,7 @@ import java.util.function.BiConsumer;
  * String response = agent.execute(ctx, "analyze this code");
  * }</pre>
  *
- * <h2>Workflow DSL usage</h2>
- * <pre>{@code
+ * <h2>Workflow DSL usage</h2> <pre>{@code
  * Workflow.define("delegator")
  *     .step(A2AStep.of("http://remote-agent:8080").name("reviewer"))
  *     .build();
@@ -64,125 +63,133 @@ import java.util.function.BiConsumer;
  */
 public class A2AStep implements Step<String, String>, AgentStep {
 
-    private static final Logger logger = LoggerFactory.getLogger(A2AStep.class);
-    private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(60);
+	private static final Logger logger = LoggerFactory.getLogger(A2AStep.class);
 
-    private final String name;
-    private final MessageSender sender;
-    private final Duration timeout;
+	private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(60);
 
-    /**
-     * Internal strategy for sending a message and returning the text response.
-     * Package-private for testability — tests inject a mock sender.
-     */
-    @FunctionalInterface
-    interface MessageSender {
-        String send(String text, Duration timeout) throws Exception;
-    }
+	private final String name;
 
-    A2AStep(String name, MessageSender sender, Duration timeout) {
-        this.name = Objects.requireNonNull(name, "name must not be null");
-        this.sender = Objects.requireNonNull(sender, "sender must not be null");
-        this.timeout = Objects.requireNonNull(timeout, "timeout must not be null");
-    }
+	private final MessageSender sender;
 
-    /**
-     * Creates an A2AStep that connects to a remote A2A agent at the given URL.
-     * <p>
-     * Discovers the agent's {@link AgentCard} immediately. The step name defaults
-     * to the agent's name from the card.
-     *
-     * @param url the base URL of the remote A2A agent
-     * @return a new A2AStep
-     * @throws RuntimeException if the agent card cannot be resolved
-     */
-    public static A2AStep of(String url) {
-        Objects.requireNonNull(url, "url must not be null");
-        try {
-            String path = new URI(url).getPath();
-            AgentCard card = A2A.getAgentCard(url, path + ".well-known/agent-card.json", null);
-            String agentName = card.name() != null ? card.name() : "a2a-agent";
-            MessageSender sender = createSender(card);
-            return new A2AStep(agentName, sender, DEFAULT_TIMEOUT);
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to discover A2A agent at " + url, e);
-        }
-    }
+	private final Duration timeout;
 
-    /**
-     * Returns a copy of this step with a different name.
-     */
-    public A2AStep name(String name) {
-        return new A2AStep(name, this.sender, this.timeout);
-    }
+	/**
+	 * Internal strategy for sending a message and returning the text response.
+	 * Package-private for testability — tests inject a mock sender.
+	 */
+	@FunctionalInterface
+	interface MessageSender {
 
-    /**
-     * Returns a copy of this step with a different timeout.
-     */
-    public A2AStep timeout(Duration timeout) {
-        return new A2AStep(this.name, this.sender, timeout);
-    }
+		String send(String text, Duration timeout) throws Exception;
 
-    @Override
-    public String name() {
-        return name;
-    }
+	}
 
-    @Override
-    public String execute(StepContext ctx, String input) {
-        logger.debug("A2AStep '{}' sending message: {}", name,
-                input != null && input.length() > 100 ? input.substring(0, 100) + "..." : input);
-        try {
-            String result = sender.send(input != null ? input : "", timeout);
-            logger.debug("A2AStep '{}' received response: {}", name,
-                    result != null && result.length() > 100 ? result.substring(0, 100) + "..." : result);
-            return result;
-        } catch (Exception e) {
-            throw new RuntimeException("A2AStep '" + name + "' failed", e);
-        }
-    }
+	A2AStep(String name, MessageSender sender, Duration timeout) {
+		this.name = Objects.requireNonNull(name, "name must not be null");
+		this.sender = Objects.requireNonNull(sender, "sender must not be null");
+		this.timeout = Objects.requireNonNull(timeout, "timeout must not be null");
+	}
 
-    private static MessageSender createSender(AgentCard card) {
-        return (text, timeout) -> {
-            Message message = new Message.Builder()
-                    .role(Message.Role.USER)
-                    .parts(List.of(new TextPart(text, null)))
-                    .build();
+	/**
+	 * Creates an A2AStep that connects to a remote A2A agent at the given URL.
+	 * <p>
+	 * Discovers the agent's {@link AgentCard} immediately. The step name defaults to the
+	 * agent's name from the card.
+	 * @param url the base URL of the remote A2A agent
+	 * @return a new A2AStep
+	 * @throws RuntimeException if the agent card cannot be resolved
+	 */
+	public static A2AStep of(String url) {
+		Objects.requireNonNull(url, "url must not be null");
+		try {
+			String path = new URI(url).getPath();
+			AgentCard card = A2A.getAgentCard(url, path + ".well-known/agent-card.json", null);
+			String agentName = card.name() != null ? card.name() : "a2a-agent";
+			MessageSender sender = createSender(card);
+			return new A2AStep(agentName, sender, DEFAULT_TIMEOUT);
+		}
+		catch (Exception e) {
+			throw new RuntimeException("Failed to discover A2A agent at " + url, e);
+		}
+	}
 
-            CompletableFuture<String> responseFuture = new CompletableFuture<>();
-            AtomicReference<String> responseText = new AtomicReference<>("");
+	/**
+	 * Returns a copy of this step with a different name.
+	 */
+	public A2AStep name(String name) {
+		return new A2AStep(name, this.sender, this.timeout);
+	}
 
-            BiConsumer<ClientEvent, AgentCard> consumer = (event, agentCard) -> {
-                if (event instanceof TaskEvent taskEvent) {
-                    io.a2a.spec.Task completedTask = taskEvent.getTask();
-                    if (completedTask.getArtifacts() != null) {
-                        StringBuilder sb = new StringBuilder();
-                        for (Artifact artifact : completedTask.getArtifacts()) {
-                            if (artifact.parts() != null) {
-                                for (Part<?> part : artifact.parts()) {
-                                    if (part instanceof TextPart textPart) {
-                                        sb.append(textPart.getText());
-                                    }
-                                }
-                            }
-                        }
-                        responseText.set(sb.toString());
-                    }
-                    responseFuture.complete(responseText.get());
-                }
-            };
+	/**
+	 * Returns a copy of this step with a different timeout.
+	 */
+	public A2AStep timeout(Duration timeout) {
+		return new A2AStep(this.name, this.sender, timeout);
+	}
 
-            ClientConfig clientConfig = new ClientConfig.Builder()
-                    .setAcceptedOutputModes(List.of("text"))
-                    .build();
-            Client client = Client.builder(card)
-                    .clientConfig(clientConfig)
-                    .withTransport(JSONRPCTransport.class, new JSONRPCTransportConfig())
-                    .addConsumers(List.of(consumer))
-                    .build();
+	@Override
+	public String name() {
+		return name;
+	}
 
-            client.sendMessage(message);
-            return responseFuture.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
-        };
-    }
+	@Override
+	public String execute(StepContext ctx, String input) {
+		logger.debug("A2AStep '{}' sending message: {}", name,
+				input != null && input.length() > 100 ? input.substring(0, 100) + "..." : input);
+		try {
+			String result = sender.send(input != null ? input : "", timeout);
+			logger.debug("A2AStep '{}' received response: {}", name,
+					result != null && result.length() > 100 ? result.substring(0, 100) + "..." : result);
+			return result;
+		}
+		catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new RuntimeException("A2AStep '" + name + "' interrupted", e);
+		}
+		catch (Exception e) {
+			throw new RuntimeException("A2AStep '" + name + "' failed", e);
+		}
+	}
+
+	private static MessageSender createSender(AgentCard card) {
+		return (text, timeout) -> {
+			Message message = new Message.Builder().role(Message.Role.USER)
+				.parts(List.of(new TextPart(text, null)))
+				.build();
+
+			CompletableFuture<String> responseFuture = new CompletableFuture<>();
+			AtomicReference<String> responseText = new AtomicReference<>("");
+
+			BiConsumer<ClientEvent, AgentCard> consumer = (event, agentCard) -> {
+				if (event instanceof TaskEvent taskEvent) {
+					io.a2a.spec.Task completedTask = taskEvent.getTask();
+					if (completedTask.getArtifacts() != null) {
+						StringBuilder sb = new StringBuilder();
+						for (Artifact artifact : completedTask.getArtifacts()) {
+							if (artifact.parts() != null) {
+								for (Part<?> part : artifact.parts()) {
+									if (part instanceof TextPart textPart) {
+										sb.append(textPart.getText());
+									}
+								}
+							}
+						}
+						responseText.set(sb.toString());
+					}
+					responseFuture.complete(responseText.get());
+				}
+			};
+
+			ClientConfig clientConfig = new ClientConfig.Builder().setAcceptedOutputModes(List.of("text")).build();
+			Client client = Client.builder(card)
+				.clientConfig(clientConfig)
+				.withTransport(JSONRPCTransport.class, new JSONRPCTransportConfig())
+				.addConsumers(List.of(consumer))
+				.build();
+
+			client.sendMessage(message);
+			return responseFuture.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+		};
+	}
+
 }

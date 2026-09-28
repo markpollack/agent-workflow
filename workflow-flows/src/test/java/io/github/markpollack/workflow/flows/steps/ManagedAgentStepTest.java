@@ -27,7 +27,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ManagedAgentStepTest {
 
-	private final StepContext ctx = new StepContext("run", "invocation", "attempt", 1, java.time.Instant.MAX, java.util.Map.of());
+	private final StepContext ctx = new StepContext("run", "invocation", "attempt", 1, java.time.Instant.MAX,
+			java.util.Map.of());
 
 	@Test
 	void executeShouldDelegateToRunnerAndReturnResponse() {
@@ -93,6 +94,31 @@ class ManagedAgentStepTest {
 		ManagedAgentStep step = new ManagedAgentStep("agent", (input, timeout) -> "", Duration.ofMinutes(5));
 
 		assertThat(step).isInstanceOf(AgentStep.class);
+	}
+
+	@Test
+	void interruptedWaitPreservesOriginalCauseAndRestoresFlag() {
+		var original = new java.util.concurrent.atomic.AtomicReference<InterruptedException>();
+		var step = new ManagedAgentStep("interrupted", (text, timeout) -> {
+			Thread.currentThread().interrupt();
+			try {
+				new java.util.concurrent.CountDownLatch(1).await();
+				throw new AssertionError("unreachable");
+			}
+			catch (InterruptedException failure) {
+				assertThat(Thread.currentThread().isInterrupted()).isFalse();
+				original.set(failure);
+				throw failure;
+			}
+		}, Duration.ofSeconds(10));
+		try {
+			assertThatThrownBy(() -> step.execute(ctx, "hello")).isInstanceOf(RuntimeException.class)
+				.satisfies(failure -> assertThat(failure.getCause()).isSameAs(original.get()).isNotNull());
+			assertThat(Thread.currentThread().isInterrupted()).isTrue();
+		}
+		finally {
+			Thread.interrupted();
+		}
 	}
 
 }

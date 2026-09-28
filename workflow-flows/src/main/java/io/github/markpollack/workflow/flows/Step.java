@@ -16,24 +16,56 @@
 package io.github.markpollack.workflow.flows;
 
 /**
- * An application-supplied unit of typed work. The runtime supplies execution metadata,
- * saves exact inputs and results, and invokes this object outside persistence transactions.
- * Implementations declare concrete input/output types; dependencies belong in constructors.
+ * An application-supplied unit of work with explicit business input and output. The
+ * durable runtime selects its input from the validated workflow, saves progress and
+ * invokes the registered object directly on the caller's Java thread, outside store
+ * transactions. Dependencies belong in constructors; business results belong in the
+ * returned value, not in {@link StepContext}.
+ * <p>
+ * For durable registration, a concrete class must declare resolvable types, for example
+ * {@code implements Step<Request, Reply>}. Concrete inherited generic declarations are
+ * also supported. Reflection reads those class signatures; it cannot recover erased type
+ * arguments from raw implementations, unresolved generic instances or ordinary lambda
+ * classes. Such registrations refuse validation rather than guessing Object.
+ * <p>
+ * The same supplied instance may serve multiple runs. Its thread safety and dependency
+ * lifecycle belong to the application. A crash before result acceptance can cause another
+ * physical attempt of the same logical invocation; use its invocation ID for external
+ * idempotency where available.
  *
- * @param <I> input type
- * @param <O> output type
+ * @param <I> declared business input type, including concrete generic arguments
+ * @param <O> declared business output type, including concrete generic arguments
  */
 @FunctionalInterface
 public interface Step<I, O> {
-    /** Execute on the runtime caller's thread and return the business result. */
-    O execute(StepContext context, I input) throws Exception;
 
-    /** Human-readable name; invocation identity is assigned by the compiled placement. */
-    default String name() { return getClass().getSimpleName(); }
+	/**
+	 * Perform one physical attempt using the exact input selected for this invocation.
+	 * Successful return is provisional until the runtime accepts the result; cancellation
+	 * or deadline expiry can reject a late result without interrupting this call.
+	 * <p>
+	 * Report application failures through unchecked exceptions. When adapting checked
+	 * APIs, retain the original cause (for example in UncheckedIOException). When
+	 * catching InterruptedException, restore the thread's interrupt flag before wrapping
+	 * it. The runtime defers an observed interrupt until persistence and guard cleanup
+	 * finish. A normally returning interrupted step can commit its result, but resume
+	 * does not enter its successor. An interrupted failure remains an application
+	 * failure.
+	 * @param context immutable run/invocation/attempt metadata, not business state
+	 * @param input typed effective input reconstructed from saved values
+	 * @return a value satisfying the declared output and durable codec contract
+	 * @throws RuntimeException when application work cannot complete; the runtime records
+	 * a terminal step failure rather than automatically retrying a known failure
+	 */
+	O execute(StepContext context, I input);
 
-    /** Graph inspection hint. Runtime admission validates the concrete generic declaration. */
-    default Class<?> inputType() { return Object.class; }
+	/**
+	 * Human-readable label for inspection. Registration and authored placement, rather
+	 * than this label, determine durable invocation identity.
+	 * @return a display name, defaulting to the implementation's simple class name
+	 */
+	default String name() {
+		return getClass().getSimpleName();
+	}
 
-    /** Graph inspection hint. This does not bypass generic type validation. */
-    default Class<?> outputType() { return Object.class; }
 }

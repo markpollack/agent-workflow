@@ -18,17 +18,18 @@ package io.github.markpollack.workflow.flows;
 /**
  * Thrown when a {@link Step} fails during execution.
  * <p>
- * Used by step implementations such as {@link io.github.markpollack.workflow.flows.steps.GraphStep}
- * and {@link io.github.markpollack.workflow.flows.steps.ClaudeStep} to wrap underlying errors
- * with a consistent exception type.
+ * Used by step implementations such as
+ * {@link io.github.markpollack.workflow.flows.steps.ClaudeStep} to retain the original
+ * cause when adapting checked application APIs with a consistent exception type.
  */
 public class AgentStepException extends RuntimeException {
 
-    public AgentStepException(String message) {
-        super(message);
-    }
+	public AgentStepException(String message) {
+		super(message);
+	}
 
-    public AgentStepException(String message, Throwable cause) {
-        super(message, cause);
-    }
+	public AgentStepException(String message, Throwable cause) {
+		super(message, cause);
+	}
+
 }

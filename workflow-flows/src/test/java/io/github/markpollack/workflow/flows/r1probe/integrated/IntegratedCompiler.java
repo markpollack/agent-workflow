@@ -497,8 +497,5 @@ public final class IntegratedCompiler {
     }
     private record RefusingStep(String name,Type input,Type output) implements Step<Object,Object> {
         @Override public Object execute(StepContext context,Object input) { throw new UnsupportedOperationException("compile-only validated graph; no runtime adapter"); }
-        @Override public Class<?> inputType() { return raw(input); }
-        @Override public Class<?> outputType() { return raw(output); }
-        private static Class<?> raw(Type type) { return type instanceof Class<?> c?c:type instanceof ParameterizedType p?(Class<?>)p.getRawType():Void.class; }
     }
 }

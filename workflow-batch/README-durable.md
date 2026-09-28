@@ -12,6 +12,16 @@ Implement `Step<I,O>` with concrete input/output types and register supplied obj
 
 `StepContext` carries the run ID, stable logical invocation ID, unique physical attempt ID/number, absolute deadline and immutable declared configuration. It is not a business-result map or a live cancellation token. Business inputs come from the validated bindings and saved values.
 
+## Types, validation and invocation
+
+Java erases generic method dispatch, but a concrete class declaration such as `implements Step<Request, List<Reply>>` retains a generic signature. [`StepTypes`](src/main/java/io/github/markpollack/workflow/batch/durable/StepTypes.java) reads those signatures, including concrete inherited declarations. `new GenericStep<Request>()` alone does not retain the argument in its runtime class. Raw/unresolved declarations and erased lambda classes refuse registration selection. There are no public `inputType()`/`outputType()` hints to maintain.
+
+`then` selects those full types; `build` validates control structure, input bindings and durable value shapes. The existing [RegionAnalyzer](../workflow-flows/src/main/java/io/github/markpollack/workflow/flows/compiler/RegionAnalyzer.java) resolves record components in declaration order and derives captures from typed facts across continuing paths. Captures are analysis of where a value comes from, not reflective invocation or object-field guessing. They do not require type-hint methods. Broader path analysis exists in the validator; this sequential runtime still refuses those composition constructs.
+
+Admission checks the supplied objects and root value against the validated definition. Execution checks the saved definition/deployment and exact input identity, type, codec and provenance before decoding it. [`ResolvedApplication`](src/main/java/io/github/markpollack/workflow/batch/durable/ResolvedApplication.java) compares the actual Step signature with the selected full input/output types. Only then does its direct invocation bridge cast to `Step<Object,Object>` for erased Java dispatch. That cast does not resolve bindings or weaken the preceding checks.
+
+For an assembled record input, the recipe retains component order and source identity. The runtime verifies/decodes each component, invokes the record's canonical constructor in that order, and checks/saves the resulting value. This reflection constructs a business value; it does not construct steps or their dependencies. Constructor failures and unsupported value shapes refuse before step entry.
+
 ## Calls and execution threads
 
 | Entry point | Behavior |
@@ -56,7 +66,7 @@ The default maximum duration is one hour (`DeadlinePolicy.DEFAULT`, profile `loc
 
 Each serialized transition samples the database-side wall clock with a persisted high-water mark. At equality with the deadline, success/progress is ineligible. This sample is the transition's eligibility instant, not its later physical fsync time. Backward clock movement does not rewind the saved clock; forward movement can expire runs early. Expiry is observed during runtime calls rather than by a background timer. The first valid terminal transition wins permanently.
 
-Cancellation and expiry reject later result acceptance; neither stops already running application code. A caller already interrupted on entry is refused. If a step returns normally with the interrupt flag set, its outcome is processed, `resume` stops before a successor and the flag is restored after persistence/guard cleanup. A thrown `InterruptedException` records step failure, unless another terminal outcome already won, and restores the flag. Arbitrary asynchronous interruption of database I/O is not a cancellation mechanism.
+Cancellation and expiry reject later result acceptance; neither stops already running application code. A caller already interrupted on entry is refused. If a step returns normally with the interrupt flag set, its outcome is processed, `resume` stops before a successor and the flag is restored after persistence/guard cleanup. An unchecked failure with an `InterruptedException` cause records step failure, unless another terminal outcome already won, and restores the flag. Arbitrary asynchronous interruption of database I/O is not a cancellation mechanism.
 
 ## Ownership and shutdown
 
