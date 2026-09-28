@@ -22,9 +22,9 @@ import java.util.Objects;
 /**
  * Immutable execution metadata, not a channel for business results or service lookup. The
  * runtime creates this after charging an attempt and supplies it to Step.execute. A
- * recovered attempt retains its run and invocation IDs and receives a new attempt ID. A
- * repeated authored placement is a distinct logical invocation; another physical attempt
- * after a crash is not. The run ID can correlate observations with external systems
+ * recovered attempt retains its run and invocation IDs and receives a new attempt ID. Each
+ * distinct authored placement has its own logical invocation; another physical attempt
+ * after a crash does not create a new invocation. The run ID can correlate observations with external systems
  * without making their recording IDs checkpoint authority.
  * <p>
  * Configuration is a defensive immutable copy of declared deployment configuration. It is
