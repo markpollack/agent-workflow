@@ -34,7 +34,7 @@ try (var runtime = DurableWorkflows.open(database, deployment)) {
 }
 ```
 
-See the complete, compiling [SequentialRecoveryExample](workflow-batch/src/main/java/io/github/markpollack/workflow/batch/examples/SequentialRecoveryExample.java) for imports, service implementation, registration and a process-death demonstration.
+See the complete, compiling [SequentialRecoveryExample](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/SequentialRecoveryExample.java) for imports, service implementation, registration and a process-death demonstration.
 
 `StepContext` carries run, logical invocation and physical attempt identities, deadline and declared configuration. Business results travel through typed return values and compiler-derived inputs.
 
@@ -50,12 +50,12 @@ The declared build and configuration identify compatibility; the runtime does no
 
 ## Run the recovery example
 
-Requires Java 21 or later. From this checkout:
+Requires Java 21 or later. The runnable example lives in test sources and is excluded from the published library JAR. In IntelliJ, run its `main` using the workflow-batch test classpath. From this checkout:
 
 ```bash
 ./mvnw -q -pl workflow-batch -am install -DskipTests
 ./mvnw -q -pl workflow-batch dependency:build-classpath -Dmdep.outputFile=target/example-classpath.txt
-java -cp "workflow-batch/target/classes:$(cat workflow-batch/target/example-classpath.txt)" \
+java -cp "workflow-batch/target/test-classes:workflow-batch/target/classes:$(cat workflow-batch/target/example-classpath.txt)" \
   io.github.markpollack.workflow.batch.examples.SequentialRecoveryExample \
   /tmp/workflow-example pause-after-first
 ```
