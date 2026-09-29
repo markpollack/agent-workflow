@@ -278,6 +278,8 @@ public final class ValidatedWorkflow {
 	 */
 	public static ValidatedWorkflow compileWithChildren(Definition<?, ?> source, Map<Placement, Step<?, ?>> selections,
 			Map<Placement, ValidatedWorkflow> children, DeadlinePolicy policy) {
+		if (children.isEmpty())
+			return compile(source, selections, policy);
 		Definition<?, ?> owned = DefinitionOwnership.acquire(source);
 		Objects.requireNonNull(policy, "deadline policy");
 		Map<Placement, ValidatedWorkflow> selectedChildren = Map.copyOf(children);

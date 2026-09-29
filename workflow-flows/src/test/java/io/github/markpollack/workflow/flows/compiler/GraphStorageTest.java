@@ -18,6 +18,26 @@ class GraphStorageTest {
 	}
 
 	@Test
+	void childFreeCompilationUsesTheSameSequentialAdmissionRules() {
+		for (Terminal terminal : Terminal.values()) {
+			var source = new Definition<>("empty", String.class, String.class,
+					List.<Node>of(new End(terminal, "reason")), null);
+			assertThatThrownBy(
+					() -> ValidatedWorkflow.compileWithChildren(source, Map.of(), Map.of(), DeadlinePolicy.DEFAULT))
+				.isInstanceOf(IllegalArgumentException.class)
+				.hasMessageContaining("at least one Step");
+		}
+		var step = new Echo();
+		var fluent = Workflows.define("nonempty").then(step).terminate(Terminal.SUCCEEDED).build();
+		var owned = fluent.definition();
+		var source = new Definition<>(owned.name(), owned.input(), owned.output(), owned.nodes(), null);
+		assertThat(
+				ValidatedWorkflow.compileWithChildren(source, fluent.suppliedSteps(), Map.of(), DeadlinePolicy.DEFAULT)
+					.authoredIdentity())
+			.isEqualTo(fluent.authoredIdentity());
+	}
+
+	@Test
 	@SuppressWarnings({ "rawtypes", "unchecked" })
 	void validationFingerprintAndTerminalProducerIgnoreStorageOrder() throws Exception {
 		var step = new Echo();
