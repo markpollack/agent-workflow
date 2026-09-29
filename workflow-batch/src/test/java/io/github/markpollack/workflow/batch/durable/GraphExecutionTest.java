@@ -206,15 +206,15 @@ class GraphExecutionTest {
 	}
 
 	@Test
-	void malformedSqlVersionIsRefusedBeforeWritableOpen() throws Exception {
-		for (String type : List.of("VARCHAR", "DECIMAL")) {
+	void oldOrMalformedSqlVersionIsRefusedBeforeWritableOpen() throws Exception {
+		for (String type : List.of("VARCHAR", "DECIMAL", "INTEGER")) {
 			Path file = directory.resolve(type);
 			try (var runtime = DurableWorkflows.open(file)) {
 				assertThat(runtime.discover()).isEmpty();
 			}
 			try (var connection = connect(file); var statement = connection.createStatement()) {
 				statement.execute("ALTER TABLE aw_store_format ALTER COLUMN version " + type);
-				statement.execute("UPDATE aw_store_format SET version=" + (type.equals("VARCHAR") ? "'5'" : "5.4"));
+				statement.execute("UPDATE aw_store_format SET version=" + (type.equals("VARCHAR") ? "'5'" : type.equals("INTEGER") ? "4" : "5.4"));
 			}
 			byte[] before = Files.readAllBytes(Path.of(file + ".mv.db"));
 			assertThatThrownBy(() -> DurableWorkflows.open(file)).isInstanceOfSatisfying(WorkflowRefusal.class,

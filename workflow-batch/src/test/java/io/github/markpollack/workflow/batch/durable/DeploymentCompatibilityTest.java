@@ -211,7 +211,7 @@ class DeploymentCompatibilityTest {
 
     @Test void malformedRunHeadersInSupportedStoreRefuseWithoutChangingDatabaseBytes() throws Exception {
         int sequence=0;
-        for(String header:List.of("old","absent","unknown","fraction","overflow","string")) {
+        for(String header:List.of("old","previous","absent","unknown","fraction","overflow","string")) {
             Path file=directory.resolve("supported-format-"+(sequence++));
             var deployment=deployment(Map.of());var workflow=echo(deployment,Echo.class,null);String id;
             try(var runtime=DurableWorkflows.open(file, deployment.registry(), deployment.compatibility())) {id=runtime.start(workflow,"one",new Request("x")).runId();}
@@ -219,6 +219,7 @@ class DeploymentCompatibilityTest {
                 ObjectNode object=(ObjectNode)state;
                 switch(header) {
                     case "old" -> object.put("format",3);
+                    case "previous" -> object.put("format",4);
                     case "absent" -> object.remove("format");
                     case "unknown" -> object.put("format",6);
                     case "fraction" -> object.put("format",4.5);
