@@ -50,9 +50,12 @@ final class RunIntegrity {
 				throw new WorkflowRefusal("VALUE_MISSING", "invocation exact input missing");
 			require(call.attempts.size() <= r.maximumAttempts, "attempt allowance");
 			int number = 0;
+			long previousCharge = scope.opened;
 			for (var attempt : call.attempts) {
 				require(attempt.id != null && attempts.add(attempt.id) && attempt.number == ++number
-						&& attempt.charged >= scope.opened, "attempt identity/order/time");
+						&& attempt.charged >= previousCharge && attempt.charged < scope.deadline
+						&& attempt.charged <= closedAt(scope), "attempt identity/order/time");
+				previousCharge = attempt.charged;
 				if (number < call.attempts.size())
 					require("REATTEMPTED".equals(attempt.disposition), "earlier attempt disposition");
 			}
@@ -63,8 +66,15 @@ final class RunIntegrity {
 				String disposition = call.attempts.getLast().disposition;
 				require(call.status.equals("UNRESOLVED") == disposition.equals("UNRESOLVED"),
 						"current attempt disposition");
+				if (call.status.equals("REVOKED")) {
+					String cause = scope.localOutcome != null ? scope.localOutcome.code() : scope.revocation.code();
+					require(disposition.equals(cause) && call.outcome.isEmpty(), "revoked attempt disposition");
+				}
+				if (call.status.equals("UNRESOLVED"))
+					require(call.outcome.isEmpty(), "unresolved leaf outcome");
 				if (call.status.equals("SETTLED")) {
-					require(!call.outcome.isEmpty() && call.outcome.equals(disposition), "leaf settlement disposition");
+					require(Set.of("COMMITTED", "STEP_FAILED", "OUTPUT_ENCODING_FAILED").contains(call.outcome)
+							&& call.outcome.equals(disposition), "leaf settlement disposition");
 					require(node.phase.equals("SETTLED") && node.settlement.equals(call.id), "leaf node settlement");
 					require(!call.outcome.equals("COMMITTED") || r.values.containsKey(call.output),
 							"accepted leaf output");
@@ -83,7 +93,8 @@ final class RunIntegrity {
 							"returned child receipt");
 					require(call.outcome.equals(child.localOutcome.id()) && receipt.outcome().equals(call.outcome)
 							&& receipt.id().equals(ScopeIds.receipt(call.id)) && receipt.invocation().equals(call.id)
-							&& receipt.child().equals(child.id) && receipt.time() >= child.localOutcome.acceptedAt(),
+							&& receipt.child().equals(child.id) && receipt.time() >= child.localOutcome.acceptedAt()
+							&& receipt.time() < scope.deadline && receipt.time() <= closedAt(scope),
 							"return identity/outcome");
 					require(node.phase.equals("SETTLED") && node.settlement.equals(receipt.id()),
 							"composite node settlement");
@@ -151,11 +162,7 @@ final class RunIntegrity {
 					&& o.code().equals(r.reasonCode) && o.message().equals(r.reasonMessage) && o.actor().equals(r.actor)
 					&& o.acceptedAt() == r.terminalAt && o.successValue().equals(r.output), "root terminal facts");
 		}
-		long sequence = 0, time = r.admitted;
-		for (var e : r.events) {
-			require(e.sequence == ++sequence && e.time >= time, "event sequence/time");
-			time = e.time;
-		}
+		checkEvents(r, calls);
 	}
 
 	private static void checkScope(RunState r, String key, RunState.Scope s, Map<String, RunState.Invocation> calls) {
@@ -178,17 +185,26 @@ final class RunIntegrity {
 		if (s.lifecycle.equals("LOCAL_TERMINAL") || s.lifecycle.equals("RETURNED"))
 			require(s.localOutcome != null && s.revocation == null, "closed scope outcome/revocation");
 		if (s.lifecycle.equals("REVOKED")) {
-			require(s.revocation != null && r.scopes.containsKey(s.revocation.ancestor())
-					&& r.scopes.get(s.revocation.ancestor()).localOutcome != null, "revocation authority");
+			require(s.revocation != null, "missing revocation");
+			var ancestor = r.scopes.get(s.revocation.ancestor());
+			require(ancestor != null && strictAncestor(r, s, ancestor.id) && ancestor.localOutcome != null,
+					"revocation authority");
+			var cause = ancestor.localOutcome;
+			require(!cause.status().equals("SUCCEEDED") && s.revocation.code().equals(cause.code())
+					&& s.revocation.time() == cause.acceptedAt() && s.revocation.time() >= s.opened
+					&& (s.localOutcome == null || s.localOutcome.acceptedAt() <= s.revocation.time()),
+					"revocation cause/time");
 		}
 		if (s.localOutcome != null) {
 			var o = s.localOutcome;
 			require(o.id().equals(ScopeIds.outcome(s.id))
 					&& Set.of("SUCCEEDED", "FAILED", "CANCELLED").contains(o.status()) && o.acceptedAt() >= s.opened,
 					"local outcome identity/status/time");
-			require(o.status().equals("SUCCEEDED") ? r.values.containsKey(o.successValue())
+			require(o.status().equals("SUCCEEDED")
+					? r.values.containsKey(o.successValue()) && r.values.get(o.successValue()).scope.equals(s.id)
 					: o.successValue().isEmpty(), "local result");
-			if (o.actor().equals("workflow")) {
+			validateOutcomeCause(r, s, calls);
+			if (authored(o)) {
 				var terminal = s.nodes.get(o.source());
 				require(terminal != null && terminal.phase.equals("SETTLED") && terminal.invocation.isEmpty()
 						&& terminal.settlement.equals(o.id()) && o.acceptedAt() < s.deadline, "folded terminal fact");
@@ -199,8 +215,9 @@ final class RunIntegrity {
 			var n = entry.getValue();
 			var descriptor = r.definitions.get(s.definition);
 			boolean callNode = descriptor.leaves().containsKey(n.node) || descriptor.callees().containsKey(n.node);
-			require(callNode || (s.localOutcome != null && s.localOutcome.actor().equals("workflow")
-					&& s.localOutcome.source().equals(n.node)), "node outside selected definition");
+			require(callNode
+					|| (s.localOutcome != null && authored(s.localOutcome) && s.localOutcome.source().equals(n.node)),
+					"node outside selected definition");
 			if (callNode && n.phase.equals("SETTLED"))
 				require(!n.invocation.isEmpty(), "settled call without invocation");
 			require(n.node.equals(entry.getKey())
@@ -212,6 +229,18 @@ final class RunIntegrity {
 			}
 			if (n.phase.equals("READY"))
 				require(n.invocation.isEmpty() && n.settlement.isEmpty(), "READY has prior facts");
+			if (n.phase.equals("ENTERED") || n.phase.equals("WAITING_CHILD")) {
+				var call = calls.get(n.invocation);
+				require(call != null && call.status.equals("UNRESOLVED") && n.settlement.isEmpty(),
+						"entered node missing unresolved invocation");
+				require(n.phase.equals("ENTERED") ? descriptor.leaves().containsKey(n.node)
+						: descriptor.callees().containsKey(n.node), "entered node kind differs");
+			}
+			if (n.phase.equals("REVOKED"))
+				require(!s.open() && n.settlement.isEmpty()
+						&& (n.invocation.isEmpty()
+								|| calls.containsKey(n.invocation) && calls.get(n.invocation).status.equals("REVOKED")),
+						"revoked node authority/settlement");
 			if (!n.invocation.isEmpty())
 				require(calls.containsKey(n.invocation) && calls.get(n.invocation).scope.equals(s.id)
 						&& calls.get(n.invocation).placement.equals(n.node), "node invocation link");
@@ -221,6 +250,125 @@ final class RunIntegrity {
 			throw new WorkflowRefusal("STRANDED_PROGRESS", "no frontier for " + r.id + "/" + s.id);
 		if (!s.open())
 			require(frontiers == 0, "closed scope frontier");
+	}
+
+	/** Events are corroborating saved evidence; they never recreate transition facts. */
+	private static void checkEvents(RunState r, Map<String, RunState.Invocation> calls) {
+		record EventKey(String kind, String detail) {
+		}
+		Map<EventKey, Long> remaining = new HashMap<>();
+		long sequence = 0, time = r.admitted;
+		for (var event : r.events) {
+			require(event.sequence == ++sequence && event.time >= time, "event sequence/time");
+			time = event.time;
+			require(remaining.put(new EventKey(event.kind, event.detail), event.time) == null, "duplicate event fact");
+		}
+		java.util.function.BiConsumer<EventKey, Long> check = (key, expectedTime) -> require(
+				Objects.equals(remaining.remove(key), expectedTime), "event fact/time differs: " + key.kind());
+		check.accept(new EventKey("ADMITTED", r.admission), r.admitted);
+		for (var scope : r.scopes.values()) {
+			var outcome = scope.localOutcome;
+			if (outcome != null)
+				check.accept(new EventKey("LOCAL_OUTCOME", scope.id + ":" + outcome.status() + ":" + outcome.code()),
+						outcome.acceptedAt());
+		}
+		if (!r.active())
+			check.accept(new EventKey(r.status, r.reasonCode + ":" + r.reasonMessage), r.terminalAt);
+		for (var call : calls.values()) {
+			var scope = r.scopes.get(call.scope);
+			for (var attempt : call.attempts)
+				check.accept(new EventKey("DISPATCHED", call.id + ":" + attempt.id), attempt.charged);
+			if (call.kind.equals("COMPOSITE")) {
+				check.accept(new EventKey("COMPOSITE_ENTERED", call.id + ":" + call.child),
+						r.scopes.get(call.child).opened);
+				var receipt = r.returns.get(call.id);
+				if (receipt != null)
+					check.accept(new EventKey("COMPOSITE_RETURNED", receipt.id()), receipt.time());
+			}
+			else if (call.status.equals("SETTLED") && call.outcome.equals("COMMITTED")) {
+				Long accepted = remaining.remove(new EventKey("RESULT_COMMITTED", call.id + ":" + call.output));
+				require(accepted != null && accepted >= call.attempts.getLast().charged && accepted < scope.deadline
+						&& accepted <= closedAt(scope), "accepted result time");
+			}
+		}
+		require(remaining.isEmpty(), "event without transition facts");
+	}
+
+	/** Time after which no new fact in this scope could have been accepted. */
+	private static long closedAt(RunState.Scope scope) {
+		return scope.localOutcome != null ? scope.localOutcome.acceptedAt()
+				: scope.revocation != null ? scope.revocation.time() : Long.MAX_VALUE;
+	}
+
+	private static boolean strictAncestor(RunState r, RunState.Scope scope, String ancestor) {
+		Set<String> seen = new HashSet<>();
+		String id = scope.parent;
+		while (!id.isEmpty() && seen.add(id)) {
+			if (id.equals(ancestor))
+				return true;
+			var parent = r.scopes.get(id);
+			if (parent == null)
+				return false;
+			id = parent.parent;
+		}
+		return false;
+	}
+
+	/** Every accepted outcome must name the transition facts that could produce it. */
+	private static void validateOutcomeCause(RunState r, RunState.Scope s, Map<String, RunState.Invocation> calls) {
+		var o = s.localOutcome;
+		if (authored(o))
+			return; // The terminal node and graph validate this case separately.
+		require(o.status().equals("FAILED") || o.status().equals("CANCELLED"), "non-authored success");
+		if (o.source().equals("runtime")) {
+			switch (o.code()) {
+				case "CANCELLED" -> require(s.id.equals(r.rootScope) && o.status().equals("CANCELLED")
+						&& !o.actor().isBlank() && o.acceptedAt() < s.deadline, "external cancellation facts");
+				case "DEADLINE_EXCEEDED" ->
+					require(o.status().equals("FAILED") && o.actor().equals("store") && o.acceptedAt() >= s.deadline
+							&& o.message().equals("absolute deadline reached"), "deadline outcome facts");
+				case "INPUT_ENCODING_FAILED" -> require(
+						o.status().equals("FAILED") && o.actor().equals("runtime") && o.acceptedAt() < s.deadline
+								&& s.nodes.values()
+									.stream()
+									.anyMatch(n -> n.phase.equals("REVOKED") && n.invocation.isEmpty()),
+						"input preparation failure facts");
+				default -> throw new WorkflowRefusal("PROGRESS_INVALID", "runtime outcome has no matching cause");
+			}
+			return;
+		}
+		require(o.status().equals("FAILED") && o.acceptedAt() < s.deadline, "call failure outcome facts");
+		var leaf = calls.get(o.source());
+		if (leaf != null) {
+			require(leaf.scope.equals(s.id) && leaf.kind.equals("LEAF") && o.actor().equals("runtime")
+					&& !leaf.attempts.isEmpty() && o.acceptedAt() >= leaf.attempts.getLast().charged,
+					"leaf failure source/time");
+			if (o.code().equals("ATTEMPTS_EXHAUSTED"))
+				require(leaf.status.equals("REVOKED") && leaf.attempts.size() == r.maximumAttempts,
+						"attempt exhaustion facts");
+			else
+				require(leaf.status.equals("SETTLED")
+						&& Set.of("STEP_FAILED", "OUTPUT_ENCODING_FAILED").contains(o.code())
+						&& leaf.outcome.equals(o.code()), "application failure facts");
+			return;
+		}
+		var returning = r.invocations.stream()
+			.filter(c -> c.scope.equals(s.id) && c.kind.equals("COMPOSITE") && c.status.equals("SETTLED")
+					&& c.outcome.equals(o.source()))
+			.findFirst()
+			.orElse(null);
+		require(returning != null && o.actor().equals("composite"), "composite failure source");
+		var child = r.scopes.get(returning.child).localOutcome;
+		require(!child.status().equals("SUCCEEDED") && o.code().equals(child.code())
+				&& o.message().equals(child.message()) && o.acceptedAt() == r.returns.get(returning.id).time(),
+				"composite failure cause/time");
+	}
+
+	/**
+	 * Actor is presentation data for external cancellation, never a discriminator alone.
+	 */
+	private static boolean authored(RunState.Outcome outcome) {
+		return outcome.actor().equals("workflow") && outcome.code().equals("AUTHORED_" + outcome.status());
 	}
 
 	private static CompositionBounds closureBounds(RunState r, ExecutionPolicy policy) {

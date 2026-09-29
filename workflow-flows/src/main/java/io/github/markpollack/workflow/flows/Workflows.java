@@ -15,6 +15,11 @@ import io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
  * Optional labels name those positions, not registry entries or Spring beans. Unlabeled
  * calls receive positional labels ({@code step-1}, {@code step-2}, ...); neither form
  * promises stable identity across edits to the workflow.
+ * <p>
+ * This staged surface finishes with an explicit parent terminal. A callee whose
+ * authored terminal is always FAILED or CANCELLED has no normal return; any parent
+ * successor would be unreachable. Such a parent is expressed with the programmatic
+ * compiler as a Definition ending at that Child, without an additional End node.
  */
 public final class Workflows {
 

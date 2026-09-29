@@ -241,7 +241,7 @@ public final class ValidatedWorkflow {
 	 */
 	public static ValidatedWorkflow compile(Definition<?, ?> source, Map<Placement, Step<?, ?>> selections,
 			Map<Placement, ValidatedWorkflow> children, DeadlinePolicy policy) {
-		return new CompilationSession().compile(source, selections, children, policy);
+		return new CompilationSession().compileOwned(DefinitionOwnership.acquire(source), selections, children, policy);
 	}
 
 	/**
@@ -263,16 +263,46 @@ public final class ValidatedWorkflow {
 		}
 		if (index != steps.size())
 			throw new IllegalArgumentException("extraneous operation selection");
-		return compile(owned, selected, policy);
+		return new CompilationSession().compileOwned(owned, selected, Map.of(), policy);
 	}
 
 	private static final class CompilationSession {
 
 		private final IdentityHashMap<Definition<?, ?>, IdentityHashMap<ValidatedWorkflow, Boolean>> checked = new IdentityHashMap<>();
 
-		ValidatedWorkflow compile(Definition<?, ?> source, Map<Placement, Step<?, ?>> steps,
+		private final IdentityHashMap<ValidatedWorkflow, Set<ValidatedWorkflow>> compared = new IdentityHashMap<>();
+
+		/**
+		 * An explicit reference carries its supplied objects as well as authored shape.
+		 */
+		private void requireSameSelection(ValidatedWorkflow declared, ValidatedWorkflow selected, Placement at) {
+			record Pair(ValidatedWorkflow declared, ValidatedWorkflow selected) {
+			}
+			Deque<Pair> todo = new ArrayDeque<>();
+			todo.push(new Pair(declared, selected));
+			while (!todo.isEmpty()) {
+				Pair pair = todo.pop();
+				var a = pair.declared();
+				var b = pair.selected();
+				if (a == b || !compared.computeIfAbsent(a, key -> Collections.newSetFromMap(new IdentityHashMap<>()))
+					.add(b))
+					continue;
+				if (!a.authoredIdentity.equals(b.authoredIdentity))
+					throw new IllegalArgumentException("child definition disagreement at " + at);
+				if (!a.suppliedSteps.keySet().equals(b.suppliedSteps.keySet())
+						|| a.suppliedSteps.entrySet()
+							.stream()
+							.anyMatch(e -> e.getValue() != b.suppliedSteps.get(e.getKey()))
+						|| !a.children.keySet().equals(b.children.keySet()))
+					throw new IllegalArgumentException("child reference selection disagreement at " + at);
+				a.children.forEach((position, child) -> todo.push(new Pair(child, b.children.get(position))));
+			}
+		}
+
+		// Ownership is acquired once at the public boundary. Re-copying a subtree here
+		// would replace the identity keys used to memoize a shared declaration DAG.
+		ValidatedWorkflow compileOwned(Definition<?, ?> owned, Map<Placement, Step<?, ?>> steps,
 				Map<Placement, ValidatedWorkflow> children, DeadlinePolicy policy) {
-			Definition<?, ?> owned = DefinitionOwnership.acquire(source);
 			Objects.requireNonNull(policy, "deadline policy");
 			var authored = owned.deadline();
 			Map<Placement, ValidatedWorkflow> references = new LinkedHashMap<>();
@@ -306,10 +336,9 @@ public final class ValidatedWorkflow {
 									nested.put(position, target);
 								}
 							}
-							ValidatedWorkflow expected = compile(child.definition(), selected.suppliedSteps, nested,
-									selected.deadlinePolicy);
-							if (!expected.authoredIdentity.equals(selected.authoredIdentity))
-								throw new IllegalArgumentException("child definition disagreement at " + placement);
+							ValidatedWorkflow expected = compileOwned(child.definition(), selected.suppliedSteps,
+									nested, selected.deadlinePolicy);
+							requireSameSelection(expected, selected, placement);
 							matches.put(selected, Boolean.TRUE);
 						}
 					}

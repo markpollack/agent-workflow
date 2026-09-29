@@ -163,3 +163,31 @@ Recovery means continuing unfinished work after process death. A retry of an unr
 Spring qualifiers disambiguate injected beans; DSL labels describe node positions. Parameter injection lets both example configuration classes use `proxyBeanMethods = false` without changing singleton scope. Neither example proxies the Step implementations. Generic Step-proxy refusal in both interface orders and agreeing proxy contracts are tested separately by `StepRegistryTest`; `StepDeclarationTest` covers inherited, raw and unresolved declarations.
 
 `LocalOwnershipTest.anotherRunCommitsWhileOneStepRemainsBlocked` coordinates callers with latches and checks a second run's committed success before releasing the first Step. `distinctRunsOverlapOnCallingThreadsButSameRunCannotDoubleCharge` checks caller-thread identity and duplicate exclusion. `DurableRaceTest.deadlineEqualityRevokesLateCompletionAndDiscoveryMaterializesExpiry` uses a controlled store clock to verify that discovery records expiry. Inspection likewise calls the same observation transition; it is not read-only and can save terminal failure.
+
+### Configured and non-returning definitions
+
+[ConfiguredCompositeExample](src/test/java/io/github/markpollack/workflow/batch/examples/ConfiguredCompositeExample.java)
+wraps two definitions both named `poll` in definitions both named `wrapper`. The two fetch
+objects receive different constructor settings and stable registry names (`fetch-fast`
+and `fetch-careful`). Each call selects the supplied object belonging to its prepared
+definition. [ConfiguredCompositeWorkflowTest](src/test/java/io/github/markpollack/workflow/batch/examples/ConfiguredCompositeWorkflowTest.java)
+shows the same arrangement as Spring beans, then closes and recreates the context after
+inner completion. The saved fast result survives; the second poll produces the careful
+service's result. A single injected `Map<String, Step<?, ?>>` supplies the registry.
+
+A definition ending in authored `FAILED` or `CANCELLED` never returns normally. A parent
+containing that child must end at the child; adding a normal successor or parent terminal
+is rejected as unreachable. The staged fluent API requires a parent terminal, so use the
+shared programmatic compiler for this particular shape:
+
+```java
+var child = Workflows.define("business-check")
+    .then(check).terminate(FAILED, "business rejection").build();
+var source = new WorkflowModel.Definition<>("parent", Request.class, Reply.class,
+    List.of(new WorkflowModel.Child("check", child)), null);
+var parent = ValidatedWorkflow.compile(source, Map.of());
+```
+
+Here `check` is an ordinary `Step<Request, Reply>`. The child retains its local FAILED
+outcome and the parent completes as FAILED with that cause. An authored child CANCELLED
+also propagates as parent failure; external cancellation acts on the whole run.

@@ -23,7 +23,8 @@ class CompositeIntegrityTest {
 		for (String mutation : List.of("definition", "parent", "input", "return", "opening", "scope-id", "counter",
 				"bounds", "extra-descriptor", "missing-descriptor", "open-outcome", "missing-outcome",
 				"returned-no-receipt", "early-parent", "duplicate-frontier", "stranded", "missing-child",
-				"missing-terminal", "receipt-output", "receipt-outcome", "missing-receipt", "foreign-value")) {
+				"entered-no-call", "waiting-no-call", "missing-terminal", "receipt-output", "receipt-outcome",
+				"missing-receipt", "foreign-value")) {
 			var calls = new ArrayList<String>();
 			var step = new Prefix("F", calls);
 			var workflow = wrapper(poll(step));
@@ -51,6 +52,14 @@ class CompositeIntegrityTest {
 					var parent = (ObjectNode) scopes.path(before.rootScope());
 					var nodes = (ObjectNode) c.path("nodes");
 					switch (mutation) {
+						case "entered-no-call", "waiting-no-call" -> {
+							var ready = java.util.stream.StreamSupport.stream(nodes.spliterator(), false)
+								.filter(n -> n.path("phase").asText().equals("READY"))
+								.findFirst()
+								.orElseThrow();
+							((ObjectNode) ready).put("phase",
+									mutation.equals("entered-no-call") ? "ENTERED" : "WAITING_CHILD");
+						}
 						case "definition" -> c.put("definition", before.rootDefinition());
 						case "parent" -> c.put("parent", child.id());
 						case "input" -> c.put("input", "foreign");

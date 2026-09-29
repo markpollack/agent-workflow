@@ -368,7 +368,7 @@ public final class WorkflowModel {
 	 * compiler's loop analysis distinguishes first entry ({@code /first}) from carried
 	 * state ({@code /carried}), which may select different input facts at the same
 	 * placement. These templates are not physical attempts or runtime iterations; durable
-	 * execution currently admits only sequential operations and terminals.
+	 * execution currently admits only operations, same-run composites and terminals.
 	 *
 	 * @param placement authored occurrence whose input/output selection this describes
 	 * @param phase analysis context distinguishing first-entry and carried-state facts

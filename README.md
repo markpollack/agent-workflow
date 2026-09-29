@@ -156,3 +156,8 @@ The Journal recorder is available for explicitly submitted observations; it is n
 ## License
 
 Business Source License 1.1 — see [LICENSE](LICENSE).
+
+The [configured nested example](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/ConfiguredCompositeExample.java)
+uses two same-named poll definitions with different supplied fetch objects. Its
+[Spring recovery test](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/ConfiguredCompositeWorkflowTest.java)
+shows explicit bean qualifiers and fresh-context reuse through two levels of composites.

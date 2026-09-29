@@ -30,7 +30,10 @@ public record RunSnapshot(String runId, String displayName, Status status, Insta
 	/**
 	 * One logical placement's exact input/output value references and physical attempts.
 	 * An unresolved invocation may acquire another attempt after a crash; it retains its
-	 * ID.
+	 * ID. kind distinguishes LEAF from COMPOSITE. The localOutcome field holds a leaf
+	 * disposition (for example COMMITTED or STEP_FAILED), or the child's local-outcome ID
+	 * after a composite returns; it is empty while unresolved or revoked. Composite calls
+	 * have no physical attempts.
 	 */
 	public record Invocation(String invocationId, String placement, String inputValue, String outputValue,
 			String status, List<Attempt> attempts, String scope, String kind, String childScope, String localOutcome) {

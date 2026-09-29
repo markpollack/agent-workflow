@@ -111,4 +111,76 @@ class CompositeCompilerTest {
 		assertThatThrownBy(() -> ValidatedWorkflow.compile(a, Map.of())).hasMessageContaining("cyclic definition");
 	}
 
+	static final class Echo implements Step<Request, Request> {
+
+		public Request execute(StepContext context, Request input) {
+			throw new AssertionError("compiler invoked Step");
+		}
+
+	}
+
+	@Test
+	void rawDeclarationPreservesExplicitNestedObjectsBeyondAuthoredIdentity() {
+		var fast = new Echo();
+		var careful = new Echo();
+		var f = Workflows.define("poll").then("step", fast).terminate(Terminal.SUCCEEDED).build();
+		var c = Workflows.define("poll").then("step", careful).terminate(Terminal.SUCCEEDED).build();
+		var declaration = new Definition<>("wrapper", Request.class, Request.class,
+				List.of(new Child("poll", f), new End(Terminal.SUCCEEDED, "")), null);
+		var wrong = Workflows.define("wrapper").subWorkflow("poll", c).terminate(Terminal.SUCCEEDED).build();
+		var root = new Definition<>("root", Request.class, Request.class,
+				List.of(new Child("wrapper", declaration), new End(Terminal.SUCCEEDED, "")), null);
+		var at = Coordinates.node(Coordinates.root(root), root.nodes().getFirst(), 0);
+		assertThat(f.authoredIdentity()).isEqualTo(c.authoredIdentity());
+		assertThatThrownBy(() -> ValidatedWorkflow.compile(root, Map.of(), Map.of(at, wrong), DeadlinePolicy.DEFAULT))
+			.hasMessageContaining("child reference selection disagreement");
+		var equivalent = Workflows.define("wrapper")
+			.subWorkflow("poll", Workflows.define("poll").then("step", fast).terminate(Terminal.SUCCEEDED).build())
+			.terminate(Terminal.SUCCEEDED)
+			.build();
+		assertThat(ValidatedWorkflow.compile(root, Map.of(), Map.of(at, equivalent), DeadlinePolicy.DEFAULT)
+			.children()
+			.get(at)).isSameAs(equivalent);
+	}
+
+	private static Definition<?, ?> diamond(String name, Definition<?, ?> a, Definition<?, ?> b) {
+		return new Definition<>(name, Request.class, Request.class,
+				List.of(new Child("a", a), new Child("b", b), new End(Terminal.SUCCEEDED, "")), null);
+	}
+
+	private static ValidatedWorkflow diamond(String name, ValidatedWorkflow a, ValidatedWorkflow b) {
+		return Workflows.define(name).subWorkflow("a", a).subWorkflow("b", b).terminate(Terminal.SUCCEEDED).build();
+	}
+
+	@Test
+	void rawDiamondDagIsValidatedByUniqueDefinitionAndSelectionPairs() {
+		org.junit.jupiter.api.Assertions.assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+			var step = new Echo();
+			Definition<?, ?> a = new Definition<>("leaf", Request.class, Request.class, List
+				.of(new Call("echo", Op.named("echo", Request.class, Request.class)), new End(Terminal.SUCCEEDED, "")),
+					null);
+			var b = a;
+			var va = Workflows.define("leaf").then("echo", step).terminate(Terminal.SUCCEEDED).build();
+			var vb = va;
+			for (int i = 0; i < 24; i++) {
+				var nextA = diamond("a" + i, a, b);
+				var nextB = diamond("b" + i, a, b);
+				var nextVa = diamond("a" + i, va, vb);
+				var nextVb = diamond("b" + i, va, vb);
+				a = nextA;
+				b = nextB;
+				va = nextVa;
+				vb = nextVb;
+			}
+			var root = diamond("root", a, b);
+			var expected = diamond("root", va, vb);
+			var actual = ValidatedWorkflow.compile(root, Map.of(),
+					Map.of(Coordinates.node(Coordinates.root(root), root.nodes().get(0), 0), va,
+							Coordinates.node(Coordinates.root(root), root.nodes().get(1), 1), vb),
+					DeadlinePolicy.DEFAULT);
+			assertThat(actual.authoredIdentity()).isEqualTo(expected.authoredIdentity());
+			assertThat(actual.children().values()).containsExactlyInAnyOrder(va, vb);
+		});
+	}
+
 }
