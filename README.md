@@ -106,6 +106,11 @@ Here `fetch` takes a `JobHandle`, `assess` returns `JobStatus`, and `buildIndex`
 
 Two definitions with the same authored name and shape may use different configured Step instances. Give those instances distinct canonical registration names and declare their configuration in `ExecutionCompatibility`; preparation preserves each call's selected definition and beans. A restarted application can rebuild equivalent definitions with fresh objects under those same names.
 
+The [configured nested example](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/ConfiguredCompositeExample.java)
+uses two same-named poll definitions with different supplied fetch objects. Its
+[Spring recovery test](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/ConfiguredCompositeWorkflowTest.java)
+shows explicit bean qualifiers and fresh-context reuse through two levels of composites.
+
 `RunSnapshot.scopes()` shows inner progress, local outcomes, returns and revocations. A committed local outcome survives its own deadline, while a cancelled or expired enclosing scope can still prevent its return. See the [scope and recovery guide](workflow-batch/README-durable.md#composite-scopes-and-return) for those boundaries. The [composite process tests](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/durable/CompositeRecoveryIT.java) kill separate JVMs at entry, result and return boundaries.
 
 ## Execution and recovery
@@ -156,8 +161,3 @@ The Journal recorder is available for explicitly submitted observations; it is n
 ## License
 
 Business Source License 1.1 — see [LICENSE](LICENSE).
-
-The [configured nested example](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/ConfiguredCompositeExample.java)
-uses two same-named poll definitions with different supplied fetch objects. Its
-[Spring recovery test](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/ConfiguredCompositeWorkflowTest.java)
-shows explicit bean qualifiers and fresh-context reuse through two levels of composites.
