@@ -336,8 +336,9 @@ public final class WorkflowModel {
 	 * @param placement authored occurrence whose input/output selection this describes
 	 * @param phase analysis context distinguishing first-entry and carried-state facts
 	 * where applicable, otherwise root
-	 * @param operation operation name from the definition's declaration, not a canonical
-	 * StepRegistry name; registration is resolved separately against supplied objects
+	 * @param operation occurrence label used by analysis ({@link Call#id()} for an
+	 * ordinary call), rather than {@link Op#name()} or a canonical StepRegistry name;
+	 * registration is resolved separately against supplied objects
 	 * @param input exact selected whole value or ordered assembled input fact
 	 * @param output new output fact for this occurrence, with input consumption lineage
 	 * @param expression descriptive rendering of the selected input or record assembly;
