@@ -18,9 +18,9 @@ The broader R1 DSL is intended to express decisions, verdict-based routing, para
 
 ## Current development status
 
-R1 is under development and unreleased. This checkout supports durable sequential execution with application-supplied step instances and explicit terminal outcomes. Broader composition constructs and the complete authoring DSL remain planned work.
+R1 is under development and unreleased. This checkout supports durable Steps, nested reusable workflows within one run, and explicit terminal outcomes. Decisions, verdict routing, parallelism, loops and waits remain planned work.
 
-The examples below describe the supported sequential behavior. The current API selects supplied steps by registration name; it is a development API, not the final authoring surface.
+The examples below describe supported execution. The current API selects supplied steps by registration name; it is a development API, not the final authoring surface.
 
 ## Reuse earlier values
 
@@ -85,9 +85,32 @@ The immutable `WorkflowGraph` determines execution through its entry node and tr
 
 `StepContext` identifies the run, logical step invocation and physical execution attempt. Business inputs are resolved from the validated workflow definition.
 
+## Reuse a workflow within one run
+
+A composite uses the same runtime and deployment as its caller. Its inner values are private; its successful result returns through the call's typed boundary. Reusing a definition twice creates two durable scopes without creating separate runs:
+
+```java
+var poll = Workflows.define("poll")
+        .then("fetch", fetch)
+        .then("assess", assess)
+        .terminate(Terminal.SUCCEEDED).build();
+var index = Workflows.define("index")
+        .subWorkflow("before-index", poll)
+        .then("build-index", buildIndex)
+        .subWorkflow("after-index", poll)
+        .then("report", report)
+        .terminate(Terminal.SUCCEEDED).build();
+```
+
+Here `fetch` takes a `JobHandle`, `assess` returns `JobStatus`, and `buildIndex` produces a new `JobHandle`. The second poll receives that new handle; `report` receives the second poll's status. See the complete [standalone example](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/CompositeRecoveryExample.java) and [Spring example with fresh-context recovery](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/CompositeWorkflowTest.java). A definition can itself call another definition through the same method. Recursion is refused, and admitted depth/work limits are finite and configurable.
+
+Two definitions with the same authored name and shape may use different configured Step instances. Give those instances distinct canonical registration names and declare their configuration in `ExecutionCompatibility`; preparation preserves each call's selected definition and beans. A restarted application can rebuild equivalent definitions with fresh objects under those same names.
+
+`RunSnapshot.scopes()` shows inner progress, local outcomes, returns and revocations. A committed local outcome survives its own deadline, while a cancelled or expired enclosing scope can still prevent its return. See the [scope and recovery guide](workflow-batch/README-durable.md#composite-scopes-and-return) for those boundaries. The [composite process tests](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/durable/CompositeRecoveryIT.java) kill separate JVMs at entry, result and return boundaries.
+
 ## Execution and recovery
 
-`resume` executes steps directly on the calling Java thread until the run finishes or an application interrupt stops continuation. `advance` executes at most one step. Neither hands work to an executor. Different caller threads can execute different runs concurrently; competing execution of the same run refuses. One local runtime owns the database.
+`resume` executes steps directly on the calling Java thread until the run finishes or an application interrupt stops continuation. `advance` executes at most one Step, composite entry or composite return. Neither hands work to an executor. Different caller threads can execute different runs concurrently; competing execution of the same run refuses. One local runtime owns the database.
 
 Progress and outcomes commit atomically, with `Step.execute` outside persistence transactions. After process death, a compatible application can reopen and resume unfinished work using committed results. An attempt whose outcome was not committed may execute again within its finite allowance, so external effects need application-level idempotency.
 

@@ -136,8 +136,10 @@ class GraphExecutionTest {
 			identity.set(changed, fingerprint.invoke(changed, new TypeContracts()));
 			assertThat(changed.authoredIdentity()).isNotEqualTo(original.authoredIdentity());
 			var registry = StepRegistry.of(Map.of("step", step));
-			assertThat(new WorkflowExecutionBindings(registry, compatibility(), changed).selections())
-				.isEqualTo(new WorkflowExecutionBindings(registry, compatibility(), original).selections());
+			var changedBindings = new WorkflowExecutionBindings(registry, compatibility(), changed);
+            var originalBindings = new WorkflowExecutionBindings(registry, compatibility(), original);
+            assertThat(changedBindings.descriptors().get(changedBindings.root()).leaves())
+                .isEqualTo(originalBindings.descriptors().get(originalBindings.root()).leaves());
 			Path file = directory.resolve(changeEdge ? "edge" : "binding");
 			try (var runtime = DurableWorkflows.open(file, registry, compatibility())) {
 				String id = runtime.start(original, "one", new Text("x")).runId();
@@ -166,11 +168,15 @@ class GraphExecutionTest {
 				runtime.advance(id, workflow);
 				mutate(file, id, tree -> {
 					var json = (com.fasterxml.jackson.databind.node.ObjectNode) tree;
-					switch (corruption) {
-						case "skip" -> json.put("node", workflow.terminal().name());
-						case "back" -> json.put("node", workflow.graph().startNode());
-						case "foreign" -> json.put("node", "foreign");
-						case "absent" -> json.remove("node");
+					var nodes = (com.fasterxml.jackson.databind.node.ObjectNode) json.path("scopes").path(json.path("rootScope").asText()).path("nodes");
+                    String next = workflow.graph().unconditionalSuccessor(workflow.graph().startNode());
+                    switch (corruption) {
+                        case "skip", "back", "foreign" -> {
+                            var progress = (com.fasterxml.jackson.databind.node.ObjectNode) nodes.remove(next);
+                            String changed = corruption.equals("skip") ? workflow.terminal().name() : corruption.equals("back") ? workflow.graph().startNode() : "foreign";
+                            progress.put("node",changed); nodes.set(changed,progress);
+                        }
+                        case "absent" -> nodes.remove(next);
 						case "allowance" -> json.put("maximumAttempts", 4);
 						case "authored" -> json.put("authored", "changed");
 					}

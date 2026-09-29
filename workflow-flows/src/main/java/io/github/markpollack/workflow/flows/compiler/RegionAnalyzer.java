@@ -91,14 +91,18 @@ final class RegionAnalyzer {
                 }
                 case Child child -> {
                     require(child.definition()!=null,"unresolved child");
-                    Compilation<?,?> validated=StructuredWorkflowCompiler.compileOwned(child.definition());
-                    call(scope,placement,child.id(),validated.input(),validated.output(),false);
-                    RegionSummary childSummary=validated.summaries().get(new SummaryKey(Coordinates.root(child.definition()),"root"));
+                    RegionSummary childSummary;
+                    if (child.reference() != null) childSummary = child.reference().rootSummary();
+                    else {
+                        Compilation<?,?> validated=StructuredWorkflowCompiler.compileOwned(child.definition());
+                        childSummary=validated.summaries().get(new SummaryKey(Coordinates.root(child.definition()),"root"));
+                    }
+                    call(scope,placement,child.id(),child.definition().input(),child.definition().output(),false);
                     boolean returns=childSummary.terminals().contains(Terminal.SUCCEEDED);
                     if(childSummary.terminals().stream().anyMatch(t->t!=Terminal.SUCCEEDED)) effects.add(Terminal.FAILED);
                     required.addAll(childSummary.capabilities());
                     scope.terminated=!returns;
-                    meta(scope.phase,placement,"child",validated.input(),validated.output(),Map.of("definition",validated.definition().name(),"returns",Boolean.toString(returns)));
+                    meta(scope.phase,placement,"child",child.definition().input(),child.definition().output(),Map.of("definition",child.definition().name(),"returns",Boolean.toString(returns)));
                 }
                 case End end -> {
                     require(!member,"root terminal inside member/body");

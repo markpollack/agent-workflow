@@ -25,7 +25,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  */
 final class JdbcRunStore implements AutoCloseable {
 
-	private static final int FORMAT = 5;
+	private static final int FORMAT = 6;
 
 	private final String url;
 
@@ -110,7 +110,7 @@ final class JdbcRunStore implements AutoCloseable {
 		}
 		try (Statement s = connection.createStatement(); ResultSet rows = s.executeQuery("SELECT state FROM aw_run")) {
 			while (rows.next())
-				checkedState(rows.getString(1));
+				RunIntegrity.validate(mapper.treeToValue(checkedState(rows.getString(1)), RunState.class));
 		}
 	}
 
@@ -242,7 +242,8 @@ final class JdbcRunStore implements AutoCloseable {
 					|| state.revision != rows.getLong("revision") || !state.status.equals(rows.getString("status"))
 					|| state.deadline != rows.getLong("deadline"))
 				throw new WorkflowRefusal("STORE_CORRUPT", "state and transition columns disagree");
-			loaded.put(id, state.revision);
+			RunIntegrity.validate(state);
+            loaded.put(id, state.revision);
 			states.put(id, state);
 			return state;
 		}
@@ -252,6 +253,7 @@ final class JdbcRunStore implements AutoCloseable {
 		 * transaction owns commit.
 		 */
 		void insert(RunState state) throws Exception {
+            RunIntegrity.validate(state);
 			try (PreparedStatement s = c.prepareStatement(
 					"INSERT INTO aw_run(id,idempotency,revision,status,deadline,state) VALUES(?,?,?,?,?,?)")) {
 				s.setString(1, state.id);
@@ -271,8 +273,7 @@ final class JdbcRunStore implements AutoCloseable {
 		 * may save a terminal outcome.
 		 */
 		void observe(RunState run) throws Exception {
-			if (run.active() && now >= run.deadline)
-				terminal(run, "FAILED", "DEADLINE_EXCEEDED", "absolute deadline reached", "store");
+			if (run.observe(now)) save(run);
 		}
 
 		/**
@@ -293,6 +294,7 @@ final class JdbcRunStore implements AutoCloseable {
 		 * callback commits.
 		 */
 		void save(RunState state) throws Exception {
+            RunIntegrity.validate(state);
 			long previous = Objects.requireNonNull(loaded.get(state.id), "read required before update");
 			state.revision = Math.incrementExact(previous);
 			try (PreparedStatement s = c.prepareStatement(

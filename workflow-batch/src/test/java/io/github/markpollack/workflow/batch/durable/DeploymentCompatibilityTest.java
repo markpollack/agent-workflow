@@ -34,9 +34,10 @@ class DeploymentCompatibilityTest {
                     else if(change.equals("decode")) {byte[] bytes="{\"first\":false}".getBytes(StandardCharsets.UTF_8);saved.put("payload",bytes);saved.put("digest",Digests.of(bytes));}
                     else saved.putArray("components").add("wrong-historical-producer");
                 });
+                String corrupt = state(file,admitted.runId());
                 assertThatThrownBy(()->runtime.advance(lease,workflow)).isInstanceOf(WorkflowRefusal.class);
-                var after=runtime.inspect(admitted.runId());assertThat(after.invocations()).isEqualTo(before.invocations());assertThat(after.currentNode()).isEqualTo(workflow.graph().bindings().get(4).placement().graphName());
-                assertThat(after.events()).isEqualTo(before.events());evidence(file,admitted.runId(),"saved-input-"+change);
+                assertThat(state(file,admitted.runId())).isEqualTo(corrupt);
+                evidence(file,admitted.runId(),"saved-input-"+change);
             }
         }
     }
@@ -219,9 +220,9 @@ class DeploymentCompatibilityTest {
                 ObjectNode object=(ObjectNode)state;
                 switch(header) {
                     case "old" -> object.put("format",3);
-                    case "previous" -> object.put("format",4);
+                    case "previous" -> object.put("format",5);
                     case "absent" -> object.remove("format");
-                    case "unknown" -> object.put("format",6);
+                    case "unknown" -> object.put("format",7);
                     case "fraction" -> object.put("format",4.5);
                     case "overflow" -> object.put("format",4294967300L);
                     case "string" -> object.put("format","4");

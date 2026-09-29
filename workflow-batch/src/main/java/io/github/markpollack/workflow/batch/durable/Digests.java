@@ -12,7 +12,11 @@ final class Digests {
     }
     static String fields(String... fields) {
         StringBuilder text = new StringBuilder();
-        for (String field : fields) text.append(field.length()).append(':').append(field);
+        for (String field : fields) {
+            if (!StandardCharsets.UTF_8.newEncoder().canEncode(field))
+                throw new IllegalArgumentException("identity fields must contain well-formed Unicode");
+            text.append(field.length()).append(':').append(field);
+        }
         return of(text.toString().getBytes(StandardCharsets.UTF_8));
     }
 }

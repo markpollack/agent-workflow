@@ -61,7 +61,7 @@ class DurableRaceTest {
             String lease=run.runId();var result=threads.submit(()->runtime.advance(lease,workflow));await(signals.resolve("entered-1"));
             var cancelled=runtime.cancel(run.runId(),"owner","stop");Files.writeString(signals.resolve("release-1"),"release");result.get(20,TimeUnit.SECONDS);
             assertThat(runtime.inspect(run.runId())).isEqualTo(cancelled);assertThat(runtime.resume(run.runId(),workflow)).isEqualTo(cancelled);
-            assertThat(cancelled.invocations().getFirst().status()).isEqualTo("CANCELLED");evidence(file,run.runId(),"cancellation-first");
+            assertThat(cancelled.invocations().getFirst().status()).isEqualTo("REVOKED");evidence(file,run.runId(),"cancellation-first");
             var fast=echo(deployment,Echo.class,null);var before=runtime.start(fast,"complete",new Request("x"));
             var complete=runtime.resume(before.runId(),fast);time(before.deadline().toEpochMilli());
             assertThat(runtime.cancel(before.runId(),"owner","late")).isEqualTo(complete);evidence(file,before.runId(),"completion-first");

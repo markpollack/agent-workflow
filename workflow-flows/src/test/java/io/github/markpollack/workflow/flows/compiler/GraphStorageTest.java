@@ -23,7 +23,7 @@ class GraphStorageTest {
 			var source = new Definition<>("empty", String.class, String.class,
 					List.<Node>of(new End(terminal, "reason")), null);
 			assertThatThrownBy(
-					() -> ValidatedWorkflow.compileWithChildren(source, Map.of(), Map.of(), DeadlinePolicy.DEFAULT))
+					() -> ValidatedWorkflow.compile(source, Map.of(), Map.of(), DeadlinePolicy.DEFAULT))
 				.isInstanceOf(IllegalArgumentException.class)
 				.hasMessageContaining("at least one Step");
 		}
@@ -32,7 +32,7 @@ class GraphStorageTest {
 		var owned = fluent.definition();
 		var source = new Definition<>(owned.name(), owned.input(), owned.output(), owned.nodes(), null);
 		assertThat(
-				ValidatedWorkflow.compileWithChildren(source, fluent.suppliedSteps(), Map.of(), DeadlinePolicy.DEFAULT)
+				ValidatedWorkflow.compile(source, fluent.suppliedSteps(), Map.of(), DeadlinePolicy.DEFAULT)
 					.authoredIdentity())
 			.isEqualTo(fluent.authoredIdentity());
 	}

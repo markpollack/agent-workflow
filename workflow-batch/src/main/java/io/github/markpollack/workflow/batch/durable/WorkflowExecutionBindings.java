@@ -17,7 +17,7 @@ import io.github.markpollack.workflow.flows.compiler.StepTypes;
 import io.github.markpollack.workflow.flows.compiler.ValidatedWorkflow;
 
 /**
- * The checked boundary between one immutable validated workflow and the application's
+ * The checked boundary between immutable validated definitions and the application's
  * supplied Step objects. Constructed during admission and when resolving execution/result
  * access, it verifies codec/type contracts, deployment selections and each actual generic
  * Step declaration. It owns no threads, persistence, instances or dependency lifecycle.
@@ -30,29 +30,126 @@ final class WorkflowExecutionBindings {
 
 	private final TypeContracts codec = new TypeContracts();
 
-	private final Map<String, Step<?, ?>> operations;
+	record NodeKey(String definition, String node) {
+	}
 
-	private final Map<String, String> selections;
+	private final Map<NodeKey, Step<?, ?>> operations = new HashMap<>();
+
+	private final Map<String, DefinitionDescriptor> descriptors = new java.util.TreeMap<>();
+
+	private final Map<String, ValidatedWorkflow> definitions = new HashMap<>();
+
+	private final Map<String, CompositionBounds> bounds = new HashMap<>();
+
+	private final String root;
+
+	String root() {
+		return root;
+	}
+
+	Map<String, DefinitionDescriptor> descriptors() {
+		return Map.copyOf(descriptors);
+	}
+
+	ValidatedWorkflow definition(String key) {
+		var found = definitions.get(key);
+		if (found == null)
+			throw new WorkflowRefusal("PROGRESS_INVALID", "unknown prepared definition: " + key);
+		return found;
+	}
+
+	CompositionBounds bounds() {
+		return bounds.get(root);
+	}
+
+	String callee(String definition, String node) {
+		return descriptors.get(definition).callees().get(node);
+	}
 
 	Map<String, String> selections() {
-		return selections;
+		Map<String, String> result = new java.util.TreeMap<>();
+		descriptors.forEach(
+				(d, descriptor) -> descriptor.leaves().forEach((p, name) -> result.put(Digests.fields(d, p), name)));
+		return Map.copyOf(result);
+	}
+
+	WorkflowExecutionBindings(StepRegistry registry, ExecutionCompatibility compatibility, ValidatedWorkflow workflow) {
+		this(registry, compatibility, workflow, ExecutionPolicy.DEFAULT);
 	}
 
 	/**
-	 * Validate the supplied deployment against every immutable definition contract
-	 * without executing application steps. Entry IDs select exact registered instances.
-	 * Full generic Types, not erased classes or object-supplied hints, must agree with
-	 * the definition.
-	 * @throws WorkflowRefusal for changed codecs/types, unavailable registrations or a
-	 * supplied Step declaration that differs from the selected executable contract
+	 * Resolve each object once per definition; reuse summaries but count every call edge.
 	 */
-	WorkflowExecutionBindings(StepRegistry registry, ExecutionCompatibility compatibility, ValidatedWorkflow workflow) {
-		if (!codec.identity().equals(workflow.codecIdentity())
-				|| !codec.identity().equals(compatibility.manifest().codec())) {
+	WorkflowExecutionBindings(StepRegistry registry, ExecutionCompatibility compatibility, ValidatedWorkflow workflow,
+			ExecutionPolicy policy) {
+		if (!codec.identity().equals(compatibility.manifest().codec()))
 			throw new WorkflowRefusal("CODEC_CHANGED", "deployed codec contract differs");
+		var completed = new java.util.IdentityHashMap<ValidatedWorkflow, String>();
+		var active = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<ValidatedWorkflow, Boolean>());
+		record Visit(ValidatedWorkflow workflow, boolean exit) {
 		}
-		Map<String, Step<?, ?>> selectedObjects = new HashMap<>();
-		Map<String, String> selectedNames = new java.util.TreeMap<>();
+		var stack = new java.util.ArrayDeque<Visit>();
+		stack.push(new Visit(workflow, false));
+		while (!stack.isEmpty()) {
+			Visit visit = stack.pop();
+			var current = visit.workflow();
+			if (completed.containsKey(current))
+				continue;
+			if (!visit.exit()) {
+				if (!active.add(current))
+					throw new WorkflowRefusal("DEFINITION_CYCLE", "cyclic composite references");
+				stack.push(new Visit(current, true));
+				for (var child : current.children().values())
+					stack.push(new Visit(child, false));
+				continue;
+			}
+			Map<String, String> leafNames = new java.util.TreeMap<>();
+			Map<String, Step<?, ?>> objects = new HashMap<>();
+			validateLocal(registry, current, leafNames, objects);
+			Map<String, String> callees = new java.util.TreeMap<>();
+			var children = new java.util.ArrayList<CompositionBounds>();
+			current.children().forEach((placement, child) -> {
+				String key = completed.get(child);
+				callees.put(placement.graphName(), key);
+				children.add(bounds.get(key));
+				var node = current.graph().nodeByName(placement.graphName());
+				if (!(node instanceof WorkflowNode.CompositeNode composite)
+						|| !composite.authoredDefinition().equals(child.authoredIdentity()))
+					throw new WorkflowRefusal("STEP_CONTRACT", "composite reference differs from checked graph");
+			});
+			var required = current.graph()
+				.nodes()
+				.stream()
+				.filter(WorkflowNode.CompositeNode.class::isInstance)
+				.map(WorkflowNode::name)
+				.collect(java.util.stream.Collectors.toSet());
+			if (!required.equals(callees.keySet()))
+				throw new WorkflowRefusal("STEP_CONTRACT", "composite coverage differs");
+			var descriptor = new DefinitionDescriptor(current.authoredIdentity(), leafNames, callees);
+			String key = descriptor.identity();
+			var prior = descriptors.putIfAbsent(key, descriptor);
+			if (prior != null && !prior.equals(descriptor))
+				throw new WorkflowRefusal("DEFINITION_COLLISION", "conflicting prepared descriptors");
+			var summary = CompositionBounds.combine(leafNames.size(), children, policy);
+			if (bounds.containsKey(key) && !bounds.get(key).equals(summary))
+				throw new WorkflowRefusal("DEFINITION_COLLISION", "conflicting definition bounds");
+			bounds.put(key, summary);
+			definitions.putIfAbsent(key, current);
+			objects.forEach((node, step) -> {
+				var old = operations.putIfAbsent(new NodeKey(key, node), step);
+				if (old != null && old != step)
+					throw new WorkflowRefusal("DEFINITION_COLLISION", "conflicting supplied objects");
+			});
+			completed.put(current, key);
+			active.remove(current);
+		}
+		root = completed.get(workflow);
+	}
+
+	private void validateLocal(StepRegistry registry, ValidatedWorkflow workflow, Map<String, String> names,
+			Map<String, Step<?, ?>> objects) {
+		if (!codec.identity().equals(workflow.codecIdentity()))
+			throw new WorkflowRefusal("CODEC_CHANGED", "definition codec differs");
 		try {
 			for (var value : workflow.values().values()) {
 				if (!codec.contract(value.declaration()).equals(value.contract()))
@@ -68,16 +165,16 @@ final class WorkflowExecutionBindings {
 				StepTypes actual = StepTypes.of(step.getClass());
 				if (!actual.input().equals(requirement.input()) || !actual.output().equals(requirement.output()))
 					throw new WorkflowRefusal("STEP_CONTRACT", "supplied Step contract differs: " + name);
-				selectedObjects.put(nodeId, step);
-				selectedNames.put(nodeId, name);
+				objects.put(nodeId, step);
+				names.put(nodeId, name);
 			}
 			var required = workflow.graph()
 				.nodes()
 				.stream()
 				.filter(WorkflowNode.StepNode.class::isInstance)
-				.map(n -> n.name())
+				.map(WorkflowNode::name)
 				.collect(java.util.stream.Collectors.toSet());
-			if (!required.equals(selectedNames.keySet()))
+			if (!required.equals(names.keySet()))
 				throw new WorkflowRefusal("STEP_CONTRACT", "missing or extraneous prepared node selections");
 		}
 		catch (LinkageError ex) {
@@ -86,8 +183,6 @@ final class WorkflowExecutionBindings {
 		catch (IllegalArgumentException ex) {
 			throw new WorkflowRefusal("TYPE_CHANGED", "deployed type contract refused", ex);
 		}
-		operations = Map.copyOf(selectedObjects);
-		selections = java.util.Collections.unmodifiableMap(selectedNames);
 	}
 
 	/**
@@ -162,6 +257,7 @@ final class WorkflowExecutionBindings {
 	 * Types. DurableWorkflows has verified the chosen input recipe/provenance and decoded
 	 * its bytes against that Type before charging and checking this attempt. This method
 	 * does not choose a value by its runtime class or use a mutable context lookup.
+	 * @param definition prepared definition ID qualifying the node
 	 * @param entry graph node ID whose supplied implementation was frozen at preparation
 	 * @param input decoded effective input for that recipe
 	 * @param context metadata for the already charged physical attempt
@@ -171,8 +267,8 @@ final class WorkflowExecutionBindings {
 	 */
 	@SuppressWarnings("unchecked") // Concrete generic declarations were checked against
 									// compiler selections above.
-	Object execute(String entry, Object input, StepContext context) {
-		return ((Step<Object, Object>) operations.get(entry)).execute(context, input);
+	Object execute(String definition, String entry, Object input, StepContext context) {
+		return ((Step<Object, Object>) operations.get(new NodeKey(definition, entry))).execute(context, input);
 	}
 
 	private static Throwable unwrap(Throwable ex) {

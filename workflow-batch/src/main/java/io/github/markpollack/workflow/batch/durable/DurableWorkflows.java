@@ -10,10 +10,10 @@ import io.github.markpollack.workflow.flows.compiler.*;
 import io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
 
 /**
- * One local database owner for validated sequential workflows. Application-supplied steps
- * execute synchronously on the caller, outside transactions. No executor, lease or
- * scheduler. Process death releases ownership; compatible applications can recover
- * unfinished progress.
+ * One local database owner for validated workflows with nested same-run composites.
+ * Application-supplied steps execute synchronously on the caller, outside transactions.
+ * No executor, lease or scheduler. Process death releases ownership; compatible
+ * applications can recover unfinished progress.
  * <p>
  * StepRegistry retains supplied objects; ExecutionCompatibility records declared facts.
  * ValidatedWorkflow owns the checked definition and binding recipes. This front door
@@ -33,9 +33,8 @@ import io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
  * advance different runs concurrently; same-run duplicate execution refuses. The shared
  * store lock row serializes transitions, not Step calls. Transactions opened by
  * application code itself are outside this guarantee. Inspection returns immutable
- * snapshots but may persist deadline expiry.
- * Known application failures are terminal; unfinished crash recovery is not automatic
- * retry or operator restart of a terminal run.
+ * snapshots but may persist deadline expiry. Known application failures are terminal;
+ * unfinished crash recovery is not automatic retry or operator restart of a terminal run.
  */
 public final class DurableWorkflows implements AutoCloseable {
 
@@ -109,11 +108,11 @@ public final class DurableWorkflows implements AutoCloseable {
 	}
 
 	/**
-	 * Admit the validated sequence with its exact root input, compatibility and absolute
+	 * Admit the validated workflow with its exact root input, compatibility and absolute
 	 * deadline in one transaction. No Step executes. Reusing the key with identical
 	 * admitted facts returns the existing run, including a terminal run.
-	 * @param workflow immutable checked definition; only the sequential capability is
-	 * admitted
+	 * @param workflow immutable checked definition containing Steps, composites and
+	 * terminals
 	 * @param idempotencyKey application submission key within this database
 	 * @param input value satisfying the definition's root input and strict codec contract
 	 * @return admitted or identically reused durable snapshot
@@ -135,13 +134,14 @@ public final class DurableWorkflows implements AutoCloseable {
 	}
 
 	private RunSnapshot admit(ValidatedWorkflow workflow, String idempotencyKey, Object input, String displayName) {
-		requireSequential(workflow);
+		requireSupported(workflow);
 		requireText(idempotencyKey, "idempotency key");
 		requireText(displayName, "display name");
-		WorkflowExecutionBindings resolved = new WorkflowExecutionBindings(registry, requireDeployment(), workflow);
+		WorkflowExecutionBindings resolved = new WorkflowExecutionBindings(registry, requireDeployment(), workflow,
+				policy);
 		byte[] root = resolved.encode(input, workflow.definition().input());
 		resolved.decode(root, workflow.definition().input());
-		String compatibility = compatibility(workflow, resolved.selections(), requireDeployment().manifest(), policy);
+		String compatibility = compatibility(resolved, requireDeployment().manifest(), policy);
 		String admission = Digests.fields(compatibility, Digests.of(root));
 		RunSnapshot result = store.transaction(tx -> {
 			RunState existing = tx.byKey("root:" + idempotencyKey);
@@ -164,15 +164,23 @@ public final class DurableWorkflows implements AutoCloseable {
 			run.deadline = Math.addExact(tx.now, workflow.definition().deadline().toMillis());
 			run.deadlineOrigin = workflow.deadlineOrigin();
 			run.maximumAttempts = policy.maximumAttempts();
-			run.node = workflow.graph().startNode();
-			run.selections = resolved.selections();
-			var rootRecipe = workflow.values()
-				.values()
-				.stream()
-				.filter(v -> v.identity().role().equals("root"))
-				.findFirst()
-				.orElseThrow(() -> new WorkflowRefusal("BINDING_INVALID", "compiler root recipe missing"));
-			putValue(run, rootRecipe, root, "");
+			run.maximumDepth = policy.maximumDepth();
+			run.maximumInvocations = policy.maximumInvocations();
+			run.rootDefinition = resolved.root();
+			run.definitions = resolved.descriptors();
+			run.bounds = resolved.bounds();
+			RunState.Scope scope = new RunState.Scope();
+			scope.id = ScopeIds.root(run.id);
+			scope.definition = resolved.root();
+			scope.opened = tx.now;
+			scope.deadline = run.deadline;
+			scope.deadlineOrigin = run.deadlineOrigin;
+			scope.ready(workflow.graph().startNode());
+			run.rootScope = scope.id;
+			run.scopes.put(scope.id, scope);
+			var rootRecipe = ScopedValues.root(workflow);
+			scope.input = ScopeIds.value(run.id, scope, rootRecipe.identity());
+			ScopedValues.put(run, scope, rootRecipe, root, "", "");
 			run.event("ADMITTED", tx.now, run.admission);
 			tx.insert(run);
 			hooks.at("BEFORE_ADMISSION_COMMIT", run.id);
@@ -269,10 +277,10 @@ public final class DurableWorkflows implements AutoCloseable {
 	}
 
 	/**
-	 * Advance one eligible step or terminal boundary synchronously, returning the saved
-	 * snapshot. Holds the same-run guard through preparation, application entry and
-	 * commit. It does not create a worker thread or continue automatically after
-	 * returning ACTIVE.
+	 * Advance one eligible Step, composite entry or return boundary synchronously,
+	 * returning the saved snapshot. Holds the same-run guard through preparation,
+	 * application entry and commit. It does not create a worker thread or continue
+	 * automatically after returning ACTIVE.
 	 * @param runId admitted run identity
 	 * @param workflow compatible checked definition
 	 * @return progress after at most one step, or an already terminal snapshot
@@ -297,8 +305,10 @@ public final class DurableWorkflows implements AutoCloseable {
 		// Preparation commits exact input and a charged attempt; it never calls
 		// Step.execute.
 		Advancement prepared = store.transaction(tx -> prepareAdvance(tx, runId, workflow, resolved));
-		if (prepared instanceof Progress progress)
+		if (prepared instanceof Progress progress) {
+			hooks.at("AFTER_PROGRESS_COMMIT", runId);
 			return progress.snapshot;
+		}
 		return executeAttempt(runId, workflow, resolved, (Dispatch) prepared, activity);
 	}
 
@@ -316,62 +326,163 @@ public final class DurableWorkflows implements AutoCloseable {
 		tx.observe(run);
 		if (!run.active())
 			return new Progress(run.snapshot());
-		if (workflow.graph().nodeByName(run.node) instanceof WorkflowNode.TerminalNode) {
-			finish(tx, run, workflow);
-			hooks.at("BEFORE_TERMINAL_COMMIT", run.id);
-			return new Progress(run.snapshot());
-		}
-		var recipe = workflow.graph().binding(run.node);
-		RunState.Invocation invocation;
-		invocation = findInvocation(run, run.node);
+		var scope = WorkflowProgress.eligible(run);
+		if (scope.lifecycle.equals("LOCAL_TERMINAL"))
+			return returnComposite(tx, run, scope, resolved);
+		var progress = WorkflowProgress.frontier(scope);
+		var local = resolved.definition(scope.definition);
+		var node = local.graph().nodeByName(progress.node);
+		if (node instanceof WorkflowNode.CompositeNode)
+			return enterComposite(tx, run, scope, progress, local, resolved);
+		if (!(node instanceof WorkflowNode.StepNode))
+			throw new WorkflowRefusal("PROGRESS_INVALID", "eligible node is not a supported call");
+		var recipe = local.graph().binding(node.name());
+		var invocation = WorkflowProgress.find(run, scope.id, node.name());
 		if (invocation == null) {
-			invocation = new RunState.Invocation();
-			invocation.id = invocationId(run.id, recipe.placement());
-			invocation.placement = recipe.placement().graphName();
-			invocation.input = valueId(recipe.input().identity());
-			invocation.output = valueId(recipe.output().identity());
 			try {
-				materialize(tx, run, recipe.input().identity(), workflow, resolved, invocation.id);
+				invocation = newInvocation(run, scope, recipe, "LEAF", local, resolved);
 			}
 			catch (WorkflowRefusal ex) {
 				if (!ex.code().equals("INPUT_FAILED") && !ex.code().equals("ENCODE_FAILED"))
 					throw ex;
-				tx.terminal(run, "FAILED", "INPUT_ENCODING_FAILED", ex.getMessage(), "runtime");
+				run.complete(scope, "FAILED", "INPUT_ENCODING_FAILED", ex.getMessage(), "runtime", "runtime", "",
+						tx.now);
+				tx.save(run);
 				return new Progress(run.snapshot());
 			}
-			run.invocations.add(invocation);
 		}
-		validateInvocation(run, invocation, recipe);
-		return chargeAttempt(tx, run, invocation, recipe, workflow, resolved);
+		return chargeAttempt(tx, run, scope, invocation, recipe, local, resolved);
+	}
+
+	private RunState.Invocation newInvocation(RunState run, RunState.Scope scope, Binding recipe, String kind,
+			ValidatedWorkflow local, WorkflowExecutionBindings resolved) {
+		if (run.logicalCount >= run.maximumInvocations || run.logicalCount >= run.bounds.logical())
+			throw new WorkflowRefusal("COMPOSITION_LIMIT", "logical invocation budget exhausted");
+		var invocation = new RunState.Invocation();
+		invocation.id = ScopeIds.invocation(run.id, scope.id, recipe.placement().graphName());
+		invocation.scope = scope.id;
+		invocation.placement = recipe.placement().graphName();
+		invocation.kind = kind;
+		invocation.input = ScopeIds.value(run.id, scope, recipe.input().identity());
+		invocation.output = ScopeIds.value(run.id, scope, recipe.output().identity());
+		ScopedValues.materialize(run, scope, recipe.input().identity(), local, resolved, invocation.id);
+		run.invocations.add(invocation);
+		run.logicalCount++;
+		scope.nodes.get(invocation.placement).invocation = invocation.id;
+		return invocation;
 	}
 
 	/**
-	 * Within preparation, enforce the saved finite attempt allowance, decode the exact
-	 * input and atomically save the new attempt/event. Returns a detached Dispatch
-	 * carrying the decoded input and attempt metadata. No application Step runs in this
-	 * transaction.
+	 * Entry commits an exact boundary input and a single private scope, with no Step
+	 * attempt.
 	 */
-	private Advancement chargeAttempt(JdbcRunStore.Tx tx, RunState run, RunState.Invocation invocation, Binding recipe,
+	private Advancement enterComposite(JdbcRunStore.Tx tx, RunState run, RunState.Scope parent, RunState.Node progress,
 			ValidatedWorkflow workflow, WorkflowExecutionBindings resolved) throws Exception {
+		if (!progress.phase.equals("READY"))
+			throw new WorkflowRefusal("PROGRESS_INVALID", "composite entry is not ready");
+		var binding = workflow.graph().binding(progress.node);
+		RunState.Invocation call;
+		try {
+			call = newInvocation(run, parent, binding, "COMPOSITE", workflow, resolved);
+		}
+		catch (WorkflowRefusal ex) {
+			if (!ex.code().equals("INPUT_FAILED") && !ex.code().equals("ENCODE_FAILED"))
+				throw ex;
+			run.complete(parent, "FAILED", "INPUT_ENCODING_FAILED", ex.getMessage(), "runtime", "runtime", "", tx.now);
+			tx.save(run);
+			return new Progress(run.snapshot());
+		}
+		var child = new RunState.Scope();
+		child.id = ScopeIds.child(parent, progress.node);
+		child.definition = resolved.callee(parent.definition, progress.node);
+		var callee = resolved.definition(child.definition);
+		child.parent = parent.id;
+		child.opening = call.id;
+		child.returnNode = workflow.graph().unconditionalSuccessor(progress.node);
+		child.depth = parent.depth + 1;
+		child.opened = tx.now;
+		child.deadline = Math.min(parent.deadline, Math.addExact(tx.now, callee.definition().deadline().toMillis()));
+		child.deadlineOrigin = "INHERITED:" + callee.deadlineOrigin();
+		child.ready(callee.graph().startNode());
+		var rootRecipe = ScopedValues.root(callee);
+		child.input = ScopeIds.value(run.id, child, rootRecipe.identity());
+		var input = ScopedValues.verify(run, parent, binding.input().identity(), workflow);
+		ScopedValues.put(run, child, rootRecipe, input.payload, call.id, input.id);
+		if (run.scopes.putIfAbsent(child.id, child) != null)
+			throw new WorkflowRefusal("PROGRESS_INVALID", "duplicate scope");
+		call.child = child.id;
+		progress.phase = "WAITING_CHILD";
+		run.event("COMPOSITE_ENTERED", tx.now, call.id + ":" + child.id);
+		tx.save(run);
+		hooks.at("BEFORE_COMPOSITE_ENTRY_COMMIT", run.id);
+		return new Progress(run.snapshot());
+	}
+
+	/**
+	 * Propagate exactly one accepted local outcome. Any enclosing completion is folded,
+	 * but not unwound.
+	 */
+	private Advancement returnComposite(JdbcRunStore.Tx tx, RunState run, RunState.Scope child,
+			WorkflowExecutionBindings resolved) throws Exception {
+		var parent = run.scopes.get(child.parent);
+		if (parent == null || !parent.open())
+			throw new WorkflowRefusal("PROGRESS_INVALID", "return lacks live parent");
+		var call = WorkflowProgress.invocation(run, child.opening);
+		var progress = parent.nodes.get(call.placement);
+		var workflow = resolved.definition(parent.definition);
+		var binding = workflow.graph().binding(call.placement);
+		var outcome = child.localOutcome;
+		String output = "";
+		if (outcome.status().equals("SUCCEEDED")) {
+			var callee = resolved.definition(child.definition);
+			var value = ScopedValues.verify(run, child, callee.terminal().successValue(), callee);
+			ScopedValues.put(run, parent, workflow.values().get(binding.output().identity()), value.payload, call.id,
+					value.id);
+			output = call.output;
+		}
+		var receipt = new RunState.Return(ScopeIds.receipt(call.id), call.id, child.id, outcome.id(), output, tx.now);
+		if (run.returns.putIfAbsent(call.id, receipt) != null)
+			throw new WorkflowRefusal("PROGRESS_INVALID", "duplicate return");
+		call.status = "SETTLED";
+		call.outcome = outcome.id();
+		child.lifecycle = "RETURNED";
+		progress.phase = "SETTLED";
+		progress.settlement = receipt.id();
+		run.event("COMPOSITE_RETURNED", tx.now, receipt.id());
+		if (outcome.status().equals("SUCCEEDED"))
+			continueAfter(tx, run, parent, workflow, call.placement);
+		else
+			run.complete(parent, "FAILED", outcome.code(), outcome.message(), "composite", outcome.id(), "", tx.now);
+		tx.save(run);
+		hooks.at("BEFORE_COMPOSITE_RETURN_COMMIT", run.id);
+		return new Progress(run.snapshot());
+	}
+
+	private Advancement chargeAttempt(JdbcRunStore.Tx tx, RunState run, RunState.Scope scope,
+			RunState.Invocation invocation, Binding recipe, ValidatedWorkflow workflow,
+			WorkflowExecutionBindings resolved) throws Exception {
 		if (invocation.attempts.size() >= run.maximumAttempts) {
-			tx.terminal(run, "FAILED", "ATTEMPTS_EXHAUSTED", "finite execution attempt allowance exhausted", "runtime");
+			run.complete(scope, "FAILED", "ATTEMPTS_EXHAUSTED", "finite execution attempt allowance exhausted",
+					"runtime", invocation.id, "", tx.now);
+			tx.save(run);
 			return new Progress(run.snapshot());
 		}
 		for (var previous : invocation.attempts)
 			if (previous.disposition.equals("UNRESOLVED"))
 				previous.disposition = "REATTEMPTED";
-		RunState.Attempt attempt = new RunState.Attempt();
+		var attempt = new RunState.Attempt();
 		attempt.id = UUID.randomUUID().toString();
 		attempt.number = invocation.attempts.size() + 1;
 		attempt.charged = tx.now;
-		Object input = decode(tx, run, recipe.input().identity(), workflow, resolved);
+		Object input = ScopedValues.decode(run, scope, recipe.input().identity(), workflow, resolved);
 		invocation.attempts.add(attempt);
+		scope.nodes.get(invocation.placement).phase = "ENTERED";
 		run.event("DISPATCHED", tx.now, invocation.id + ":" + attempt.id);
 		tx.save(run);
 		hooks.at("BEFORE_DISPATCH_COMMIT", run.id);
 		StepContext context = new StepContext(run.id, invocation.id, attempt.id, attempt.number,
-				Instant.ofEpochMilli(run.deadline));
-		return new Dispatch(recipe, input, context);
+				Instant.ofEpochMilli(scope.deadline));
+		return new Dispatch(scope.id, scope.definition, recipe, input, context);
 	}
 
 	/**
@@ -389,9 +500,9 @@ public final class DurableWorkflows implements AutoCloseable {
 			RunState run = tx.get(runId);
 			compatible(run, workflow, resolved);
 			tx.observe(run);
-			if (!run.active())
+			if (!run.active() || !run.scopes.get(dispatch.scope).open())
 				return false;
-			current(run, dispatch.context, dispatch.recipe);
+			current(run, dispatch);
 			return true;
 		});
 		if (!mayEnter)
@@ -400,14 +511,18 @@ public final class DurableWorkflows implements AutoCloseable {
 		try {
 			Object value;
 			try {
-				value = resolved.execute(dispatch.recipe.placement().graphName(), dispatch.input, dispatch.context);
+				value = resolved.execute(dispatch.definition, dispatch.recipe.placement().graphName(), dispatch.input,
+						dispatch.context);
 			}
 			catch (Exception | LinkageError failure) {
 				return failAttempt(runId, workflow, resolved, dispatch, activity, "STEP_FAILED", failure);
 			}
 			try {
 				output = resolved.encode(value,
-						workflow.values().get(dispatch.recipe.output().identity()).declaration());
+						resolved.definition(dispatch.definition)
+							.values()
+							.get(dispatch.recipe.output().identity())
+							.declaration());
 			}
 			catch (Exception | LinkageError failure) {
 				return failAttempt(runId, workflow, resolved, dispatch, activity, "OUTPUT_ENCODING_FAILED", failure);
@@ -436,22 +551,40 @@ public final class DurableWorkflows implements AutoCloseable {
 		RunState run = tx.get(runId);
 		compatible(run, workflow, resolved);
 		tx.observe(run);
-		if (!run.active())
+		var scope = run.scopes.get(dispatch.scope);
+		if (!run.active() || !scope.open())
 			return run.snapshot();
-		RunState.Invocation invocation = current(run, dispatch.context, dispatch.recipe);
-		putValue(run, workflow.values().get(dispatch.recipe.output().identity()), output, invocation.id);
-		invocation.status = "COMMITTED";
+		var invocation = current(run, dispatch);
+		var local = resolved.definition(scope.definition);
+		ScopedValues.put(run, scope, local.values().get(dispatch.recipe.output().identity()), output, invocation.id,
+				"");
+		invocation.status = "SETTLED";
+		invocation.outcome = "COMMITTED";
 		invocation.attempts.getLast().disposition = "COMMITTED";
-		run.node = workflow.graph().unconditionalSuccessor(dispatch.recipe.placement().graphName());
-		run.event("RESULT_COMMITTED", tx.now, invocation.id + ":" + invocation.output + ":next=" + run.node);
-		if (workflow.graph().nodeByName(run.node) instanceof WorkflowNode.TerminalNode) {
-			finish(tx, run, workflow);
-			hooks.at("BEFORE_TERMINAL_COMMIT", run.id);
-		}
-		else
-			tx.save(run);
+		var node = scope.nodes.get(invocation.placement);
+		node.phase = "SETTLED";
+		node.settlement = invocation.id;
+		run.event("RESULT_COMMITTED", tx.now, invocation.id + ":" + invocation.output);
+		continueAfter(tx, run, scope, local, invocation.placement);
+		tx.save(run);
 		hooks.at("BEFORE_RESULT_COMMIT", run.id);
 		return run.snapshot();
+	}
+
+	/** Graph successor and directly reached terminal commit with the result/return. */
+	private void continueAfter(JdbcRunStore.Tx tx, RunState run, RunState.Scope scope, ValidatedWorkflow workflow,
+			String predecessor) {
+		String next = workflow.graph().unconditionalSuccessor(predecessor);
+		var progress = scope.ready(next);
+		if (workflow.graph().nodeByName(next) instanceof WorkflowNode.TerminalNode terminal) {
+			String output = terminal.successValue() == null ? ""
+					: ScopedValues.verify(run, scope, terminal.successValue(), workflow).id;
+			progress.phase = "SETTLED";
+			progress.settlement = ScopeIds.outcome(scope.id);
+			run.complete(scope, terminal.intent().name(), "AUTHORED_" + terminal.intent().name(), terminal.reason(),
+					"workflow", next, output, tx.now);
+			hooks.at("BEFORE_TERMINAL_COMMIT", run.id);
+		}
 	}
 
 	/**
@@ -470,7 +603,8 @@ public final class DurableWorkflows implements AutoCloseable {
 				compatible(run, workflow, resolved);
 				if (!run.status.equals("SUCCEEDED"))
 					throw new WorkflowRefusal("NO_SUCCESS_RESULT", "run has no successful terminal result");
-				RunState.Value value = verifiedValue(tx, run, workflow.terminal().successValue(), workflow);
+				RunState.Value value = ScopedValues.verify(run, run.scopes.get(run.rootScope),
+						workflow.terminal().successValue(), workflow);
 				if (!run.output.equals(value.id))
 					throw new WorkflowRefusal("VALUE_CHANGED", "terminal output identity differs");
 				return value.payload.clone();
@@ -493,10 +627,18 @@ public final class DurableWorkflows implements AutoCloseable {
 			RunState run = tx.get(runId);
 			compatible(run, workflow, resolved);
 			tx.observe(run);
-			if (!run.active())
+			var scope = run.scopes.get(dispatch.scope);
+			if (!run.active() || !scope.open())
 				return run.snapshot();
-			current(run, dispatch.context, dispatch.recipe);
-			tx.terminal(run, "FAILED", code, message, "runtime");
+			var call = current(run, dispatch);
+			call.status = "SETTLED";
+			call.outcome = code;
+			call.attempts.getLast().disposition = code;
+			var node = scope.nodes.get(call.placement);
+			node.phase = "SETTLED";
+			node.settlement = call.id;
+			run.complete(scope, "FAILED", code, message, "runtime", call.id, "", tx.now);
+			tx.save(run);
 			return run.snapshot();
 		});
 	}
@@ -513,9 +655,9 @@ public final class DurableWorkflows implements AutoCloseable {
 	 * in a transaction. Saved metadata never vouches for current objects.
 	 */
 	private WorkflowExecutionBindings resolve(String runId, ValidatedWorkflow workflow) {
-		requireSequential(workflow);
+		requireSupported(workflow);
 		ExecutionCompatibility supplied = requireDeployment();
-		WorkflowExecutionBindings resolved = new WorkflowExecutionBindings(registry, supplied, workflow);
+		WorkflowExecutionBindings resolved = new WorkflowExecutionBindings(registry, supplied, workflow, policy);
 		store.transaction(tx -> {
 			compatible(tx.get(runId), workflow, resolved);
 			return null;
@@ -523,187 +665,54 @@ public final class DurableWorkflows implements AutoCloseable {
 		return resolved;
 	}
 
-	private static void requireSequential(ValidatedWorkflow workflow) {
+	private static void requireSupported(ValidatedWorkflow workflow) {
 		Objects.requireNonNull(workflow);
-		if (!workflow.capabilities().equals(Set.of(Capability.OPERATION, Capability.TERMINAL)))
-			throw new WorkflowRefusal("UNSUPPORTED_CAPABILITY",
-					"this runtime admits sequential steps and terminals only");
+		if (!Set.of(Capability.OPERATION, Capability.TERMINAL, Capability.CHILD).containsAll(workflow.capabilities()))
+			throw new WorkflowRefusal("UNSUPPORTED_CAPABILITY", "unsupported execution construct");
 	}
 
-	private static RunState.Invocation current(RunState run, StepContext context, Binding recipe) {
-		if (!Objects.equals(run.node, recipe.placement().graphName()))
-			throw new WorkflowRefusal("ATTEMPT_CHANGED", "current graph node differs");
-		RunState.Invocation call = findInvocation(run, run.node);
-		if (call == null)
-			throw new WorkflowRefusal("ATTEMPT_CHANGED", "no unresolved invocation");
-		validateInvocation(run, call, recipe);
-		if (!call.id.equals(context.invocationId()) || call.attempts.isEmpty()
-				|| !call.attempts.getLast().id.equals(context.attemptId()))
+	private static RunState.Invocation current(RunState run, Dispatch dispatch) {
+		var scope = run.scopes.get(dispatch.scope);
+		var call = WorkflowProgress.find(run, scope.id, dispatch.recipe.placement().graphName());
+		if (call == null || !scope.open() || !call.status.equals("UNRESOLVED")
+				|| !call.id.equals(dispatch.context.invocationId()) || call.attempts.isEmpty()
+				|| !call.attempts.getLast().id.equals(dispatch.context.attemptId())
+				|| !call.attempts.getLast().disposition.equals("UNRESOLVED")
+				|| !scope.definition.equals(dispatch.definition))
 			throw new WorkflowRefusal("ATTEMPT_CHANGED", "current execution attempt differs");
 		return call;
 	}
 
-	private static void validateInvocation(RunState run, RunState.Invocation call, Binding recipe) {
-		if (!invocationId(run.id, recipe.placement()).equals(call.id)
-				|| !recipe.placement().graphName().equals(call.placement)
-				|| !valueId(recipe.input().identity()).equals(call.input)
-				|| !valueId(recipe.output().identity()).equals(call.output) || !"UNRESOLVED".equals(call.status))
-			throw new WorkflowRefusal("INVOCATION_CHANGED", "saved invocation differs or is already committed");
-	}
-
-	static void finish(JdbcRunStore.Tx tx, RunState run, ValidatedWorkflow workflow) throws Exception {
-		var node = workflow.graph().nodeByName(run.node);
-		if (!(node instanceof WorkflowNode.TerminalNode terminal))
-			throw new WorkflowRefusal("CURSOR_CHANGED", "terminal graph node required");
-		if (terminal.intent() == Terminal.SUCCEEDED) {
-			run.output = valueId(terminal.successValue());
-			verifyValue(run.id, run.values.get(run.output), workflow.values().get(terminal.successValue()));
-		}
-		tx.terminal(run, terminal.intent().name(), "AUTHORED_" + terminal.intent().name(), terminal.reason(),
-				"workflow");
-	}
-
-	/**
-	 * Inside preparation, obtain the validated effective input. Saved inputs are verified
-	 * and reused; only a new assembled input is constructed from ordered, verified
-	 * component values. Store its exact bytes/provenance before any Step can execute.
-	 */
-	private void materialize(JdbcRunStore.Tx tx, RunState run, ValueId id, ValidatedWorkflow workflow,
-			WorkflowExecutionBindings resolved, String producer) throws Exception {
-		if (run.values.containsKey(valueId(id))) {
-			verifiedValue(tx, run, id, workflow);
-			return;
-		}
-		var recipe = workflow.values().get(id);
-		if (recipe == null || recipe.components().isEmpty())
-			throw new WorkflowRefusal("VALUE_MISSING", "selected immutable value missing: " + id);
-		List<Object> components = new ArrayList<>();
-		for (ValueId component : recipe.components()) {
-			// Components are already selected historical facts. A missing saved input
-			// must never be rebuilt.
-			components.add(decode(tx, run, component, workflow, resolved));
-		}
-		Object input = resolved.assemble(recipe.declaration(), components);
-		putValue(run, recipe, resolved.encode(input, recipe.declaration()), producer);
-	}
-
-	private Object decode(JdbcRunStore.Tx tx, RunState run, ValueId id, ValidatedWorkflow workflow,
-			WorkflowExecutionBindings resolved) throws Exception {
-		RunState.Value value = verifiedValue(tx, run, id, workflow);
-		return resolved.decode(value.payload, workflow.values().get(id).declaration());
-	}
-
-	private RunState.Value verifiedValue(JdbcRunStore.Tx tx, RunState run, ValueId id, ValidatedWorkflow workflow) {
-		RunState.Value value = run.values.get(valueId(id));
-		verifyValue(run.id, value, workflow.values().get(id));
-		return value;
-	}
-
-	static void verifyValue(String runId, RunState.Value value, ValidatedWorkflow.ValueRecipe recipe) {
-		if (value == null || recipe == null)
-			throw new WorkflowRefusal("VALUE_MISSING", "committed selected value is missing");
-		String producer = recipe.identity().role().equals("root") ? ""
-				: invocationId(runId, recipe.identity().placement());
-		if (!producer.equals(value.producer) || !value.id.equals(valueId(recipe.identity()))
-				|| !value.type.equals(recipe.contract().javaType())
-				|| !value.shape.equals(recipe.contract().shapeDigest())
-				|| !value.codec.equals(codec(recipe.contract().codec()))
-				|| !value.digest.equals(Digests.of(value.payload))
-				|| !value.components.equals(recipe.components().stream().map(DurableWorkflows::valueId).toList())
-				|| !value.consumed.equals(recipe.consumed().stream().map(DurableWorkflows::valueId).toList()))
-			throw new WorkflowRefusal("VALUE_CHANGED", "persisted value identity/type/codec/provenance differs");
-	}
-
-	static void putValue(RunState run, ValidatedWorkflow.ValueRecipe recipe, byte[] bytes, String producer) {
-		RunState.Value value = new RunState.Value();
-		value.id = valueId(recipe.identity());
-		value.type = recipe.contract().javaType();
-		value.shape = recipe.contract().shapeDigest();
-		value.codec = codec(recipe.contract().codec());
-		value.digest = Digests.of(bytes);
-		value.payload = bytes.clone();
-		value.producer = producer;
-		value.components = recipe.components().stream().map(DurableWorkflows::valueId).toList();
-		value.consumed = recipe.consumed().stream().map(DurableWorkflows::valueId).toList();
-		if (run.values.putIfAbsent(value.id, value) != null)
-			throw new WorkflowRefusal("VALUE_IMMUTABLE", "cannot overwrite immutable value");
-	}
-
-	static String valueId(ValueId id) {
-		return Digests.fields(id.placement().graphName(), id.role(), id.phase());
-	}
-
-	private static String invocationId(String run, Placement placement) {
-		return Digests.fields(run, placement.graphName(), "root");
-	}
-
-	private static String codec(TypeContracts.CodecIdentity codec) {
-		return Digests.fields(codec.name(), codec.version(), codec.configuration());
-	}
-
-	static String compatibility(ValidatedWorkflow workflow, Map<String, String> selections,
-			ExecutionCompatibility.Manifest manifest, ExecutionPolicy policy) {
-		StringBuilder entries = new StringBuilder();
-		new TreeMap<>(selections).forEach((node, name) -> entries.append(Digests.fields(node, name)));
-		return Digests.fields("durable-run-v5", workflow.authoredIdentity(), entries.toString(), manifest.identity(),
-				codec(workflow.codecIdentity()), policy.identity());
+	private static String compatibility(WorkflowExecutionBindings resolved, ExecutionCompatibility.Manifest manifest,
+			ExecutionPolicy policy) {
+		// The exact closure is compared separately too; a digest never validates
+		// duplicated fields.
+		List<String> fields = new ArrayList<>();
+		fields.add("durable-run-v6");
+		fields.add(resolved.root());
+		fields.add(Integer.toString(resolved.descriptors().size()));
+		new TreeMap<>(resolved.descriptors()).forEach((key, d) -> {
+			fields.add(key);
+			fields.add(d.identity());
+		});
+		fields.add(manifest.identity());
+		fields.add(policy.identity());
+		return Digests.fields(fields.toArray(String[]::new));
 	}
 
 	private void compatible(RunState run, ValidatedWorkflow workflow, WorkflowExecutionBindings resolved) {
-		ExecutionCompatibility.Manifest supplied = requireDeployment().manifest();
+		var supplied = requireDeployment().manifest();
 		if (!supplied.equals(run.deployment))
 			throw new WorkflowRefusal("COMPATIBILITY",
 					"supplied deployment/configuration/codec/runtime differs from admitted manifest");
-		if (run.maximumAttempts != policy.maximumAttempts()
+		if (run.maximumAttempts != policy.maximumAttempts() || run.maximumDepth != policy.maximumDepth()
+				|| run.maximumInvocations != policy.maximumInvocations() || !run.bounds.equals(resolved.bounds())
 				|| !Objects.equals(run.authored, workflow.authoredIdentity())
-				|| !Objects.equals(run.selections, resolved.selections())
-				|| !run.compatibility.equals(compatibility(workflow, resolved.selections(), supplied, policy)))
-			throw new WorkflowRefusal("COMPATIBILITY", "authored behavior, step selection or execution policy differs");
-		validateProgress(run, workflow);
-	}
-
-	private static RunState.Invocation findInvocation(RunState run, String node) {
-		RunState.Invocation found = null;
-		for (var call : run.invocations)
-			if (Objects.equals(call.placement, node)) {
-				if (found != null)
-					throw new WorkflowRefusal("INVOCATION_CHANGED", "duplicate saved node invocation");
-				found = call;
-			}
-		return found;
-	}
-
-	/**
-	 * Verify that saved history is a graph prefix and the cursor is its first uncommitted
-	 * node.
-	 */
-	private static void validateProgress(RunState run, ValidatedWorkflow workflow) {
-		var graph = workflow.graph();
-		String node = graph.startNode();
-		Set<String> seen = new HashSet<>();
-		int recorded = 0;
-		while (graph.nodeByName(node) instanceof WorkflowNode.StepNode) {
-			if (!seen.add(node))
-				throw new WorkflowRefusal("CURSOR_CHANGED", "cyclic sequential continuation");
-			var call = findInvocation(run, node);
-			if (call == null)
-				break;
-			recorded++;
-			Binding binding = graph.binding(node);
-			if (!invocationId(run.id, binding.placement()).equals(call.id)
-					|| !valueId(binding.input().identity()).equals(call.input)
-					|| !valueId(binding.output().identity()).equals(call.output))
-				throw new WorkflowRefusal("INVOCATION_CHANGED", "saved graph invocation differs");
-			if (!"COMMITTED".equals(call.status))
-				break;
-			verifyValue(run.id, run.values.get(call.input), workflow.values().get(binding.input().identity()));
-			verifyValue(run.id, run.values.get(call.output), workflow.values().get(binding.output().identity()));
-			node = graph.unconditionalSuccessor(node);
-		}
-		if (!Objects.equals(node, run.node) || recorded != run.invocations.size())
-			throw new WorkflowRefusal("CURSOR_CHANGED", "saved cursor/history is not the admitted graph continuation");
-		if ("SUCCEEDED".equals(run.status) && !(graph.nodeByName(node) instanceof WorkflowNode.TerminalNode))
-			throw new WorkflowRefusal("CURSOR_CHANGED", "success requires an explicit terminal node");
+				|| !run.rootDefinition.equals(resolved.root()) || !run.definitions.equals(resolved.descriptors())
+				|| !run.compatibility.equals(compatibility(resolved, supplied, policy)))
+			throw new WorkflowRefusal("COMPATIBILITY",
+					"authored behavior, definition selection or execution policy differs");
+		WorkflowProgress.validate(run, resolved);
 	}
 
 	private static void requireText(String text, String field) {
@@ -719,7 +728,8 @@ public final class DurableWorkflows implements AutoCloseable {
 
 	}
 
-	private record Dispatch(Binding recipe, Object input, StepContext context) implements Advancement {
+	private record Dispatch(String scope, String definition, Binding recipe, Object input,
+			StepContext context) implements Advancement {
 	}
 
 	private record Progress(RunSnapshot snapshot) implements Advancement {

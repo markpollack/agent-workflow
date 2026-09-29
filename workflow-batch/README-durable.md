@@ -1,8 +1,8 @@
 # Local runtime lifecycle and recovery
 
-This developer guide describes the current sequential runtime. Start with the [project README](../README.md) for workflow authoring and the runnable recovery example.
+This developer guide describes the current local runtime. Start with the [project README](../README.md) for workflow authoring and the runnable recovery example.
 
-[`DurableWorkflows`](src/main/java/io/github/markpollack/workflow/batch/durable/DurableWorkflows.java) accepts immutable `ValidatedWorkflow` definitions containing sequential steps and explicit terminal outcomes. Decisions, verdict routing, parallel groups, fan-out, loops, timers and reusable workflow composition are not executable on this path yet. Submitting a definition with unsupported constructs refuses admission.
+[`DurableWorkflows`](src/main/java/io/github/markpollack/workflow/batch/durable/DurableWorkflows.java) accepts immutable `ValidatedWorkflow` definitions containing Steps, nested same-run composites and explicit terminal outcomes. Decisions, verdict routing, parallel groups, fan-out, loops and timers are not executable on this path yet. Submitting a definition with unsupported constructs refuses admission.
 
 ## Application-supplied steps
 
@@ -16,7 +16,7 @@ Implement `Step<I,O>` with concrete input/output types and register supplied obj
 
 Java erases generic method dispatch, but a concrete class declaration such as `implements Step<Request, List<Reply>>` retains a generic signature. [`StepTypes`](../workflow-flows/src/main/java/io/github/markpollack/workflow/flows/compiler/StepTypes.java) reads those signatures, including concrete inherited declarations. `new GenericStep<Request>()` alone does not retain the argument in its runtime class. Raw/unresolved declarations, conflicting proxy contracts and erased lambda classes refuse validation. All inherited Step declarations must agree; proxy interface order cannot select a contract. There are no public `inputType()`/`outputType()` hints to maintain.
 
-`then` selects those full types; `build` validates control structure, input bindings and durable value shapes. The existing [RegionAnalyzer](../workflow-flows/src/main/java/io/github/markpollack/workflow/flows/compiler/RegionAnalyzer.java) resolves record components in declaration order and derives captures from typed facts across continuing paths. Captures are analysis of where a value comes from, not reflective invocation or object-field guessing. They do not require type-hint methods. Broader path analysis exists in the validator; this sequential runtime still refuses those composition constructs.
+`then` selects those full types; `build` validates control structure, input bindings and durable value shapes. The existing [RegionAnalyzer](../workflow-flows/src/main/java/io/github/markpollack/workflow/flows/compiler/RegionAnalyzer.java) resolves record components in declaration order and derives captures from typed facts across continuing paths. Captures are analysis of where a value comes from, not reflective invocation or object-field guessing. They do not require type-hint methods. Broader path analysis exists in the validator; this runtime still refuses later routing, group, loop and timer constructs.
 
 Admission checks the supplied objects and root value against the validated definition. Execution checks the saved definition/deployment and exact input identity, type, codec and provenance before decoding it. [`WorkflowExecutionBindings`](src/main/java/io/github/markpollack/workflow/batch/durable/WorkflowExecutionBindings.java) compares the actual Step signature with the selected full input/output types. Only then does its direct invocation bridge cast to `Step<Object,Object>` for erased Java dispatch. That cast does not resolve bindings or weaken the preceding checks.
 
@@ -65,7 +65,7 @@ Project Reactor and other reactive stacks are not used for scheduling or executi
 
 ## Atomic progress and exact values
 
-The runtime reads the durable current node, obtains its binding by node ID and follows its one unconditional edge after success. Explicit terminal metadata supplies the final intent and successful value. A shared completion sink exists for structural analysis; the runtime stops at the explicit terminal. It never dispatches by an index into stored nodes or bindings. Recovery verifies that saved invocations form a graph prefix and the cursor points to its first uncommitted node.
+The runtime selects an eligible scope and its saved node progress, obtains that definition's binding by node ID, and follows its unconditional edge after success. Explicit terminal metadata supplies the local intent and successful value. Recovery checks each scope's saved graph prefix, invocation facts and return links. `currentNode()` is a derived root position; `scopes()` exposes the full nested progress. Stored node, binding or registry iteration order does not choose execution.
 
 The execution sequence separates saved state from application execution:
 
@@ -81,6 +81,31 @@ Root inputs, effective step inputs and outputs are immutable snapshots with type
 
 An earlier assembled input remains its own saved value. A later step can consume it whole; recovery does not rebuild it from newer results. Missing or incompatible committed values refuse recovery. The [saved-input process test](src/test/java/io/github/markpollack/workflow/batch/durable/ProcessRecoveryIT.java) checks this across actual JVM kills.
 
+## Composite scopes and return
+
+`subWorkflow(label, validatedDefinition)` places a typed call to immutable definition data. Each occurrence has a private scope and exact call input within the original run. Nested calls use the same Step preparation, codec, bounded attempt and result-acceptance methods as root Steps. There is no separate child runtime or child-run management API.
+
+Preparation distinguishes authored behavior from implementation selection. A prepared definition includes its authored identity, local node-to-registration selections and local call-to-callee selections. Thus two definitions named `poll` with identical topology can select `fetch-fast` and `fetch-careful` independently. Runtime lookup uses the scope's prepared definition and local node together. Rebuilt equivalent definitions and fresh compatible objects reproduce those selections. Unused registered beans remain legal; swapped callee selections refuse recovery.
+
+| Inspection fact | Meaning |
+|---|---|
+| `definitions()` | Prepared definition IDs with readable local Step and callee selections |
+| `scopes()` | Parent/opening call, exact input, effective deadline, lifecycle and per-node progress |
+| `localOutcome()` | Immutable locally accepted success/failure/cancellation, cause, source and result |
+| `revocation()` | An ancestor denied further execution or return; accepted inner outcomes remain visible |
+| `returns()` | Unique accepted return receipt linking a caller invocation to its child's outcome |
+| `resources()` | Admitted depth/work/attempt policy and conservative structural bounds |
+
+A scope is `OPEN`, `LOCAL_TERMINAL`, `RETURNED` or `REVOKED`. An open scope has one frontier node in this sequential composition subset: `READY`, `ENTERED` or `WAITING_CHILD`. Settled nodes retain their invocation or terminal reference. A waiting caller must have exactly one checked child that can execute, recover or return. Unexplained missing progress refuses with `PROGRESS_INVALID` or `STRANDED_PROGRESS`; it is never an ordinary durable wait.
+
+Composite entry saves the caller's exact input, private child input, deadline and return continuation in one transaction, without charging a Step attempt. When a final inner Step succeeds, its result and directly reached terminal outcome commit together. Returning that outcome to the caller uses a separate transaction, which saves the boundary value, unique return receipt and caller successor. If that successor is terminal, its outcome joins the return transaction; propagation to its own caller still waits for another transition.
+
+For example, an inner completion accepted at time 90 with deadline 100 can return at time 140 when its parent deadline is 200. Its accepted outcome no longer expires. If the parent instead expires or is cancelled before return, the inner outcome remains visible and return is revoked. A nonfinal leaf result provides no such completion guarantee. An authored inner FAILED/CANCELLED outcome or known Step failure propagates as parent failure, retaining the cause; it does not become external root cancellation.
+
+`ExecutionPolicy.DEFAULT` allows depth 32 (root depth zero) and 10,000 logical invocations. Configure them with `new ExecutionPolicy(maximumAttempts, maximumDepth, maximumInvocations)`. Each leaf and composite occurrence consumes one logical charge, even when a definition is reused; physical reattempts and returns do not charge it again. Summaries are memoized by definition and added for every call occurrence, with checked arithmetic. These defaults are protective bounds, not tested throughput or storage-capacity claims.
+
+The [standalone composite example](src/test/java/io/github/markpollack/workflow/batch/examples/CompositeRecoveryExample.java) and [Spring test](src/test/java/io/github/markpollack/workflow/batch/examples/CompositeWorkflowTest.java) show two calls to a two-Step polling definition. The Spring test recreates the application context after the second fetch commits. [CompositeRecoveryIT](src/test/java/io/github/markpollack/workflow/batch/durable/CompositeRecoveryIT.java) separately proves recovery after actual JVM death, including nested scopes and the local-completion/return gap.
+
 ## Crash recovery, failure and time
 
 A compatible application can reopen after process death and continue unfinished runs. Committed results are reused. A charged attempt without a committed outcome may execute again with its saved input. `ExecutionPolicy.DEFAULT` permits three total physical attempts per logical invocation; exhausting the allowance fails the run. A changed allowance is a compatibility change.
@@ -88,6 +113,8 @@ A compatible application can reopen after process death and continue unfinished 
 This is not exactly-once external execution. If a process dies after an external effect but before its result commits, recovery can repeat that effect. Use the stable invocation ID for external idempotency where supported. Known step exceptions fail the run immediately; there is no engine retry/backoff facility. `resume` returns a terminal run unchanged and does not provide saved-progress restart after terminal failure. That restart policy remains an open product decision.
 
 The default maximum duration is one hour (`DeadlinePolicy.DEFAULT`, profile `local-v1`). An authored shorter duration tightens it; a longer duration is capped. The lower-level validation API accepts another positive finite `DeadlinePolicy`. Admission saves an absolute deadline and its origin, which recovery never extends.
+
+An entered scope saves the minimum of its parent deadline and its own duration from entry. This absolute bound never resets after recovery. `StepContext.deadline()` exposes that effective bound.
 
 Each serialized transition samples the database-side wall clock with a persisted high-water mark. At equality with the deadline, success/progress is ineligible. This sample is the transition's eligibility instant, not its later physical fsync time. Backward clock movement does not rewind the saved clock; forward movement can expire runs early. Expiry is observed during runtime calls rather than by a background timer. The first valid terminal transition wins permanently.
 
@@ -117,7 +144,7 @@ Steps use the ordinary application class loader. Workflow does not archive execu
 
 ## Store and verification limits
 
-The store uses H2 embedded file mode with `WRITE_DELAY=0` and format-5 run aggregates. Older (including format 4), incomplete, malformed or unknown store formats refuse before writable initialization; there is no checkpoint migration or automatic conversion. Remote workers and simultaneous embedded owners are unsupported. Values and events are retained indefinitely; no pruning API is provided. Filesystem/hardware durability remains within H2's guarantees; JVM-kill tests are not power-loss tests.
+The store uses H2 embedded file mode with `WRITE_DELAY=0` and format-6 run aggregates. Older (including format 5), incomplete, malformed or unknown store formats refuse before writable initialization; there is no checkpoint migration or automatic conversion. Remote workers and simultaneous embedded owners are unsupported. Values and events are retained indefinitely; no pruning API is provided. Filesystem/hardware durability remains within H2's guarantees; JVM-kill tests are not power-loss tests.
 
 Run `./mvnw -pl workflow-batch -am verify` from the project root for unit, consumer and separate-JVM recovery checks. The process harness records PIDs, kill boundaries, recovered facts and external invocation counts under `workflow-batch/target/durable-evidence/`. The full project gate is `./mvnw verify`.
 
@@ -127,11 +154,11 @@ Run `./mvnw -pl workflow-batch -am verify` from the project root for unit, consu
 2. [ValidatedWorkflow](../workflow-flows/src/main/java/io/github/markpollack/workflow/flows/compiler/ValidatedWorkflow.java): owned definition, semantic graph and value contracts. Follow StructuredWorkflowCompiler into RegionAnalyzer, GraphLowering and GraphVerification for binding and topology checks.
 3. [WorkflowGraph](../workflow-flows/src/main/java/io/github/markpollack/workflow/flows/workflow/WorkflowGraph.java): immutable nodes, edges and per-node binding indexes. Supplied objects live separately on ValidatedWorkflow.
 4. StepRegistry and ExecutionCompatibility above, then [WorkflowExecutionBindings](src/main/java/io/github/markpollack/workflow/batch/durable/WorkflowExecutionBindings.java): preparation freezes selected names/instances and verifies full types without invoking a Step.
-5. DurableWorkflows: start, resolve, prepareAdvance, executeAttempt and commitResult. JdbcRunStore owns short transactions and aggregate persistence; RuntimeLifecycle and StoreOwnership own caller exclusion and local store lifetime.
+5. DurableWorkflows: start, resolve, prepareAdvance, enterComposite/returnComposite, executeAttempt and commitResult. WorkflowProgress checks graph frontiers; RunIntegrity checks saved relations; ScopedValues preserves exact typed provenance. JdbcRunStore owns short transactions and aggregate persistence; RuntimeLifecycle and StoreOwnership own caller exclusion and local store lifetime.
 
 The compiling [standalone example](src/test/java/io/github/markpollack/workflow/batch/examples/SequentialRecoveryExample.java) demonstrates launch, inspection and process recovery. The [introductory Spring test](src/test/java/io/github/markpollack/workflow/batch/examples/SimpleGreetingWorkflowTest.java) starts with two distinct Step types and unlabeled authoring. The [advanced Spring test](src/test/java/io/github/markpollack/workflow/batch/examples/GreetingWorkflowTest.java) uses ordinary ExampleSettings and constructor injection, derives compatibility from that same source and takes the canonical Step map from the container. A changed selected configuration refuses recovery before entry. A new business input uses a new launch key without changing application settings.
 
-Recovery means continuing unfinished work after process death. A retry of an unresolved invocation consumes another bounded physical attempt with the exact saved input. Operator restart after terminal failure is a separate unresolved policy. Future scheduler/dashboard integrations can use this launch/management boundary; scheduling, launch-request deduplication beyond the current local idempotency key, same-run composite scopes and independent child runs are not provided by this runtime.
+Recovery means continuing unfinished work after process death. A retry of an unresolved invocation consumes another bounded physical attempt with the exact saved input. Operator restart after terminal failure is a separate unresolved policy. Future scheduler/dashboard integrations can use this launch/management boundary; scheduling, launch-request deduplication beyond the current local idempotency key, independent child runs are not provided by this runtime.
 
 Spring qualifiers disambiguate injected beans; DSL labels describe node positions. Parameter injection lets both example configuration classes use `proxyBeanMethods = false` without changing singleton scope. Neither example proxies the Step implementations. Generic Step-proxy refusal in both interface orders and agreeing proxy contracts are tested separately by `StepRegistryTest`; `StepDeclarationTest` covers inherited, raw and unresolved declarations.
 

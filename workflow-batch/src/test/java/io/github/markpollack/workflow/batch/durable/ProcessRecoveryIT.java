@@ -50,7 +50,7 @@ class ProcessRecoveryIT {
             JsonNode before=mapper.readTree(Files.readString(directory.resolve("recover-before.json")));
             JsonNode after=mapper.readTree(Files.readString(directory.resolve("recover-after.json")));
             assertThat(before.path("invocations").size()).isEqualTo(invocations);
-            assertThat(after.path("status").asText()).isEqualTo("SUCCEEDED");assertThat(after.path("node").asText()).isEqualTo(KernelFixtures.o01(KernelFixtures.deployment(Map.of()),true).terminal().name());
+            assertThat(after.path("status").asText()).isEqualTo("SUCCEEDED");assertThat(after.path("scopes").path(after.path("rootScope").asText()).path("localOutcome").path("source").asText()).isEqualTo(KernelFixtures.o01(KernelFixtures.deployment(Map.of()),true).terminal().name());
             assertThat(after.path("deadline")).isEqualTo(before.path("deadline"));
             assertThat(Files.readAllLines(directory.resolve("first.calls"))).hasSize(firstCalls);
             assertThat(Files.readAllLines(directory.resolve("second.calls"))).hasSize(secondCalls);
@@ -61,7 +61,7 @@ class ProcessRecoveryIT {
             if(occurrence==2) assertThat(after.path("values").path(secondInput)).isEqualTo(before.path("values").path(secondInput));
             if(boundary.equals("AFTER_RESULT_COMMIT")) {
                 for(int i=0;i<occurrence;i++) {
-                    var call=before.path("invocations").get(i);assertThat(call.path("status").asText()).isEqualTo("COMMITTED");
+                    var call=before.path("invocations").get(i);assertThat(call.path("status").asText()).isEqualTo("SETTLED");
                     assertThat(after.path("invocations").get(i)).isEqualTo(call);
                 }
             }

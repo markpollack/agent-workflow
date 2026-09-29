@@ -64,7 +64,7 @@ class SequentialAuthoringTest {
 				new Call("receipt", Op.declared("receipt", StepTypes.of(receipt.getClass()).input(), StepTypes.of(receipt.getClass()).output())),
 				new End(Terminal.SUCCEEDED, ""));
 		var definition = new Definition<>("greeting-receipt", StepTypes.of(greet.getClass()).input(), StepTypes.of(receipt.getClass()).output(), body, null);
-		return ValidatedWorkflow.compileSequential(definition, List.of(greet, receipt), DeadlinePolicy.DEFAULT);
+		return ValidatedWorkflow.compile(definition, List.of(greet, receipt), DeadlinePolicy.DEFAULT);
 	}
 
 	@Test
@@ -129,7 +129,7 @@ class SequentialAuthoringTest {
 		var call = new Call("greet", Op.declared("greet", StepTypes.of(greet.getClass()).input(), StepTypes.of(greet.getClass()).output()));
 		var unfinished = new Definition<>("unfinished", StepTypes.of(greet.getClass()).input(), StepTypes.of(greet.getClass()).output(), List.<Node>of(call), null);
 		assertThatThrownBy(
-				() -> ValidatedWorkflow.compileSequential(unfinished, List.of(greet), DeadlinePolicy.DEFAULT))
+				() -> ValidatedWorkflow.compile(unfinished, List.of(greet), DeadlinePolicy.DEFAULT))
 			.isInstanceOf(IllegalArgumentException.class)
 			.hasMessageContaining("missing terminal");
 		assertThatThrownBy(() -> Workflows.define("failed").then("greet", application.step("greet")).terminate(Terminal.FAILED).build())
@@ -137,7 +137,7 @@ class SequentialAuthoringTest {
 			.hasMessageContaining("non-success terminal reason required");
 		var definition = new Definition<>("failed", StepTypes.of(greet.getClass()).input(), StepTypes.of(greet.getClass()).output(),
 				List.of(call, new End(Terminal.FAILED, "demonstration complete")), null);
-		var validated = ValidatedWorkflow.compileSequential(definition, List.of(greet), DeadlinePolicy.DEFAULT);
+		var validated = ValidatedWorkflow.compile(definition, List.of(greet), DeadlinePolicy.DEFAULT);
 		try (var runtime = DurableWorkflows.open(directory.resolve("runs"), application.registry(), application.compatibility())) {
 			var run = runtime.start(validated, "customer-17", new Request("Ada"));
 			assertThat(runtime.resume(run.runId(), validated).status()).isEqualTo(RunSnapshot.Status.FAILED);

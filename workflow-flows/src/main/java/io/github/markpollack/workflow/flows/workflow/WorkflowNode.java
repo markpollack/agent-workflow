@@ -19,7 +19,11 @@ public sealed interface WorkflowNode {
 	record StepNode(String name, Type input, Type output) implements WorkflowNode {
 	}
 
-	/** Explicit workflow outcome, with a selected value only for success. */
+	/** A typed local call to reusable definition data; supplied objects remain outside the graph. */
+    record CompositeNode(String name, Type input, Type output, String authoredDefinition) implements WorkflowNode {
+    }
+
+    /** Explicit workflow outcome, with a selected value only for success. */
 	record TerminalNode(String name, Terminal intent, String reason, ValueId successValue) implements WorkflowNode {
 	}
 

@@ -224,8 +224,9 @@ final class GraphLowering {
 					terminals.add(id);
 					return fragment(id, p);
 				}
-				case Child ignored -> {
-					addTypedNode(id, info.input(), info.output());
+				case Child child -> {
+                    nodes.add(new WorkflowNode.CompositeNode(id, info.input(), info.output(),
+                        child.reference() == null ? child.definition().name() : child.reference().authoredIdentity()));
 					if (!summary(p).continues()) {
 						terminals.add(id);
 						return fragment(id, p);

@@ -63,7 +63,10 @@ final class GraphVerification {
 			if (node instanceof WorkflowNode.StepNode step) {
 				verifyTypes(step.input(), step.output(), item.getValue());
 			}
-			else if (node instanceof WorkflowNode.ControlNode control) {
+			else if (node instanceof WorkflowNode.CompositeNode composite) {
+                verifyTypes(composite.input(), composite.output(), item.getValue());
+            }
+            else if (node instanceof WorkflowNode.ControlNode control) {
 				verifyTypes(control.input(), control.output(), item.getValue());
 			}
 			else if (node instanceof WorkflowNode.DecisionNode decision) {

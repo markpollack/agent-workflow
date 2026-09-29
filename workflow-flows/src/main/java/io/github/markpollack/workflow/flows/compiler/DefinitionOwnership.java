@@ -17,6 +17,7 @@ import static io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
 final class DefinitionOwnership {
     private final Set<Object> active = Collections.newSetFromMap(new IdentityHashMap<>());
     private int depth;
+    private final java.util.Map<Definition<?,?>, Definition<?,?>> definitions = new IdentityHashMap<>();
 
     static Definition<?,?> acquire(Definition<?,?> input) {
         return new DefinitionOwnership().definition(input);
@@ -32,7 +33,10 @@ final class DefinitionOwnership {
     }
 
     private Definition<?,?> definition(Definition<?,?> d) {
-        return within(d, () -> new Definition<>(d.name(), type(d.input()), type(d.output()), nodes(d.nodes()), d.deadline()));
+        if (definitions.containsKey(d)) return definitions.get(d);
+        Definition<?,?> owned = within(d, () -> new Definition<>(d.name(), type(d.input()), type(d.output()), nodes(d.nodes()), d.deadline()));
+        definitions.put(d, owned);
+        return owned;
     }
 
     private <T,R> List<R> copy(List<T> values, java.util.function.Function<T,R> copier) {
@@ -57,7 +61,7 @@ final class DefinitionOwnership {
                     copy(p.members(),m -> within(m,()->new Member(m.name(),nodes(m.nodes())))));
             case Fan f -> new Fan(f.id(),type(f.element()),f.maxItems(),f.maxInFlight(),f.allSuccessful(),nodes(f.body()));
             case Loop l -> new Loop(l.id(),booleanOp(l.test()),l.maxIterations(),l.policy(),nodes(l.body()));
-            case Child c -> new Child(c.id(),definition(c.definition()));
+            case Child c -> c.reference() == null ? new Child(c.id(),definition(c.definition())) : new Child(c.id(),c.reference());
             case Timer t -> new Timer(t.id(),t.duration());
             case End e -> new End(e.terminal(),e.reason());
         });

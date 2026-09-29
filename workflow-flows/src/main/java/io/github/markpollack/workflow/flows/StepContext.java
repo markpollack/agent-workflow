@@ -35,7 +35,7 @@ import java.util.Objects;
  * @param invocationId stable logical step invocation
  * @param attemptId unique physical attempt
  * @param attemptNumber one-based charged attempt number
- * @param deadline persisted absolute run deadline
+ * @param deadline persisted effective scope deadline, capped by every enclosing scope
  */
 public record StepContext(String runId, String invocationId, String attemptId, int attemptNumber, Instant deadline) {
 	/**

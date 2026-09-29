@@ -95,7 +95,7 @@ final class RegionTopology {
 				edge(id, finish);
 			}
 			case Child child -> {
-				step(id);
+                expect(id, WorkflowNode.CompositeNode.class);
 				normal = hasSuccessfulExit(child.definition().nodes());
 				if (!normal)
 					edge(id, finish);

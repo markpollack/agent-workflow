@@ -149,8 +149,8 @@ public final class WorkflowModel {
 
 	/**
 	 * An authored control-flow occurrence. Availability here means the analyzer knows the
-	 * construct, not that a particular runtime admits it. Sequential admission currently
-	 * accepts Call and End; other constructs require separate runtime support.
+	 * construct, not that a particular runtime admits it. Production admission currently
+	 * accepts Call, Child and End; other constructs require separate runtime support.
 	 */
 	public sealed interface Node permits Call, Choice, Parallel, Fan, Loop, Child, Timer, End {
 
@@ -187,7 +187,40 @@ public final class WorkflowModel {
 			List<Node> body) implements Node {
 	}
 
-	public record Child(String id, Definition<?, ?> definition) implements Node {
+	public static final class Child implements Node {
+
+		private final String id;
+
+		private final Definition<?, ?> definition;
+
+		private final ValidatedWorkflow reference;
+
+		/** Construct an unresolved declaration for lower-level analysis. */
+		public Child(String id, Definition<?, ?> definition) {
+			this.id = id;
+			this.definition = definition;
+			this.reference = null;
+		}
+
+		/** Reference immutable checked definition data without copying its graph. */
+		public Child(String id, ValidatedWorkflow reference) {
+			this.id = id;
+			this.reference = java.util.Objects.requireNonNull(reference);
+			this.definition = reference.definition();
+		}
+
+		public String id() {
+			return id;
+		}
+
+		public Definition<?, ?> definition() {
+			return definition;
+		}
+
+		public ValidatedWorkflow reference() {
+			return reference;
+		}
+
 	}
 
 	public record Timer(String id, Duration duration) implements Node {
@@ -242,6 +275,7 @@ public final class WorkflowModel {
 	 * shared by analysis and graph construction, and later combined with a run identity
 	 * for a logical invocation. It is neither a registration ID nor an execution attempt.
 	 * Rebuilding unchanged construction data produces the same placement.
+	 *
 	 * @param segments ordered path from workflow root to this authored position; copied
 	 * on construction, with each segment retaining its label and sibling ordinal
 	 */
@@ -276,6 +310,7 @@ public final class WorkflowModel {
 	 * Logical value identity, including its producer location, role and analysis phase.
 	 * It describes a definition-level value; runtime invocation coordinates distinguish
 	 * executions of that definition.
+	 *
 	 * @param placement authored location that introduces the value
 	 * @param role the value's purpose, such as root, input, output or capture
 	 * @param phase analysis context, such as root, root/first or root/carried; not an
@@ -291,20 +326,21 @@ public final class WorkflowModel {
 	 * a mutable context entry. Its {@link ValueId} distinguishes producers with the same
 	 * Java type; display text is for explanation, not value lookup.
 	 * <p>
-	 * Components describe ordered record assembly, product membership or a carried
-	 * value wrapped by loop analysis. Consumed facts
-	 * describe dependency lineage: for example, an operation's output consumes its
-	 * selected input. Analysis uses both relationships to prove provenance and state
-	 * replacement; consumption does not delete an earlier value. Capture alternatives
-	 * are recorded separately by {@link Capture}. Runtime value recipes retain exact
-	 * identities and provenance derived from these facts.
+	 * Components describe ordered record assembly, product membership or a carried value
+	 * wrapped by loop analysis. Consumed facts describe dependency lineage: for example,
+	 * an operation's output consumes its selected input. Analysis uses both relationships
+	 * to prove provenance and state replacement; consumption does not delete an earlier
+	 * value. Capture alternatives are recorded separately by {@link Capture}. Runtime
+	 * value recipes retain exact identities and provenance derived from these facts.
+	 *
 	 * @param identity producer {@link Placement}, role and analysis phase of this value
 	 * @param display human-readable description, such as {@code normalize.out}; not a
 	 * unique identity or runtime lookup key
 	 * @param type complete reflective type, including concrete generic arguments;
 	 * analysis may also describe an internal product of member types
-	 * @param components component facts in assembly/product order, a carried-state source, or
-	 * empty for a whole value; record assembly follows canonical constructor order
+	 * @param components component facts in assembly/product order, a carried-state
+	 * source, or empty for a whole value; record assembly follows canonical constructor
+	 * order
 	 * @param consumed input or prior-state facts establishing dependency/provenance,
 	 * distinct from ordered assembly components; empty when there are none
 	 */
@@ -321,8 +357,8 @@ public final class WorkflowModel {
 	 * execution consumes and produces.
 	 * <p>
 	 * For example, suppose {@code normalize: Text -> Text} is followed by
-	 * {@code decorate: Text -> Text} and {@code receipt: Text -> Receipt}. The binding for
-	 * decorate selects normalize's output {@link ValueId}; receipt selects decorate's
+	 * {@code decorate: Text -> Text} and {@code receipt: Text -> Receipt}. The binding
+	 * for decorate selects normalize's output {@link ValueId}; receipt selects decorate's
 	 * output. The root and both outputs share Java type Text, but execution reads the
 	 * selected producer's saved value rather than searching by type. Reusing the same
 	 * supplied Step in two {@code then} calls creates two {@link Placement placements}
@@ -331,8 +367,9 @@ public final class WorkflowModel {
 	 * Phase is an analysis context. Ordinary sequential bindings use {@code root}. The
 	 * compiler's loop analysis distinguishes first entry ({@code /first}) from carried
 	 * state ({@code /carried}), which may select different input facts at the same
-	 * placement. These templates are not physical attempts or runtime iterations;
-	 * durable execution currently admits only sequential operations and terminals.
+	 * placement. These templates are not physical attempts or runtime iterations; durable
+	 * execution currently admits only sequential operations and terminals.
+	 *
 	 * @param placement authored occurrence whose input/output selection this describes
 	 * @param phase analysis context distinguishing first-entry and carried-state facts
 	 * where applicable, otherwise root

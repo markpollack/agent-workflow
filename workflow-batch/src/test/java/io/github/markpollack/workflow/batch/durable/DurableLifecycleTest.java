@@ -34,7 +34,7 @@ class DurableLifecycleTest {
                 assertThatThrownBy(()->ValidatedWorkflow.compile(new Definition<>("invalid",Request.class,Request.class,List.<Node>of(new End(Terminal.SUCCEEDED,"")),invalid),Map.of())).isInstanceOf(IllegalArgumentException.class);
             var source=new Definition<>("selected-default",Request.class,Request.class,List.<Node>of(
                 new Call("echo",Op.declared("echo",Request.class,Request.class)),new End(Terminal.SUCCEEDED,"")),null);
-            var tighter=ValidatedWorkflow.compileSequential(source,List.of(deployment.step(Echo.class.getName())),new DeadlinePolicy("short",Duration.ofMinutes(2)));
+            var tighter=ValidatedWorkflow.compile(source,List.of(deployment.step(Echo.class.getName())),new DeadlinePolicy("short",Duration.ofMinutes(2)));
             var selected=runtime.start(tighter,"selected",new Request("x"));assertThat(selected.deadline()).isEqualTo(selected.admittedAt().plus(Duration.ofMinutes(2)));
         }
     }

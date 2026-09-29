@@ -15,9 +15,10 @@ import static io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
  */
 public final class ValidatedWorkflow {
 
-	public static final String COMPILER_CONTRACT = "structured-workflow-compiler-v2";
+	public static final String COMPILER_CONTRACT = "structured-workflow-compiler-v3";
 
-	private static final Set<Capability> SUPPORTED = Set.of(Capability.OPERATION, Capability.TERMINAL);
+	private static final Set<Capability> SUPPORTED = Set.of(Capability.OPERATION, Capability.TERMINAL,
+			Capability.CHILD);
 
 	/**
 	 * Exact value contract and provenance prepared from an analyzed fact. Components
@@ -156,6 +157,14 @@ public final class ValidatedWorkflow {
 				valueIdentity(authored, binding.input().identity());
 				valueIdentity(authored, binding.output().identity());
 			}
+			if (node instanceof WorkflowNode.CompositeNode composite) {
+				contractIdentity(authored, contracts.contract(composite.input()));
+				contractIdentity(authored, contracts.contract(composite.output()));
+				IdentityEncoding.field(authored, composite.authoredDefinition());
+				Binding binding = graph.binding(node.name());
+				valueIdentity(authored, binding.input().identity());
+				valueIdentity(authored, binding.output().identity());
+			}
 			if (node instanceof WorkflowNode.TerminalNode terminal) {
 				IdentityEncoding.field(authored, terminal.intent().name());
 				IdentityEncoding.field(authored, terminal.reason());
@@ -215,109 +224,111 @@ public final class ValidatedWorkflow {
 	 */
 	public static ValidatedWorkflow compile(Definition<?, ?> source, Map<Placement, Step<?, ?>> selections,
 			DeadlinePolicy policy) {
-		Definition<?, ?> owned = DefinitionOwnership.acquire(source);
-		Objects.requireNonNull(policy, "deadline policy");
-		java.time.Duration authored = owned.deadline();
-		owned = new Definition<>(owned.name(), owned.input(), owned.output(), owned.nodes(), policy.resolve(authored));
-		Map<Placement, Step<?, ?>> selected = Map.copyOf(selections);
-		for (Node node : owned.nodes())
-			if (!SUPPORTED.contains(Coordinates.capability(node)))
-				throw new IllegalArgumentException(
-						"unsupported production capability: " + Coordinates.capability(node));
-		if (owned.nodes().stream().noneMatch(Call.class::isInstance))
-			throw new IllegalArgumentException("sequential workflow requires at least one Step");
-		Compilation<?, ?> compiled = StructuredWorkflowCompiler.compileOwned(owned);
-		return new ValidatedWorkflow(compiled, selected, Map.of(), policy, authored);
+		return compile(source, selections, Map.of(), policy);
 	}
 
 	/**
-	 * Convenience entry for ordered programmatic construction and sequential builders.
-	 * Assign the selections to Call occurrences in definition order using the compiler's
-	 * placement rule, then delegate to {@link #compile(Definition, Map, DeadlinePolicy)}.
-	 * A registration map's iteration order is irrelevant; the selection list must match
-	 * the ordered Calls. Both entry points acquire owned data before trusting it.
-	 * This association-by-order convenience is limited to sequential construction; it
-	 * does not define selection or boundary inference for branches or loops.
-	 * @param source sequence of Call occurrences and explicit terminal
-	 * @param selections one selection per Call, in authored order
-	 * @param policy finite deadline policy
-	 * @return the same validated preparation available through placement-keyed compile
-	 * @throws IllegalArgumentException for count disagreement or definition validation
-	 * failure; no application Step has run and no durable run exists
+	 * Compile one owned definition with exact local Step and reusable-definition
+	 * associations. Direct immutable Child references need no additional map entry.
+	 * Lower-level Child declarations must agree with their selected definition, including
+	 * authored duration. All callers use this boundary; no registry or application
+	 * execution is involved.
+	 * @param source construction data, copied before analysis
+	 * @param selections local supplied Steps keyed by placement
+	 * @param children selected definitions for unresolved Child declarations
+	 * @param policy finite duration policy for this definition
+	 * @return immutable graph, bindings and separate supplied associations
 	 */
-	public static ValidatedWorkflow compileSequential(Definition<?, ?> source, List<? extends Step<?, ?>> selections,
+	public static ValidatedWorkflow compile(Definition<?, ?> source, Map<Placement, Step<?, ?>> selections,
+			Map<Placement, ValidatedWorkflow> children, DeadlinePolicy policy) {
+		return new CompilationSession().compile(source, selections, children, policy);
+	}
+
+	/**
+	 * Associate supplied Steps with local Calls in authored order, then use the shared
+	 * compiler.
+	 */
+	public static ValidatedWorkflow compile(Definition<?, ?> source, List<? extends Step<?, ?>> steps,
 			DeadlinePolicy policy) {
 		Definition<?, ?> owned = DefinitionOwnership.acquire(source);
 		Map<Placement, Step<?, ?>> selected = new LinkedHashMap<>();
-		int call = 0;
+		int index = 0;
 		for (int i = 0; i < owned.nodes().size(); i++) {
 			Node node = owned.nodes().get(i);
 			if (node instanceof Call) {
-				if (call == selections.size())
-					throw new IllegalArgumentException("missing sequential selection");
-				selected.put(Coordinates.node(Coordinates.root(owned), node, i), selections.get(call++));
+				if (index == steps.size())
+					throw new IllegalArgumentException("missing operation selection");
+				selected.put(Coordinates.node(Coordinates.root(owned), node, i), steps.get(index++));
 			}
 		}
-		if (call != selections.size())
-			throw new IllegalArgumentException("extraneous sequential selection");
+		if (index != steps.size())
+			throw new IllegalArgumentException("extraneous operation selection");
 		return compile(owned, selected, policy);
 	}
 
-	/**
-	 * Compile a sequential parent with local child calls. Child selections are keyed by
-	 * the parent's call placement, and must match the authored child definition exactly.
-	 * Each child must use the sequential capability set; nested composition refuses
-	 * before analysis. Ordinary selections exclude child placements. No application Step
-	 * executes here. This retained compiler entry is not a promise that a runtime admits
-	 * children; the current sequential runtime explicitly refuses child-bearing
-	 * preparations.
-	 * @param source parent definition
-	 * @param selections ordinary operation selections
-	 * @param children validated child selections
-	 * @param policy finite parent deadline policy
-	 * @return immutable executable parent
-	 * @throws IllegalArgumentException for missing, conflicting or unsupported selections
-	 */
-	public static ValidatedWorkflow compileWithChildren(Definition<?, ?> source, Map<Placement, Step<?, ?>> selections,
-			Map<Placement, ValidatedWorkflow> children, DeadlinePolicy policy) {
-		if (children.isEmpty())
-			return compile(source, selections, policy);
-		Definition<?, ?> owned = DefinitionOwnership.acquire(source);
-		Objects.requireNonNull(policy, "deadline policy");
-		Map<Placement, ValidatedWorkflow> selectedChildren = Map.copyOf(children);
-		Set<Placement> required = new HashSet<>();
-		List<Node> nodes = new ArrayList<>();
-		for (int i = 0; i < owned.nodes().size(); i++) {
-			Node node = owned.nodes().get(i);
-			if (node instanceof Child child) {
-				Placement placement = Coordinates.node(Coordinates.root(owned), node, i);
-				required.add(placement);
-				ValidatedWorkflow selected = selectedChildren.get(placement);
-				if (selected == null)
-					throw new IllegalArgumentException("missing validated child selection at " + placement);
-				if (!selected.children.isEmpty())
-					throw new IllegalArgumentException("unsupported production capability: nested child");
-				Map<Placement, Step<?, ?>> executable = new LinkedHashMap<>();
-				executable.putAll(selected.suppliedSteps);
-				ValidatedWorkflow expected = compile(child.definition(), executable, selected.deadlinePolicy);
-				if (!expected.authoredIdentity.equals(selected.authoredIdentity))
-					throw new IllegalArgumentException("child definition disagreement at " + placement);
-				nodes.add(new Child(child.id(), expected.definition()));
-			}
-			else {
+	private static final class CompilationSession {
+
+		private final IdentityHashMap<Definition<?, ?>, IdentityHashMap<ValidatedWorkflow, Boolean>> checked = new IdentityHashMap<>();
+
+		ValidatedWorkflow compile(Definition<?, ?> source, Map<Placement, Step<?, ?>> steps,
+				Map<Placement, ValidatedWorkflow> children, DeadlinePolicy policy) {
+			Definition<?, ?> owned = DefinitionOwnership.acquire(source);
+			Objects.requireNonNull(policy, "deadline policy");
+			var authored = owned.deadline();
+			Map<Placement, ValidatedWorkflow> references = new LinkedHashMap<>();
+			Set<Placement> required = new HashSet<>();
+			List<Node> nodes = new ArrayList<>();
+			for (int i = 0; i < owned.nodes().size(); i++) {
+				Node node = owned.nodes().get(i);
 				if (!SUPPORTED.contains(Coordinates.capability(node)))
 					throw new IllegalArgumentException(
 							"unsupported production capability: " + Coordinates.capability(node));
-				nodes.add(node);
+				if (node instanceof Child child) {
+					Placement placement = Coordinates.node(Coordinates.root(owned), node, i);
+					ValidatedWorkflow selected = child.reference();
+					if (selected == null) {
+						required.add(placement);
+						selected = children.get(placement);
+						if (selected == null)
+							throw new IllegalArgumentException("missing validated child selection at " + placement);
+						var matches = checked.computeIfAbsent(child.definition(), d -> new IdentityHashMap<>());
+						if (!matches.containsKey(selected)) {
+							Map<Placement, ValidatedWorkflow> nested = new LinkedHashMap<>();
+							for (int j = 0; j < child.definition().nodes().size(); j++) {
+								Node nestedNode = child.definition().nodes().get(j);
+								if (nestedNode instanceof Child nestedChild && nestedChild.reference() == null) {
+									Placement position = Coordinates.node(Coordinates.root(child.definition()),
+											nestedNode, j);
+									ValidatedWorkflow target = selected.children.get(position);
+									if (target == null)
+										throw new IllegalArgumentException(
+												"missing validated child selection at " + position);
+									nested.put(position, target);
+								}
+							}
+							ValidatedWorkflow expected = compile(child.definition(), selected.suppliedSteps, nested,
+									selected.deadlinePolicy);
+							if (!expected.authoredIdentity.equals(selected.authoredIdentity))
+								throw new IllegalArgumentException("child definition disagreement at " + placement);
+							matches.put(selected, Boolean.TRUE);
+						}
+					}
+					references.put(placement, selected);
+					nodes.add(new Child(child.id(), selected));
+				}
+				else
+					nodes.add(node);
 			}
+			if (!required.equals(children.keySet()))
+				throw new IllegalArgumentException("extraneous validated child selection");
+			if (nodes.stream().noneMatch(n -> n instanceof Call || n instanceof Child))
+				throw new IllegalArgumentException("workflow requires at least one Step or composite");
+			owned = new Definition<>(owned.name(), owned.input(), owned.output(), List.copyOf(nodes),
+					policy.resolve(authored));
+			return new ValidatedWorkflow(StructuredWorkflowCompiler.compileOwned(owned), Map.copyOf(steps), references,
+					policy, authored);
 		}
-		if (!required.equals(selectedChildren.keySet()))
-			throw new IllegalArgumentException("extraneous validated child selection");
-		java.time.Duration authored = owned.deadline();
-		owned = new Definition<>(owned.name(), owned.input(), owned.output(), List.copyOf(nodes),
-				policy.resolve(authored));
-		return new ValidatedWorkflow(StructuredWorkflowCompiler.compileOwned(owned), Map.copyOf(selections),
-				selectedChildren, policy, authored);
+
 	}
 
 	/** Preserve each fact once, retaining component order and exact consumption links. */
@@ -361,7 +372,7 @@ public final class ValidatedWorkflow {
 	}
 
 	public Set<Capability> capabilities() {
-		return children.isEmpty() ? SUPPORTED : Set.of(Capability.OPERATION, Capability.TERMINAL, Capability.CHILD);
+		return children.isEmpty() ? Set.of(Capability.OPERATION, Capability.TERMINAL) : SUPPORTED;
 	}
 
 	public String coordinateScheme() {

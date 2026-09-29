@@ -160,9 +160,15 @@ class CompilerBoundaryTest {
                 new Parallel("parallel",null,true,List.of()),
                 new Fan("fan",State.class,1,1,true,List.of(call("body"))),
                 new Loop("loop",Op.named("test",State.class,Boolean.class),1,LimitPolicy.FAIL,List.of(call("body"))),
-                new Child("child",definition("child",success())),new WorkflowModel.Timer("timer",Duration.ZERO));
+                new WorkflowModel.Timer("timer",Duration.ZERO));
         for(Node node:nodes) assertThatThrownBy(()->ValidatedWorkflow.compile(definition("unsupported",node,success()),Map.of()))
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("unsupported production capability");
+    }
+
+    @Test void unresolvedCompositeRefusesAtSelectionBoundary() {
+        assertThatThrownBy(() -> ValidatedWorkflow.compile(definition("unresolved",
+                new Child("child", definition("child", call("work"), success())), success()), Map.of()))
+                .hasMessageContaining("missing validated child selection");
     }
 
     @Test void missingExtraAndWrongExecutableSelectionsRefuse() {

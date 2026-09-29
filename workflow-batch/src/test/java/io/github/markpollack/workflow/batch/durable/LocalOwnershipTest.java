@@ -305,7 +305,7 @@ class LocalOwnershipTest {
 							.put(field, "changed"));
 				String before = state(file, run.runId());
 				assertThatThrownBy(() -> runtime.advance(run.runId(), workflow)).isInstanceOfSatisfying(
-						WorkflowRefusal.class, ex -> assertThat(ex.code()).isEqualTo(field.equals("placement") ? "CURSOR_CHANGED" : "INVOCATION_CHANGED"));
+						WorkflowRefusal.class, ex -> assertThat(ex.code()).isEqualTo(field.equals("input") ? "VALUE_MISSING" : "PROGRESS_INVALID"));
 				assertThat(state(file, run.runId())).isEqualTo(before);
 			}
 		}
