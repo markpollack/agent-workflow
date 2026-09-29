@@ -62,7 +62,7 @@ class ProductionBindingTest {
     }
 
     @Test
-    void graphAdapterCannotChangeGenericArgumentsWhileKeepingTheSameRawClass() {
+    void graphNodeCannotChangeGenericArgumentsWhileKeepingTheSameRawClass() {
         Type requests = new TypeRef<List<Request>>() {}.type();
         Type replies = new TypeRef<List<Reply>>() {}.type();
         Compilation<?, ?> built = build(Request.class, replies,
@@ -70,17 +70,16 @@ class ProductionBindingTest {
         String target = binding(built, "reply").placement().graphName();
         List<WorkflowNode> nodes = built.graph().nodes().stream()
                 .map(node -> node.name().equals(target)
-                        ? WorkflowNode.deterministic(target,
-                                new GraphLowering.RefusingStep(target, Request.class, requests))
+                        ? new WorkflowNode.StepNode(target, Request.class, requests)
                         : node)
                 .toList();
-        var changed = io.github.markpollack.workflow.flows.workflow.WorkflowGraph.of("consumer", nodes,
-                built.graph().edges(), built.graph().startNode(), built.graph().finishNode());
+        var changed = new io.github.markpollack.workflow.flows.workflow.WorkflowGraph<>("consumer", nodes,
+                built.graph().edges(), built.graph().startNode(), built.graph().finishNode(),built.bindings());
         assertThatThrownBy(() -> GraphVerification.verify(changed, built.metadata(), built.summaries(),
                 built.bindings(), built.captures(), built.products(), built.phaseMetadata(),
                 java.util.Set.of(), built.definition()))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("graph adapter type disagreement");
+                .hasMessageContaining("graph node type disagreement");
     }
 
     @Test void rejectsUnboundOperationThroughTheCompleteBuild() {

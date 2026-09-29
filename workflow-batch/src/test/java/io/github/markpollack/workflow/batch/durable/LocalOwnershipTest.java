@@ -1,5 +1,7 @@
 package io.github.markpollack.workflow.batch.durable;
 
+import io.github.markpollack.workflow.flows.Workflows;
+
 import java.nio.file.*;
 import java.time.*;
 import java.util.*;
@@ -99,9 +101,9 @@ class LocalOwnershipTest {
 	void distinctRunsOverlapOnCallingThreadsButSameRunCannotDoubleCharge() throws Exception {
 		CountDownLatch release = new CountDownLatch(1);
 		var step = new BlockingStep(2, release);
-		var deployment = new ApplicationDeployment("app", "v1", Map.of(), Map.of("blocking", step));
-		var workflow = deployment.define("concurrent").then("blocking").terminate(Terminal.SUCCEEDED).build();
-		try (var runtime = DurableWorkflows.open(directory.resolve("runs"), deployment, new ExecutionPolicy(1));
+		var deployment = new TestApplication("app", "v1", Map.of(), Map.of("blocking", step));
+		var workflow = Workflows.define("concurrent").then("blocking", deployment.step("blocking")).terminate(Terminal.SUCCEEDED).build();
+		try (var runtime = DurableWorkflows.open(directory.resolve("runs"), deployment.registry(), deployment.compatibility(), new ExecutionPolicy(1));
 				var threads = Executors.newVirtualThreadPerTaskExecutor()) {
 			var one = runtime.start(workflow, "one", new Request("one"));
 			var two = runtime.start(workflow, "two", new Request("two"));
@@ -133,10 +135,10 @@ class LocalOwnershipTest {
 	void shutdownRetainsOwnershipUntilApplicationReturnsThenConcurrentClosersDrain() throws Exception {
 		CountDownLatch release = new CountDownLatch(1);
 		var step = new BlockingStep(1, release);
-		var deployment = new ApplicationDeployment("app", "v1", Map.of(), Map.of("blocking", step));
-		var workflow = deployment.define("shutdown").then("blocking").terminate(Terminal.SUCCEEDED).build();
+		var deployment = new TestApplication("app", "v1", Map.of(), Map.of("blocking", step));
+		var workflow = Workflows.define("shutdown").then("blocking", deployment.step("blocking")).terminate(Terminal.SUCCEEDED).build();
 		Path database = directory.resolve("runs");
-		var runtime = DurableWorkflows.open(database, deployment);
+		var runtime = DurableWorkflows.open(database, deployment.registry(), deployment.compatibility());
 		try (var threads = Executors.newVirtualThreadPerTaskExecutor()) {
 			var run = runtime.start(workflow, "one", new Request("x"));
 			var caller = threads.submit(() -> runtime.resume(run.runId(), workflow));
@@ -159,7 +161,7 @@ class LocalOwnershipTest {
 				release.countDown();
 				runtime.close();
 			}
-			try (var next = DurableWorkflows.open(database, deployment)) {
+			try (var next = DurableWorkflows.open(database, deployment.registry(), deployment.compatibility())) {
 				assertThat(next.result(run.runId(), workflow)).isEqualTo(new Request("x"));
 			}
 		}
@@ -180,9 +182,9 @@ class LocalOwnershipTest {
 	@Test
 	void closeFromApplicationCallRefusesWithoutClosingRuntime() {
 		var step = new SelfClosing();
-		var deployment = new ApplicationDeployment("app", "v1", Map.of(), Map.of("work", step));
-		var workflow = deployment.define("self-close").then("work").terminate(Terminal.SUCCEEDED).build();
-		try (var runtime = DurableWorkflows.open(directory.resolve("runs"), deployment)) {
+		var deployment = new TestApplication("app", "v1", Map.of(), Map.of("work", step));
+		var workflow = Workflows.define("self-close").then("work", deployment.step("work")).terminate(Terminal.SUCCEEDED).build();
+		try (var runtime = DurableWorkflows.open(directory.resolve("runs"), deployment.registry(), deployment.compatibility())) {
 			step.runtime = runtime;
 			var run = runtime.start(workflow, "one", new Request("x"));
 			assertThat(runtime.resume(run.runId(), workflow).status()).isEqualTo(RunSnapshot.Status.SUCCEEDED);
@@ -216,14 +218,14 @@ class LocalOwnershipTest {
 					return input;
 				}
 			};
-			var deployment = new ApplicationDeployment("app", "v1", Map.of(),
+			var deployment = new TestApplication("app", "v1", Map.of(),
 					Map.of("interrupt", new Interrupting(throwsException), "successor", successor));
-			var workflow = deployment.define("interrupt")
-				.then("interrupt")
-				.then("successor")
+			var workflow = Workflows.define("interrupt")
+				.then("interrupt", deployment.step("interrupt"))
+				.then("successor", deployment.step("successor"))
 				.terminate(Terminal.SUCCEEDED)
 				.build();
-			try (var runtime = DurableWorkflows.open(directory.resolve("interrupt-" + throwsException), deployment)) {
+			try (var runtime = DurableWorkflows.open(directory.resolve("interrupt-" + throwsException), deployment.registry(), deployment.compatibility())) {
 				var run = runtime.start(workflow, "one", new Request("x"));
 				RunSnapshot after;
 				try {
@@ -240,7 +242,7 @@ class LocalOwnershipTest {
 					.isEqualTo(throwsException ? RunSnapshot.Status.FAILED : RunSnapshot.Status.ACTIVE);
 				assertThat(after.invocations().getFirst().attempts()).hasSize(1);
 				if (!throwsException) {
-					assertThat(after.nextOperation()).isEqualTo(1);
+					assertThat(after.currentNode()).isEqualTo(workflow.graph().unconditionalSuccessor(workflow.graph().startNode()));
 					runtime.resume(run.runId(), workflow);
 					assertThat(effects.get()).isEqualTo(1);
 				}
@@ -260,7 +262,7 @@ class LocalOwnershipTest {
 				if (point.equals("AFTER_DISPATCH_COMMIT"))
 					throw new DurableRaceTest.SimulatedCrash();
 			};
-			try (var runtime = new DurableWorkflows(file, deployment, ExecutionPolicy.DEFAULT, crash)) {
+			try (var runtime = new DurableWorkflows(file, deployment.registry(), deployment.compatibility(), ExecutionPolicy.DEFAULT, crash)) {
 				var run = runtime.start(workflow, "one", new Request("x"));
 				assertThatThrownBy(() -> runtime.advance(run.runId(), workflow))
 					.isInstanceOf(DurableRaceTest.SimulatedCrash.class);
@@ -269,7 +271,7 @@ class LocalOwnershipTest {
 							.put(field, "changed"));
 				String before = state(file, run.runId());
 				assertThatThrownBy(() -> runtime.advance(run.runId(), workflow)).isInstanceOfSatisfying(
-						WorkflowRefusal.class, ex -> assertThat(ex.code()).isEqualTo("INVOCATION_CHANGED"));
+						WorkflowRefusal.class, ex -> assertThat(ex.code()).isEqualTo(field.equals("placement") ? "CURSOR_CHANGED" : "INVOCATION_CHANGED"));
 				assertThat(state(file, run.runId())).isEqualTo(before);
 			}
 		}

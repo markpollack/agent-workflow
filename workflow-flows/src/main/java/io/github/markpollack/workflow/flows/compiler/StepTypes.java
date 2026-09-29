@@ -1,4 +1,4 @@
-package io.github.markpollack.workflow.batch.durable;
+package io.github.markpollack.workflow.flows.compiler;
 
 import java.lang.reflect.*;
 import java.util.*;
@@ -7,8 +7,8 @@ import io.github.markpollack.workflow.flows.compiler.TypeContracts;
 
 /**
  * Reads the concrete input/output declaration of a supplied Step class for registration
- * and admission. ApplicationDeployment uses the result to select workflow contracts;
- * ResolvedApplication repeats the check against the actual supplied instance before use.
+ * and admission. Workflows uses the result to declare workflow contracts; preparation
+ * uses the same memoized declaration before admission.
  * <p>
  * Java erases method dispatch but retains generic class/interface signatures. Walking
  * those signatures can resolve Step&lt;Request, List&lt;Reply&gt;&gt; and a concrete
@@ -20,7 +20,25 @@ import io.github.markpollack.workflow.flows.compiler.TypeContracts;
  * workflow analyzer derives input bindings and path captures from those full Types. No
  * step is constructed or invoked, and no public type-hint method is consulted.
  */
-record StepTypes(Type input, Type output) {
+public record StepTypes(Type input, Type output) {
+
+	private static final ClassValue<StepTypes> DECLARATIONS = new ClassValue<>() {
+		@Override
+		protected StepTypes computeValue(Class<?> implementation) {
+			List<StepTypes> declarations = new ArrayList<>();
+			find(implementation, Map.of(), declarations);
+			if (declarations.isEmpty())
+				throw new IllegalArgumentException("concrete Step declaration required: " + implementation.getName());
+			TypeContracts contracts = new TypeContracts();
+			for (StepTypes declaration : declarations) {
+				contracts.contract(declaration.input());
+				contracts.contract(declaration.output());
+				if (!declaration.equals(declarations.getFirst()))
+					throw new IllegalArgumentException("conflicting Step contracts: " + implementation.getName());
+			}
+			return declarations.getFirst();
+		}
+	};
 
 	/**
 	 * Resolve a supplied implementation's declaration, then validate both durable value
@@ -28,24 +46,11 @@ record StepTypes(Type input, Type output) {
 	 * Class.
 	 * @param implementation the actual registered object's class
 	 * @return concrete input and output Types
-	 * @throws WorkflowRefusal with STEP_CONTRACT for absent, raw, unresolved or
+	 * @throws IllegalArgumentException for absent, raw, conflicting, unresolved or
 	 * unsupported types
 	 */
-	static StepTypes of(Class<?> implementation) {
-		StepTypes found = find(implementation, Map.of());
-		if (found == null)
-			throw new WorkflowRefusal("STEP_CONTRACT",
-					"concrete Step input/output declaration required: " + implementation.getName());
-		try {
-			TypeContracts types = new TypeContracts();
-			types.contract(found.input);
-			types.contract(found.output);
-		}
-		catch (IllegalArgumentException ex) {
-			throw new WorkflowRefusal("STEP_CONTRACT",
-					"unsupported or unresolved Step type: " + implementation.getName(), ex);
-		}
-		return found;
+	public static StepTypes of(Class<?> implementation) {
+		return DECLARATIONS.get(Objects.requireNonNull(implementation));
 	}
 
 	/**
@@ -53,9 +58,9 @@ record StepTypes(Type input, Type output) {
 	 * variables. A generic base is usable only when the concrete implementation fixes all
 	 * variables needed by Step. Merely constructing Base&lt;Request&gt; does not do that.
 	 */
-	private static StepTypes find(Type declaration, Map<TypeVariable<?>, Type> inherited) {
+	private static void find(Type declaration, Map<TypeVariable<?>, Type> inherited, List<StepTypes> found) {
 		if (declaration == null)
-			return null;
+			return;
 		Class<?> raw;
 		Map<TypeVariable<?>, Type> bindings = new HashMap<>(inherited);
 		if (declaration instanceof ParameterizedType parameterized) {
@@ -68,17 +73,15 @@ record StepTypes(Type input, Type output) {
 		else if (declaration instanceof Class<?> type)
 			raw = type;
 		else
-			return null;
+			return;
 		if (raw == Step.class) {
 			TypeVariable<?>[] parameters = Step.class.getTypeParameters();
-			return new StepTypes(resolve(parameters[0], bindings), resolve(parameters[1], bindings));
+			found.add(new StepTypes(resolve(parameters[0], bindings), resolve(parameters[1], bindings)));
+			return;
 		}
-		for (Type parent : raw.getGenericInterfaces()) {
-			StepTypes found = find(parent, bindings);
-			if (found != null)
-				return found;
-		}
-		return find(raw.getGenericSuperclass(), bindings);
+		for (Type parent : raw.getGenericInterfaces())
+			find(parent, bindings, found);
+		find(raw.getGenericSuperclass(), bindings, found);
 	}
 
 	/**

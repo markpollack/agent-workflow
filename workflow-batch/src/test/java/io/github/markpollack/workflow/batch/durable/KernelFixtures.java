@@ -203,12 +203,12 @@ public final class KernelFixtures {
 
 	}
 
-	static ApplicationDeployment deployment(Map<String, String> config) {
+	static TestApplication deployment(Map<String, String> config) {
 		return deployment("fixture-v1", config);
 	}
 
-	static ApplicationDeployment deployment(String build, Map<String, String> config) {
-		return new ApplicationDeployment("kernel-fixtures", build, config,
+	static TestApplication deployment(String build, Map<String, String> config) {
+		return new TestApplication("kernel-fixtures", build, config,
 				steps(new FirstOperation(), new SecondOperation(), new ThirdOperation(), new FourthOperation(),
 						new FifthOperation(), new ChangedThird(), new ChangedFourth(), new ChangedFifth(), new Echo(),
 						new NullOutput(), new Slow(), new Throws(), new NestedEcho(), new Blocking()));
@@ -221,12 +221,12 @@ public final class KernelFixtures {
 		return registered;
 	}
 
-	static ValidatedWorkflow echo(ApplicationDeployment deployment, Class<? extends Step<?, ?>> handler,
+	static ValidatedWorkflow echo(TestApplication deployment, Class<? extends Step<?, ?>> handler,
 			Duration duration) {
 		return single(deployment, handler, Request.class, Request.class, duration, Terminal.SUCCEEDED);
 	}
 
-	static ValidatedWorkflow single(ApplicationDeployment deployment, Class<? extends Step<?, ?>> handler,
+	static ValidatedWorkflow single(TestApplication deployment, Class<? extends Step<?, ?>> handler,
 			java.lang.reflect.Type in, java.lang.reflect.Type out, Duration duration, Terminal terminal) {
 		Definition<?, ?> definition = new Definition<>("simple", in, out,
 				List.of(new Call("work", Op.declared("work", in, out)), new End(terminal, "authored reason")),
@@ -238,14 +238,14 @@ public final class KernelFixtures {
 				definition.nodes(), duration == null ? Duration.ofHours(1) : duration));
 		placement = compilation.bindings().getFirst().placement();
 		return ValidatedWorkflow.compile(definition,
-				Map.of(placement, deployment.selection(handler.getName(), in, out)));
+				Map.of(placement, deployment.step(handler.getName())));
 	}
 
-	static ValidatedWorkflow o01(ApplicationDeployment deployment) {
+	static ValidatedWorkflow o01(TestApplication deployment) {
 		return o01(deployment, false);
 	}
 
-	static ValidatedWorkflow o01(ApplicationDeployment deployment, boolean changedComponents) {
+	static ValidatedWorkflow o01(TestApplication deployment, boolean changedComponents) {
 		List<Call> calls = List.of(new Call("first", Op.named("first", Request.class, First.class)),
 				new Call("second", Op.named("second", SecondInput.class, Second.class)),
 				new Call("third", Op.declared("third", Second.class, changedComponents ? Request.class : Third.class)),
@@ -263,10 +263,9 @@ public final class KernelFixtures {
 				changedComponents ? ChangedThird.class : ThirdOperation.class,
 				changedComponents ? ChangedFourth.class : FourthOperation.class,
 				changedComponents ? ChangedFifth.class : FifthOperation.class);
-		Map<Placement, ExecutableIdentity> selected = new LinkedHashMap<>();
+		Map<Placement, Step<?, ?>> selected = new LinkedHashMap<>();
 		for (int i = 0; i < calls.size(); i++)
-			selected.put(construction.bindings().get(i).placement(), deployment.selection(handlers.get(i).getName(),
-					calls.get(i).operation().input(), calls.get(i).operation().output()));
+			selected.put(construction.bindings().get(i).placement(), deployment.step(handlers.get(i).getName()));
 		return ValidatedWorkflow.compile(definition, selected);
 	}
 

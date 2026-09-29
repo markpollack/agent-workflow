@@ -18,7 +18,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  */
 final class JdbcRunStore implements AutoCloseable {
 
-	private static final int FORMAT = 4;
+	private static final int FORMAT = 5;
 
 	private final String url;
 
@@ -97,7 +97,8 @@ final class JdbcRunStore implements AutoCloseable {
 		}
 		try (Statement s = connection.createStatement();
 				ResultSet rows = s.executeQuery("SELECT id,version FROM aw_store_format")) {
-			if (!rows.next() || rows.getInt(1) != 1 || rows.getInt(2) != FORMAT || rows.next())
+			if (!rows.next() || !Integer.valueOf(1).equals(rows.getObject(1))
+					|| !Integer.valueOf(FORMAT).equals(rows.getObject(2)) || rows.next())
 				throw new WorkflowRefusal("STORE_FORMAT", "unsupported store format");
 		}
 		try (Statement s = connection.createStatement(); ResultSet rows = s.executeQuery("SELECT state FROM aw_run")) {

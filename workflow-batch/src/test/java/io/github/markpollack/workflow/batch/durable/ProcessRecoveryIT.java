@@ -21,7 +21,9 @@ class ProcessRecoveryIT {
         "AFTER_RESULT_COMMIT,1,1,1,1,1",
         "AFTER_DISPATCH_COMMIT,2,1,2,1,1",
         "AFTER_HANDLER_RETURN,2,1,2,1,2",
-        "AFTER_RESULT_COMMIT,2,1,2,1,1"
+        "AFTER_RESULT_COMMIT,2,1,2,1,1",
+        "BEFORE_TERMINAL_COMMIT,1,1,5,1,1",
+        "AFTER_RESULT_COMMIT,5,0,5,1,1"
     })
     void killedJvmRecoversExactFacts(String boundary,int occurrence,int discovered,int invocations,int firstCalls,int secondCalls) throws Exception {
         Path directory=Path.of("target/durable-evidence/process",boundary+"-"+occurrence+"-"+UUID.randomUUID()).toAbsolutePath();Files.createDirectories(directory);
@@ -48,11 +50,11 @@ class ProcessRecoveryIT {
             JsonNode before=mapper.readTree(Files.readString(directory.resolve("recover-before.json")));
             JsonNode after=mapper.readTree(Files.readString(directory.resolve("recover-after.json")));
             assertThat(before.path("invocations").size()).isEqualTo(invocations);
-            assertThat(after.path("status").asText()).isEqualTo("SUCCEEDED");assertThat(after.path("next").asInt()).isEqualTo(5);
+            assertThat(after.path("status").asText()).isEqualTo("SUCCEEDED");assertThat(after.path("node").asText()).isEqualTo(KernelFixtures.o01(KernelFixtures.deployment(Map.of()),true).terminal().name());
             assertThat(after.path("deadline")).isEqualTo(before.path("deadline"));
             assertThat(Files.readAllLines(directory.resolve("first.calls"))).hasSize(firstCalls);
             assertThat(Files.readAllLines(directory.resolve("second.calls"))).hasSize(secondCalls);
-            assertThat(Files.readAllLines(directory.resolve("fifth.calls"))).hasSize(1).allMatch(line->line.endsWith("first:original/original"));
+            assertThat(Files.readAllLines(directory.resolve("fifth.calls"))).hasSize(boundary.equals("BEFORE_TERMINAL_COMMIT") ? 2 : 1).allMatch(line->line.endsWith("first:original/original"));
             String secondInput=after.path("invocations").get(1).path("input").asText();
             String fifthInput=after.path("invocations").get(4).path("input").asText();
             assertThat(after.path("values").path(fifthInput).path("components").get(1).asText()).isEqualTo(secondInput);

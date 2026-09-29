@@ -1,110 +1,129 @@
 package io.github.markpollack.workflow.flows.workflow;
 
-import io.github.markpollack.workflow.patterns.graph.NodeMetrics;
-
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
+import java.util.*;
+import io.github.markpollack.workflow.flows.compiler.WorkflowModel.Binding;
 
 /**
- * The compiled intermediate representation of a workflow.
- * <p>
- * Pure data structure — no execution logic, no Spring AI dependencies.
- * The compiler builds and verifies it; the
- * {@code TraceRecorder} reads it.
+ * Immutable semantic graph shared by validation, inspection and execution. Collection
+ * order is storage only: startNode and edges determine traversal. Construction alone does
+ * not grant admission; the compiler checks correspondence with the owned definition.
  *
- * @param name       the workflow identifier
- * @param nodes      ordered list of workflow nodes
- * @param edges      routing edges
- * @param startNode  the name of the first node to execute
- * @param finishNode the name of the final node
- * @param metrics    per-node execution metrics (empty until populated post-run)
- * @param <I>        the workflow input type
- * @param <O>        the workflow output type
+ * @param <I> workflow input type
+ * @param <O> workflow output type
  */
-public record WorkflowGraph<I, O>(
-        String name,
-        List<WorkflowNode> nodes,
-        List<WorkflowEdge> edges,
-        String startNode,
-        String finishNode,
-        Map<String, NodeMetrics> metrics
-) {
+public final class WorkflowGraph<I, O> {
 
-    public WorkflowGraph {
-        Objects.requireNonNull(name, "name must not be null");
-        nodes = List.copyOf(nodes);
-        edges = List.copyOf(edges);
-        Objects.requireNonNull(startNode, "startNode must not be null");
-        Objects.requireNonNull(finishNode, "finishNode must not be null");
-        metrics = Map.copyOf(metrics);
-    }
+	private final String name, startNode, finishNode;
 
-    public static <I, O> WorkflowGraph<I, O> of(
-            String name,
-            List<WorkflowNode> nodes,
-            List<WorkflowEdge> edges,
-            String startNode,
-            String finishNode) {
-        return new WorkflowGraph<>(name, nodes, edges, startNode, finishNode, Map.of());
-    }
+	private final List<WorkflowNode> nodes;
 
-    public WorkflowGraph<I, O> withMetrics(Map<String, NodeMetrics> metrics) {
-        return new WorkflowGraph<>(name, nodes, edges, startNode, finishNode, metrics);
-    }
+	private final List<WorkflowEdge> edges;
 
-    // -- Lookup methods --
+	private final List<Binding> bindings;
 
-    /** Finds a node by name, or throws. */
-    public WorkflowNode nodeByName(String nodeName) {
-        return findNode(nodeName)
-                .orElseThrow(() -> new IllegalStateException(
-                        "Workflow '" + name + "': node '" + nodeName + "' not found"));
-    }
+	private final Map<String, WorkflowNode> nodeIndex;
 
-    /** Finds a node by name. */
-    public Optional<WorkflowNode> findNode(String nodeName) {
-        return nodes.stream()
-                .filter(n -> n.name().equals(nodeName))
-                .findFirst();
-    }
+	private final Map<String, List<WorkflowEdge>> outgoing;
 
-    /** Returns the edges originating from the given node. */
-    public List<WorkflowEdge> edgesFrom(String nodeName) {
-        return edges.stream()
-                .filter(e -> e.from().equals(nodeName))
-                .toList();
-    }
+	private final Map<String, List<Binding>> bindingIndex;
 
-    /** Returns the outgoing edges from a node (alias for edgesFrom). */
-    public List<WorkflowEdge> outgoingEdges(String nodeName) {
-        return edgesFrom(nodeName);
-    }
+	public WorkflowGraph(String name, List<WorkflowNode> nodes, List<WorkflowEdge> edges, String startNode,
+			String finishNode, List<Binding> bindings) {
+		this.name = Objects.requireNonNull(name);
+		this.nodes = List.copyOf(nodes);
+		this.edges = List.copyOf(edges);
+		this.startNode = Objects.requireNonNull(startNode);
+		this.finishNode = Objects.requireNonNull(finishNode);
+		this.bindings = List.copyOf(bindings);
+		Map<String, WorkflowNode> index = new LinkedHashMap<>();
+		for (WorkflowNode node : nodes)
+			if (index.putIfAbsent(node.name(), node) != null)
+				throw new IllegalArgumentException("duplicate graph ID: " + node.name());
+		nodeIndex = Map.copyOf(index);
+		Map<String, List<WorkflowEdge>> links = new HashMap<>();
+		for (WorkflowEdge edge : edges)
+			links.computeIfAbsent(edge.from(), ignored -> new ArrayList<>()).add(edge);
+		links.replaceAll((id, value) -> List.copyOf(value));
+		outgoing = Map.copyOf(links);
+		Map<String, List<Binding>> facts = new HashMap<>();
+		for (Binding binding : bindings)
+			facts.computeIfAbsent(binding.placement().graphName(), ignored -> new ArrayList<>()).add(binding);
+		facts.replaceAll((id, value) -> List.copyOf(value));
+		bindingIndex = Map.copyOf(facts);
+	}
 
-    /** Finds the unconditional successor of a node, or null if none. */
-    public String unconditionalSuccessor(String nodeName) {
-        return edgesFrom(nodeName).stream()
-                .filter(e -> e.condition() instanceof EdgeCondition.Unconditional)
-                .map(WorkflowEdge::to)
-                .findFirst()
-                .orElse(null);
-    }
+	public static <I, O> WorkflowGraph<I, O> of(String name, List<WorkflowNode> nodes, List<WorkflowEdge> edges,
+			String start, String finish) {
+		return new WorkflowGraph<>(name, nodes, edges, start, finish, List.of());
+	}
 
-    /** Finds the error edge matching an exception, or null if none. */
-    public WorkflowEdge errorEdge(String nodeName, Exception ex) {
-        for (WorkflowEdge edge : edgesFrom(nodeName)) {
-            if (edge.condition() instanceof EdgeCondition.ErrorMatch em) {
-                if (em.exType().isAssignableFrom(ex.getClass())) {
-                    return edge;
-                }
-            }
-        }
-        return null;
-    }
+	public String name() {
+		return name;
+	}
 
-    /** Checks whether a direct edge exists between two nodes. */
-    public boolean hasDirectEdge(String from, String to) {
-        return edges.stream().anyMatch(e -> e.from().equals(from) && e.to().equals(to));
-    }
+	public List<WorkflowNode> nodes() {
+		return nodes;
+	}
+
+	public List<WorkflowEdge> edges() {
+		return edges;
+	}
+
+	public String startNode() {
+		return startNode;
+	}
+
+	public String finishNode() {
+		return finishNode;
+	}
+
+	public List<Binding> bindings() {
+		return bindings;
+	}
+
+	public Optional<WorkflowNode> findNode(String id) {
+		return Optional.ofNullable(nodeIndex.get(id));
+	}
+
+	public WorkflowNode nodeByName(String id) {
+		return findNode(id).orElseThrow(() -> new IllegalArgumentException("unknown graph node: " + id));
+	}
+
+	public List<WorkflowEdge> edgesFrom(String id) {
+		return outgoing.getOrDefault(id, List.of());
+	}
+
+	public List<WorkflowEdge> outgoingEdges(String id) {
+		return edgesFrom(id);
+	}
+
+	public boolean hasDirectEdge(String from, String to) {
+		return edgesFrom(from).stream().anyMatch(e -> e.to().equals(to));
+	}
+
+	/**
+	 * Returns the single checked sequential successor; never chooses the first of
+	 * ambiguous edges.
+	 */
+	public String unconditionalSuccessor(String id) {
+		nodeByName(id);
+		List<WorkflowEdge> links = edgesFrom(id);
+		if (links.size() != 1 || !links.getFirst().isUnconditional())
+			throw new IllegalArgumentException("one unconditional successor required at " + id);
+		String target = links.getFirst().to();
+		nodeByName(target);
+		return target;
+	}
+
+	/**
+	 * Unique ordinary-node binding; phase-specific composition is not sequential
+	 * execution.
+	 */
+	public Binding binding(String id) {
+		List<Binding> selected = bindingIndex.getOrDefault(id, List.of());
+		if (selected.size() != 1)
+			throw new IllegalArgumentException("one node binding required at " + id);
+		return selected.getFirst();
+	}
+
 }

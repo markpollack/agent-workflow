@@ -1,5 +1,6 @@
 package io.github.markpollack.workflow.batch.durable;
 
+import io.github.markpollack.workflow.flows.workflow.WorkflowNode;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
@@ -14,7 +15,7 @@ import io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
  * scheduler. Process death releases ownership; compatible applications can recover
  * unfinished progress.
  * <p>
- * ApplicationDeployment retains supplied registrations and declared compatibility.
+ * StepRegistry retains supplied objects; ExecutionCompatibility records declared facts.
  * ValidatedWorkflow owns the checked definition and binding recipes. This front door
  * coordinates their use with RuntimeLifecycle (whole-call drainage and same-run
  * exclusion), StoreOwnership (exclusive process-held database lock) and JdbcRunStore
@@ -35,7 +36,9 @@ public final class DurableWorkflows implements AutoCloseable {
 
 	private final RuntimeLifecycle lifecycle = new RuntimeLifecycle();
 
-	private final ApplicationDeployment deployment;
+	private final StepRegistry registry;
+
+	private final ExecutionCompatibility deployment;
 
 	private final ExecutionPolicy policy;
 
@@ -49,7 +52,7 @@ public final class DurableWorkflows implements AutoCloseable {
 	}
 
 	public static DurableWorkflows open(Path database, ExecutionPolicy policy) {
-		return new DurableWorkflows(database, null, policy, BoundaryHooks.NONE);
+		return new DurableWorkflows(database, null, null, policy, BoundaryHooks.NONE);
 	}
 
 	/**
@@ -57,20 +60,25 @@ public final class DurableWorkflows implements AutoCloseable {
 	 * Does not execute steps or resume runs automatically. The application owns the
 	 * objects and must supply the compatible deployment again after process death.
 	 * @param database H2 base file path without its .mv.db suffix
-	 * @param deployment fixed registration and declared compatibility
+	 * @param registry fixed named supplied objects
+	 * @param deployment declared compatibility facts
 	 * @return runtime handle whose close/shutdown drains entered calls before releasing
 	 * ownership
 	 * @throws WorkflowRefusal for an active owner, incompatible store or startup failure
 	 */
-	public static DurableWorkflows open(Path database, ApplicationDeployment deployment) {
-		return open(database, deployment, ExecutionPolicy.DEFAULT);
+	public static DurableWorkflows open(Path database, StepRegistry registry, ExecutionCompatibility deployment) {
+		return open(database, registry, deployment, ExecutionPolicy.DEFAULT);
 	}
 
-	public static DurableWorkflows open(Path database, ApplicationDeployment deployment, ExecutionPolicy policy) {
-		return new DurableWorkflows(database, Objects.requireNonNull(deployment), policy, BoundaryHooks.NONE);
+	public static DurableWorkflows open(Path database, StepRegistry registry, ExecutionCompatibility deployment,
+			ExecutionPolicy policy) {
+		return new DurableWorkflows(database, Objects.requireNonNull(registry), Objects.requireNonNull(deployment),
+				policy, BoundaryHooks.NONE);
 	}
 
-	DurableWorkflows(Path database, ApplicationDeployment deployment, ExecutionPolicy policy, BoundaryHooks hooks) {
+	DurableWorkflows(Path database, StepRegistry registry, ExecutionCompatibility deployment, ExecutionPolicy policy,
+			BoundaryHooks hooks) {
+		this.registry = registry;
 		this.deployment = deployment;
 		this.policy = Objects.requireNonNull(policy);
 		this.hooks = Objects.requireNonNull(hooks);
@@ -121,15 +129,15 @@ public final class DurableWorkflows implements AutoCloseable {
 		requireSequential(workflow);
 		requireText(idempotencyKey, "idempotency key");
 		requireText(displayName, "display name");
-		ResolvedApplication resolved = new ResolvedApplication(requireDeployment(), workflow);
+		ResolvedApplication resolved = new ResolvedApplication(registry, requireDeployment(), workflow);
 		byte[] root = resolved.encode(input, workflow.definition().input());
 		resolved.decode(root, workflow.definition().input());
-		String compatibility = compatibility(workflow, requireDeployment().manifest(), policy);
+		String compatibility = compatibility(workflow, resolved.selections(), requireDeployment().manifest(), policy);
 		String admission = Digests.fields(compatibility, Digests.of(root));
 		RunSnapshot result = store.transaction(tx -> {
 			RunState existing = tx.byKey("root:" + idempotencyKey);
 			if (existing != null) {
-				compatible(existing, workflow);
+				compatible(existing, workflow, resolved);
 				if (!existing.admission.equals(admission))
 					throw new WorkflowRefusal("IDEMPOTENCY_CONFLICT", "idempotency key has different admitted facts");
 				tx.observe(existing);
@@ -147,6 +155,8 @@ public final class DurableWorkflows implements AutoCloseable {
 			run.deadline = Math.addExact(tx.now, workflow.definition().deadline().toMillis());
 			run.deadlineOrigin = workflow.deadlineOrigin();
 			run.maximumAttempts = policy.maximumAttempts();
+			run.node = workflow.graph().startNode();
+			run.selections = resolved.selections();
 			var rootRecipe = workflow.values()
 				.values()
 				.stream()
@@ -287,25 +297,26 @@ public final class DurableWorkflows implements AutoCloseable {
 	private Advancement prepareAdvance(JdbcRunStore.Tx tx, String runId, ValidatedWorkflow workflow,
 			ResolvedApplication resolved) throws Exception {
 		RunState run = tx.get(runId);
-		compatible(run, workflow);
+		compatible(run, workflow, resolved);
 		tx.observe(run);
 		if (!run.active())
 			return new Progress(run.snapshot());
-		if (run.next == workflow.invocations().size()) {
+		if (workflow.graph().nodeByName(run.node) instanceof WorkflowNode.TerminalNode) {
 			finish(tx, run, workflow);
 			hooks.at("BEFORE_TERMINAL_COMMIT", run.id);
 			return new Progress(run.snapshot());
 		}
-		var recipe = workflow.invocations().get(run.next);
+		var recipe = workflow.graph().binding(run.node);
 		RunState.Invocation invocation;
-		if (run.invocations.size() == run.next) {
+		invocation = findInvocation(run, run.node);
+		if (invocation == null) {
 			invocation = new RunState.Invocation();
 			invocation.id = invocationId(run.id, recipe.placement());
 			invocation.placement = recipe.placement().graphName();
-			invocation.input = valueId(recipe.input());
-			invocation.output = valueId(recipe.output());
+			invocation.input = valueId(recipe.input().identity());
+			invocation.output = valueId(recipe.output().identity());
 			try {
-				materialize(tx, run, recipe.input(), workflow, resolved, invocation.id);
+				materialize(tx, run, recipe.input().identity(), workflow, resolved, invocation.id);
 			}
 			catch (WorkflowRefusal ex) {
 				if (!ex.code().equals("INPUT_FAILED") && !ex.code().equals("ENCODE_FAILED"))
@@ -315,8 +326,6 @@ public final class DurableWorkflows implements AutoCloseable {
 			}
 			run.invocations.add(invocation);
 		}
-		else
-			invocation = run.invocations.get(run.next);
 		validateInvocation(run, invocation, recipe);
 		return chargeAttempt(tx, run, invocation, recipe, workflow, resolved);
 	}
@@ -327,9 +336,8 @@ public final class DurableWorkflows implements AutoCloseable {
 	 * carrying the decoded input and attempt metadata. No application Step runs in this
 	 * transaction.
 	 */
-	private Advancement chargeAttempt(JdbcRunStore.Tx tx, RunState run, RunState.Invocation invocation,
-			ValidatedWorkflow.InvocationRecipe recipe, ValidatedWorkflow workflow, ResolvedApplication resolved)
-			throws Exception {
+	private Advancement chargeAttempt(JdbcRunStore.Tx tx, RunState run, RunState.Invocation invocation, Binding recipe,
+			ValidatedWorkflow workflow, ResolvedApplication resolved) throws Exception {
 		if (invocation.attempts.size() >= run.maximumAttempts) {
 			tx.terminal(run, "FAILED", "ATTEMPTS_EXHAUSTED", "finite execution attempt allowance exhausted", "runtime");
 			return new Progress(run.snapshot());
@@ -341,7 +349,7 @@ public final class DurableWorkflows implements AutoCloseable {
 		attempt.id = UUID.randomUUID().toString();
 		attempt.number = invocation.attempts.size() + 1;
 		attempt.charged = tx.now;
-		Object input = decode(tx, run, recipe.input(), workflow, resolved);
+		Object input = decode(tx, run, recipe.input().identity(), workflow, resolved);
 		invocation.attempts.add(attempt);
 		run.event("DISPATCHED", tx.now, invocation.id + ":" + attempt.id);
 		tx.save(run);
@@ -364,7 +372,7 @@ public final class DurableWorkflows implements AutoCloseable {
 		hooks.at("AFTER_DISPATCH_COMMIT", runId);
 		boolean mayEnter = store.transaction(tx -> {
 			RunState run = tx.get(runId);
-			compatible(run, workflow);
+			compatible(run, workflow, resolved);
 			tx.observe(run);
 			if (!run.active())
 				return false;
@@ -377,16 +385,17 @@ public final class DurableWorkflows implements AutoCloseable {
 		try {
 			Object value;
 			try {
-				value = resolved.execute(dispatch.recipe.executable().entryPoint(), dispatch.input, dispatch.context);
+				value = resolved.execute(dispatch.recipe.placement().graphName(), dispatch.input, dispatch.context);
 			}
 			catch (Exception | LinkageError failure) {
-				return failAttempt(runId, workflow, dispatch, activity, "STEP_FAILED", failure);
+				return failAttempt(runId, workflow, resolved, dispatch, activity, "STEP_FAILED", failure);
 			}
 			try {
-				output = resolved.encode(value, workflow.values().get(dispatch.recipe.output()).declaration());
+				output = resolved.encode(value,
+						workflow.values().get(dispatch.recipe.output().identity()).declaration());
 			}
 			catch (Exception | LinkageError failure) {
-				return failAttempt(runId, workflow, dispatch, activity, "OUTPUT_ENCODING_FAILED", failure);
+				return failAttempt(runId, workflow, resolved, dispatch, activity, "OUTPUT_ENCODING_FAILED", failure);
 			}
 		}
 		finally {
@@ -395,7 +404,8 @@ public final class DurableWorkflows implements AutoCloseable {
 		}
 		hooks.at("AFTER_HANDLER_RETURN", runId);
 		byte[] committedOutput = output;
-		RunSnapshot result = store.transaction(tx -> commitResult(tx, runId, workflow, dispatch, committedOutput));
+		RunSnapshot result = store
+			.transaction(tx -> commitResult(tx, runId, workflow, resolved, dispatch, committedOutput));
 		hooks.at("AFTER_RESULT_COMMIT", runId);
 		return result;
 	}
@@ -404,23 +414,25 @@ public final class DurableWorkflows implements AutoCloseable {
 	 * Within one transaction, accept only the still-current attempt of an active
 	 * compatible run. Cancellation/expiry wins without accepting a late output. Otherwise
 	 * save exact output, invocation/attempt disposition, continuation and events
-	 * together, including terminal completion when this was the final step.
+	 * together. A graph terminal successor supplies its explicit completion outcome.
 	 */
-	private RunSnapshot commitResult(JdbcRunStore.Tx tx, String runId, ValidatedWorkflow workflow, Dispatch dispatch,
-			byte[] output) throws Exception {
+	private RunSnapshot commitResult(JdbcRunStore.Tx tx, String runId, ValidatedWorkflow workflow,
+			ResolvedApplication resolved, Dispatch dispatch, byte[] output) throws Exception {
 		RunState run = tx.get(runId);
-		compatible(run, workflow);
+		compatible(run, workflow, resolved);
 		tx.observe(run);
 		if (!run.active())
 			return run.snapshot();
 		RunState.Invocation invocation = current(run, dispatch.context, dispatch.recipe);
-		putValue(run, workflow.values().get(dispatch.recipe.output()), output, invocation.id);
+		putValue(run, workflow.values().get(dispatch.recipe.output().identity()), output, invocation.id);
 		invocation.status = "COMMITTED";
 		invocation.attempts.getLast().disposition = "COMMITTED";
-		run.next++;
-		run.event("RESULT_COMMITTED", tx.now, invocation.id + ":" + invocation.output);
-		if (run.next == workflow.invocations().size())
+		run.node = workflow.graph().unconditionalSuccessor(dispatch.recipe.placement().graphName());
+		run.event("RESULT_COMMITTED", tx.now, invocation.id + ":" + invocation.output + ":next=" + run.node);
+		if (workflow.graph().nodeByName(run.node) instanceof WorkflowNode.TerminalNode) {
 			finish(tx, run, workflow);
+			hooks.at("BEFORE_TERMINAL_COMMIT", run.id);
+		}
 		else
 			tx.save(run);
 		hooks.at("BEFORE_RESULT_COMMIT", run.id);
@@ -440,7 +452,7 @@ public final class DurableWorkflows implements AutoCloseable {
 			ResolvedApplication resolved = resolve(runId, workflow);
 			byte[] bytes = store.transaction(tx -> {
 				RunState run = tx.get(runId);
-				compatible(run, workflow);
+				compatible(run, workflow, resolved);
 				if (!run.status.equals("SUCCEEDED"))
 					throw new WorkflowRefusal("NO_SUCCESS_RESULT", "run has no successful terminal result");
 				RunState.Value value = verifiedValue(tx, run, workflow.terminal().successValue(), workflow);
@@ -458,13 +470,13 @@ public final class DurableWorkflows implements AutoCloseable {
 	 * this store transition propagates; it must not be converted into another application
 	 * failure.
 	 */
-	private RunSnapshot failAttempt(String runId, ValidatedWorkflow workflow, Dispatch dispatch,
-			RuntimeLifecycle.Activity activity, String code, Throwable failure) {
+	private RunSnapshot failAttempt(String runId, ValidatedWorkflow workflow, ResolvedApplication resolved,
+			Dispatch dispatch, RuntimeLifecycle.Activity activity, String code, Throwable failure) {
 		activity.captureInterrupt(failure);
 		String message = failure.getClass().getName() + ": " + String.valueOf(failure.getMessage());
 		return store.transaction(tx -> {
 			RunState run = tx.get(runId);
-			compatible(run, workflow);
+			compatible(run, workflow, resolved);
 			tx.observe(run);
 			if (!run.active())
 				return run.snapshot();
@@ -474,26 +486,26 @@ public final class DurableWorkflows implements AutoCloseable {
 		});
 	}
 
-	private ApplicationDeployment requireDeployment() {
+	private ExecutionCompatibility requireDeployment() {
 		if (deployment == null)
 			throw new WorkflowRefusal("DEPLOYMENT_REQUIRED", "execution requires application step registration");
 		return deployment;
 	}
 
 	/**
-	 * Require supported capability and a supplied deployment, then compare saved run
-	 * compatibility in a transaction. Only after that transaction returns, resolve and
-	 * check actual Step objects and type/codec contracts. Saved metadata never vouches
-	 * for the current objects or deployment.
+	 * Check the supplied objects, full types and codec without executing application
+	 * Steps, then compare their frozen names and compatibility facts with the saved run
+	 * in a transaction. Saved metadata never vouches for current objects.
 	 */
 	private ResolvedApplication resolve(String runId, ValidatedWorkflow workflow) {
 		requireSequential(workflow);
-		ApplicationDeployment supplied = requireDeployment();
+		ExecutionCompatibility supplied = requireDeployment();
+		ResolvedApplication resolved = new ResolvedApplication(registry, supplied, workflow);
 		store.transaction(tx -> {
-			compatible(tx.get(runId), workflow);
+			compatible(tx.get(runId), workflow, resolved);
 			return null;
 		});
-		return new ResolvedApplication(supplied, workflow);
+		return resolved;
 	}
 
 	private static void requireSequential(ValidatedWorkflow workflow) {
@@ -503,11 +515,12 @@ public final class DurableWorkflows implements AutoCloseable {
 					"this runtime admits sequential steps and terminals only");
 	}
 
-	private static RunState.Invocation current(RunState run, StepContext context,
-			ValidatedWorkflow.InvocationRecipe recipe) {
-		if (run.next >= run.invocations.size())
+	private static RunState.Invocation current(RunState run, StepContext context, Binding recipe) {
+		if (!Objects.equals(run.node, recipe.placement().graphName()))
+			throw new WorkflowRefusal("ATTEMPT_CHANGED", "current graph node differs");
+		RunState.Invocation call = findInvocation(run, run.node);
+		if (call == null)
 			throw new WorkflowRefusal("ATTEMPT_CHANGED", "no unresolved invocation");
-		RunState.Invocation call = run.invocations.get(run.next);
 		validateInvocation(run, call, recipe);
 		if (!call.id.equals(context.invocationId()) || call.attempts.isEmpty()
 				|| !call.attempts.getLast().id.equals(context.attemptId()))
@@ -515,16 +528,18 @@ public final class DurableWorkflows implements AutoCloseable {
 		return call;
 	}
 
-	private static void validateInvocation(RunState run, RunState.Invocation call,
-			ValidatedWorkflow.InvocationRecipe recipe) {
+	private static void validateInvocation(RunState run, RunState.Invocation call, Binding recipe) {
 		if (!invocationId(run.id, recipe.placement()).equals(call.id)
-				|| !recipe.placement().graphName().equals(call.placement) || !valueId(recipe.input()).equals(call.input)
-				|| !valueId(recipe.output()).equals(call.output) || !"UNRESOLVED".equals(call.status))
+				|| !recipe.placement().graphName().equals(call.placement)
+				|| !valueId(recipe.input().identity()).equals(call.input)
+				|| !valueId(recipe.output().identity()).equals(call.output) || !"UNRESOLVED".equals(call.status))
 			throw new WorkflowRefusal("INVOCATION_CHANGED", "saved invocation differs or is already committed");
 	}
 
 	static void finish(JdbcRunStore.Tx tx, RunState run, ValidatedWorkflow workflow) throws Exception {
-		var terminal = workflow.terminal();
+		var node = workflow.graph().nodeByName(run.node);
+		if (!(node instanceof WorkflowNode.TerminalNode terminal))
+			throw new WorkflowRefusal("CURSOR_CHANGED", "terminal graph node required");
 		if (terminal.intent() == Terminal.SUCCEEDED) {
 			run.output = valueId(terminal.successValue());
 			verifyValue(run.id, run.values.get(run.output), workflow.values().get(terminal.successValue()));
@@ -611,23 +626,69 @@ public final class DurableWorkflows implements AutoCloseable {
 		return Digests.fields(codec.name(), codec.version(), codec.configuration());
 	}
 
-	static String compatibility(ValidatedWorkflow workflow, ApplicationDeployment.Manifest manifest,
-			ExecutionPolicy policy) {
+	static String compatibility(ValidatedWorkflow workflow, Map<String, String> selections,
+			ExecutionCompatibility.Manifest manifest, ExecutionPolicy policy) {
 		StringBuilder entries = new StringBuilder();
-		for (var call : workflow.invocations())
-			entries.append(Digests.fields(call.placement().graphName(), call.executable().entryPoint(),
-					call.executable().deploymentManifestDigest(), call.executable().configurationDigest()));
-		return Digests.fields("durable-run-v4", workflow.authoredIdentity(), entries.toString(), manifest.identity(),
+		new TreeMap<>(selections).forEach((node, name) -> entries.append(Digests.fields(node, name)));
+		return Digests.fields("durable-run-v5", workflow.authoredIdentity(), entries.toString(), manifest.identity(),
 				codec(workflow.codecIdentity()), policy.identity());
 	}
 
-	private void compatible(RunState run, ValidatedWorkflow workflow) {
-		ApplicationDeployment.Manifest supplied = requireDeployment().manifest();
+	private void compatible(RunState run, ValidatedWorkflow workflow, ResolvedApplication resolved) {
+		ExecutionCompatibility.Manifest supplied = requireDeployment().manifest();
 		if (!supplied.equals(run.deployment))
 			throw new WorkflowRefusal("COMPATIBILITY",
 					"supplied deployment/configuration/codec/runtime differs from admitted manifest");
-		if (!run.compatibility.equals(compatibility(workflow, supplied, policy)))
+		if (run.maximumAttempts != policy.maximumAttempts()
+				|| !Objects.equals(run.authored, workflow.authoredIdentity())
+				|| !Objects.equals(run.selections, resolved.selections())
+				|| !run.compatibility.equals(compatibility(workflow, resolved.selections(), supplied, policy)))
 			throw new WorkflowRefusal("COMPATIBILITY", "authored behavior, step selection or execution policy differs");
+		validateProgress(run, workflow);
+	}
+
+	private static RunState.Invocation findInvocation(RunState run, String node) {
+		RunState.Invocation found = null;
+		for (var call : run.invocations)
+			if (Objects.equals(call.placement, node)) {
+				if (found != null)
+					throw new WorkflowRefusal("INVOCATION_CHANGED", "duplicate saved node invocation");
+				found = call;
+			}
+		return found;
+	}
+
+	/**
+	 * Verify that saved history is a graph prefix and the cursor is its first uncommitted
+	 * node.
+	 */
+	private static void validateProgress(RunState run, ValidatedWorkflow workflow) {
+		var graph = workflow.graph();
+		String node = graph.startNode();
+		Set<String> seen = new HashSet<>();
+		int recorded = 0;
+		while (graph.nodeByName(node) instanceof WorkflowNode.StepNode) {
+			if (!seen.add(node))
+				throw new WorkflowRefusal("CURSOR_CHANGED", "cyclic sequential continuation");
+			var call = findInvocation(run, node);
+			if (call == null)
+				break;
+			recorded++;
+			Binding binding = graph.binding(node);
+			if (!invocationId(run.id, binding.placement()).equals(call.id)
+					|| !valueId(binding.input().identity()).equals(call.input)
+					|| !valueId(binding.output().identity()).equals(call.output))
+				throw new WorkflowRefusal("INVOCATION_CHANGED", "saved graph invocation differs");
+			if (!"COMMITTED".equals(call.status))
+				break;
+			verifyValue(run.id, run.values.get(call.input), workflow.values().get(binding.input().identity()));
+			verifyValue(run.id, run.values.get(call.output), workflow.values().get(binding.output().identity()));
+			node = graph.unconditionalSuccessor(node);
+		}
+		if (!Objects.equals(node, run.node) || recorded != run.invocations.size())
+			throw new WorkflowRefusal("CURSOR_CHANGED", "saved cursor/history is not the admitted graph continuation");
+		if ("SUCCEEDED".equals(run.status) && !(graph.nodeByName(node) instanceof WorkflowNode.TerminalNode))
+			throw new WorkflowRefusal("CURSOR_CHANGED", "success requires an explicit terminal node");
 	}
 
 	private static void requireText(String text, String field) {
@@ -643,8 +704,7 @@ public final class DurableWorkflows implements AutoCloseable {
 
 	}
 
-	private record Dispatch(ValidatedWorkflow.InvocationRecipe recipe, Object input,
-			StepContext context) implements Advancement {
+	private record Dispatch(Binding recipe, Object input, StepContext context) implements Advancement {
 	}
 
 	private record Progress(RunSnapshot snapshot) implements Advancement {

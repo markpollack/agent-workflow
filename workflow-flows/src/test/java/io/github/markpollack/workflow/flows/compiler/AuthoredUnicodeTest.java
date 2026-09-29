@@ -66,10 +66,17 @@ class AuthoredUnicodeTest {
                 new Golden("generic","list","step","done","custom",Duration.ofMinutes(3),new ListType(String.class),2,Terminal.SUCCEEDED,
                         "sha256:ce8af5020f332faa74930614b04c4fea2bebb6fa65b5a45793a2c747b9181767"));
     }
-    @ParameterizedTest(name="unchanged {0}") @MethodSource("unchangedIdentities")
-    void wellFormedDefinitionsKeepTheirPreviousIdentity(Golden golden) {
+    @ParameterizedTest(name="graph contract {0}") @MethodSource("unchangedIdentities")
+    void graphIdentityIsDeterministicAndDistinctFromTheOldOrderedProgram(Golden golden) {
+        if (golden.count()==0) {
+            assertThatThrownBy(() -> workflow(golden.name(),golden.call(),golden.reason(),golden.profile(),golden.duration(),golden.type(),0,golden.terminal()))
+                .hasMessageContaining("at least one Step");
+            return;
+        }
         assertThat(workflow(golden.name(),golden.call(),golden.reason(),golden.profile(),golden.duration(),
-                golden.type(),golden.count(),golden.terminal()).authoredIdentity()).isEqualTo(golden.identity());
+                golden.type(),golden.count(),golden.terminal()).authoredIdentity()).isNotEqualTo(golden.identity());
+        assertThat(workflow(golden.name(),golden.call(),golden.reason(),golden.profile(),golden.duration(),golden.type(),golden.count(),golden.terminal()).authoredIdentity())
+            .isEqualTo(workflow(golden.name(),golden.call(),golden.reason(),golden.profile(),golden.duration(),golden.type(),golden.count(),golden.terminal()).authoredIdentity());
     }
 
     public record HighWire(@JsonProperty("wire-\uD800") String text) {}
@@ -92,9 +99,19 @@ class AuthoredUnicodeTest {
         var policy=new DeadlinePolicy(profile,Duration.ofHours(1));
         var definition=new Definition<>(name,type,type,nodes,authored);
         var placements=StructuredWorkflowCompiler.compile(new Definition<>(name,type,type,nodes,policy.resolve(authored)));
-        Map<Placement,ExecutableIdentity> selections=new LinkedHashMap<>();
-        placements.bindings().forEach(b->selections.put(b.placement(),new ExecutableIdentity("example.Operation",
-                "sha256:"+"1".repeat(64),"sha256:"+"2".repeat(64),type,type)));
+        Map<Placement,io.github.markpollack.workflow.flows.Step<?,?>> selections=new LinkedHashMap<>();
+        io.github.markpollack.workflow.flows.Step<?,?> step = type.equals(String.class) ? new TextStep()
+            : type.equals(SupplementaryWire.class) ? new WireStep() : new ListStep();
+        placements.bindings().forEach(b->selections.put(b.placement(),step));
         return ValidatedWorkflow.compile(definition,selections,policy);
+    }
+    static class TextStep implements io.github.markpollack.workflow.flows.Step<String,String> {
+        public String execute(io.github.markpollack.workflow.flows.StepContext c,String in) { return in; }
+    }
+    static class ListStep implements io.github.markpollack.workflow.flows.Step<List<String>,List<String>> {
+        public List<String> execute(io.github.markpollack.workflow.flows.StepContext c,List<String> in) { return in; }
+    }
+    static class WireStep implements io.github.markpollack.workflow.flows.Step<SupplementaryWire,SupplementaryWire> {
+        public SupplementaryWire execute(io.github.markpollack.workflow.flows.StepContext c,SupplementaryWire in) { return in; }
     }
 }

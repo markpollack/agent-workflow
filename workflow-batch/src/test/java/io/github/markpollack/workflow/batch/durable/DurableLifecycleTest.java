@@ -14,33 +14,33 @@ class DurableLifecycleTest {
     @TempDir Path directory;
     @Test void slowStepCompletesWithoutOwnershipRenewalOrMovingDeadline() throws Exception {
         var deployment=deployment(Map.of());var workflow=echo(deployment,Slow.class,null);
-        try(var runtime=DurableWorkflows.open(directory.resolve("runs"),deployment,new ExecutionPolicy(3))) {
+        try(var runtime=DurableWorkflows.open(directory.resolve("runs"), deployment.registry(), deployment.compatibility(), new ExecutionPolicy(3))) {
             var admitted=runtime.start(workflow,"slow",new Request("x"));
             var result=runtime.resume(admitted.runId(),workflow);
             assertThat(result.status()).isEqualTo(RunSnapshot.Status.SUCCEEDED);assertThat(result.deadline()).isEqualTo(admitted.deadline());
             assertThat(result.events()).noneMatch(e->e.kind().equals("RENEWED"));assertThat(result.invocations().getFirst().attempts()).hasSize(1);
         }
     }
-    @Test void terminalOnlyAndDefaultPolicyRemainFiniteAndExplicit() throws Exception {
+    @Test void nonemptyTerminalsAndDefaultPolicyRemainFiniteAndExplicit() throws Exception {
         var deployment=deployment(Map.of());
-        try(var runtime=DurableWorkflows.open(directory.resolve("runs"),deployment)) {
+        try(var runtime=DurableWorkflows.open(directory.resolve("runs"), deployment.registry(), deployment.compatibility())) {
             for(Terminal terminal:Terminal.values()) {
-                var source=new Definition<>("terminal-"+terminal,Request.class,Request.class,List.<Node>of(new End(terminal,"reason")),null);
-                var workflow=ValidatedWorkflow.compile(source,Map.of());var start=runtime.start(workflow,terminal.name(),new Request("x"));
+                var workflow=single(deployment,Echo.class,Request.class,Request.class,null,terminal);var start=runtime.start(workflow,terminal.name(),new Request("x"));
                 assertThat(runtime.resume(start.runId(),workflow).status().name()).isEqualTo(terminal.name());
             }
             var capped=echo(deployment,Echo.class,Duration.ofHours(2));var start=runtime.start(capped,"capped",new Request("x"));
             assertThat(start.deadline()).isEqualTo(start.admittedAt().plus(Duration.ofHours(1)));assertThat(start.deadlineOrigin()).startsWith("POLICY_CAP");
             for(Duration invalid:List.of(Duration.ZERO,Duration.ofSeconds(-1),Duration.ofSeconds(Long.MAX_VALUE)))
                 assertThatThrownBy(()->ValidatedWorkflow.compile(new Definition<>("invalid",Request.class,Request.class,List.<Node>of(new End(Terminal.SUCCEEDED,"")),invalid),Map.of())).isInstanceOf(IllegalArgumentException.class);
-            var source=new Definition<>("selected-default",Request.class,Request.class,List.<Node>of(new End(Terminal.SUCCEEDED,"")),null);
-            var tighter=ValidatedWorkflow.compile(source,Map.of(),new DeadlinePolicy("short",Duration.ofMinutes(2)));
+            var source=new Definition<>("selected-default",Request.class,Request.class,List.<Node>of(
+                new Call("echo",Op.declared("echo",Request.class,Request.class)),new End(Terminal.SUCCEEDED,"")),null);
+            var tighter=ValidatedWorkflow.compileSequential(source,List.of(deployment.step(Echo.class.getName())),new DeadlinePolicy("short",Duration.ofMinutes(2)));
             var selected=runtime.start(tighter,"selected",new Request("x"));assertThat(selected.deadline()).isEqualTo(selected.admittedAt().plus(Duration.ofMinutes(2)));
         }
     }
     @Test void startInspectResumeAndIdempotencyUseOnlyLifecycleApi() throws Exception {
         var deployment=deployment(Map.of("suffix","!"));var workflow=echo(deployment,Echo.class,null);
-        try(var runtime=DurableWorkflows.open(directory.resolve("runs"),deployment)) {
+        try(var runtime=DurableWorkflows.open(directory.resolve("runs"), deployment.registry(), deployment.compatibility())) {
             var admitted=runtime.start(workflow,"same",new Request("hello"),"display one");
             assertThat(admitted.status()).isEqualTo(RunSnapshot.Status.ACTIVE);
             assertThat(admitted.deadline()).isEqualTo(admitted.admittedAt().plus(Duration.ofHours(1)));
@@ -60,7 +60,7 @@ class DurableLifecycleTest {
     }
     @Test void o01UsesSavedInputIdentityAndGenericValuesRoundTrip() throws Exception {
         var deployment=deployment(Map.of());var workflow=o01(deployment);
-        try(var runtime=DurableWorkflows.open(directory.resolve("runs"),deployment)) {
+        try(var runtime=DurableWorkflows.open(directory.resolve("runs"), deployment.registry(), deployment.compatibility())) {
             var run=runtime.start(workflow,"o01",new Request("original"));
             var result=runtime.resume(run.runId(),workflow);
             assertThat(runtime.result(run.runId(),workflow)).isEqualTo(new Reply("first:original/original/changed-first"));
@@ -78,12 +78,12 @@ class DurableLifecycleTest {
     }
     @Test void explicitFailureCancellationAndEncodeFailureNeverCommitSuccess() throws Exception {
         var deployment=deployment(Map.of());
-        try(var runtime=DurableWorkflows.open(directory.resolve("runs"),deployment)) {
+        try(var runtime=DurableWorkflows.open(directory.resolve("runs"), deployment.registry(), deployment.compatibility())) {
             for(var handler:List.of(NullOutput.class,Throws.class)) {
                 var workflow=echo(deployment,handler,null);var admitted=runtime.start(workflow,handler.getName(),new Request("x"));
                 var result=runtime.resume(admitted.runId(),workflow);
                 assertThat(result.status()).isEqualTo(RunSnapshot.Status.FAILED);
-                assertThat(result.nextOperation()).isZero();
+                assertThat(result.currentNode()).isEqualTo(workflow.graph().startNode());
                 assertThat(result.events()).noneMatch(e->e.kind().equals("RESULT_COMMITTED"));
                 assertThat(result.invocations().getFirst().inputValue()).isNotBlank();
             }

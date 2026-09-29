@@ -9,7 +9,7 @@ import static org.assertj.core.api.Assertions.*;
 
 class AdmissionConsumerTest {
     private boolean compiles(String body) throws Exception {
-        String source="import io.github.markpollack.workflow.flows.compiler.*; import io.github.markpollack.workflow.flows.compiler.WorkflowModel.*; import io.github.markpollack.workflow.flows.workflow.*; import java.util.*; import java.time.*; class Consumer { "+body+" }";
+        String source="import io.github.markpollack.workflow.flows.*; import io.github.markpollack.workflow.flows.compiler.*; import io.github.markpollack.workflow.flows.compiler.WorkflowModel.*; import io.github.markpollack.workflow.flows.workflow.*; import java.util.*; import java.time.*; class Consumer { "+body+" }";
         var output=Files.createTempDirectory("workflow-admission-consumer-");
         JavaCompiler compiler=ToolProvider.getSystemJavaCompiler();
         var diagnostics=new DiagnosticCollector<JavaFileObject>();
@@ -29,10 +29,22 @@ class AdmissionConsumerTest {
         assertThat(compiles("Object invalid(Compilation<?,?> compilation) { return new ValidatedWorkflow(compilation, Map.of()); }")).isFalse();
     }
 
+    @Test void stagedFluentGrammarRequiresANonemptyExplicitlyTerminatedSequence() throws Exception {
+        String method="Object build(Step<?,?> step) { return Workflows.define(\"typed\")";
+        assertThat(compiles(method+".then(step).terminate(Terminal.SUCCEEDED).build(); }")).isTrue();
+        assertThat(compiles(method+".build(); }")).isFalse();
+        assertThat(compiles(method+".terminate(Terminal.SUCCEEDED).build(); }")).isFalse();
+        assertThat(compiles(method+".then(step).build(); }")).isFalse();
+        assertThat(compiles(method+".then(step).terminate(Terminal.SUCCEEDED).then(step).build(); }")).isFalse();
+    }
+
     public static class WithoutJudge {
+        public static class Echo implements io.github.markpollack.workflow.flows.Step<String,String> {
+            public String execute(io.github.markpollack.workflow.flows.StepContext context,String input) { return input; }
+        }
         public static void main(String[] args) {
-            ValidatedWorkflow.compile(new WorkflowModel.Definition<>("plain",String.class,String.class,
-                    List.of(new WorkflowModel.End(WorkflowModel.Terminal.SUCCEEDED,"")),java.time.Duration.ofMinutes(1)),java.util.Map.of());
+            io.github.markpollack.workflow.flows.Workflows.define("plain").then(new Echo())
+                .terminate(WorkflowModel.Terminal.SUCCEEDED).build();
             System.out.println("sequential admission without optional Judge dependency passed");
         }
     }

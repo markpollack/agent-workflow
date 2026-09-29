@@ -26,7 +26,7 @@ public final class ProcessWorker {
                 } catch(Exception ex) { throw new IllegalStateException(ex); }
             }
         };
-        try(var runtime=new DurableWorkflows(database,deployment,policy,hooks)) {
+        try(var runtime=new DurableWorkflows(database, deployment.registry(), deployment.compatibility(), policy, hooks)) {
             System.out.println("PROCESS pid="+ProcessHandle.current().pid()+" mode="+mode);System.out.flush();
             if(mode.equals("mismatch")) {
                 String id=Files.readString(directory.resolve("run-id.txt"));

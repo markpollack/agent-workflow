@@ -18,10 +18,33 @@ class CompilerBoundaryTest {
     static Call call(String label) { return new Call(label,Op.named(label,State.class,State.class)); }
     static Definition<?,?> definition(String name,Node... nodes) { return definition(name,List.of(nodes)); }
     static Definition<?,?> definition(String name,List<Node> nodes) { return new Definition<>(name,State.class,State.class,nodes,DEADLINE); }
-    static ExecutableIdentity pin(Type input,Type output) { return new ExecutableIdentity("example.Operation#run","sha256:"+"1".repeat(64),"sha256:"+"2".repeat(64),input,output); }
-    static Map<Placement,ExecutableIdentity> pins(Definition<?,?> d) {
-        Map<Placement,ExecutableIdentity> pins=new LinkedHashMap<>();
-        StructuredWorkflowCompiler.compile(d).bindings().forEach(b->pins.put(b.placement(),pin(b.input().type(),b.output().type())));
+    static class StateStep implements io.github.markpollack.workflow.flows.Step<State,State> {
+        public State execute(io.github.markpollack.workflow.flows.StepContext c,State in) { return in; }
+    }
+    static class WrongStep implements io.github.markpollack.workflow.flows.Step<Missing,State> {
+        public State execute(io.github.markpollack.workflow.flows.StepContext c,Missing in) { return new State(in.value()); }
+    }
+    static class FirstStep implements io.github.markpollack.workflow.flows.Step<State,First> {
+        public First execute(io.github.markpollack.workflow.flows.StepContext c,State in) { return new First(in.value()); }
+    }
+    static class SecondStep implements io.github.markpollack.workflow.flows.Step<SecondInput,Second> {
+        public Second execute(io.github.markpollack.workflow.flows.StepContext c,SecondInput in) { return new Second(in.original().value()); }
+    }
+    static class ThirdStep implements io.github.markpollack.workflow.flows.Step<Second,Third> {
+        public Third execute(io.github.markpollack.workflow.flows.StepContext c,Second in) { return new Third(in.value()); }
+    }
+    static class FourthStep implements io.github.markpollack.workflow.flows.Step<Third,Fourth> {
+        public Fourth execute(io.github.markpollack.workflow.flows.StepContext c,Third in) { return new Fourth(in.value()); }
+    }
+    static class FifthStep implements io.github.markpollack.workflow.flows.Step<FifthInput,Final> {
+        public Final execute(io.github.markpollack.workflow.flows.StepContext c,FifthInput in) { return new Final(in.latest().value()); }
+    }
+    static Map<Placement,io.github.markpollack.workflow.flows.Step<?,?>> pins(Definition<?,?> d) {
+        Map<Placement,io.github.markpollack.workflow.flows.Step<?,?>> pins=new LinkedHashMap<>();
+        List<io.github.markpollack.workflow.flows.Step<?,?>> steps=List.of(new StateStep(),new FirstStep(),new SecondStep(),new ThirdStep(),new FourthStep(),new FifthStep());
+        StructuredWorkflowCompiler.compile(d).bindings().forEach(binding -> pins.put(binding.placement(),steps.stream()
+            .filter(step -> { var types=StepTypes.of(step.getClass()); return types.input().equals(binding.input().type()) && types.output().equals(binding.output().type()); })
+            .findFirst().orElseThrow()));
         return pins;
     }
 
@@ -111,20 +134,21 @@ class CompilerBoundaryTest {
 
     @Test void sequentialAdmissionPinsBindingsAndHasNoMutableCollections() {
         Definition<?,?> d=definition("sequential",call("first"),call("second"),success());
-        Map<Placement,ExecutableIdentity> selected=new LinkedHashMap<>(pins(d));
+        Map<Placement,io.github.markpollack.workflow.flows.Step<?,?>> selected=new LinkedHashMap<>(pins(d));
         ValidatedWorkflow admitted=ValidatedWorkflow.compile(d,selected); selected.clear();
-        assertThat(admitted.invocations()).hasSize(2);
-        assertThat(admitted.invocations().getLast().input()).isEqualTo(admitted.invocations().getFirst().output());
-        assertThat(admitted.terminal().successValue()).isEqualTo(admitted.invocations().getLast().output());
+        assertThat(admitted.graph().bindings()).hasSize(2);
+        assertThat(admitted.graph().bindings().getLast().input()).isEqualTo(admitted.graph().bindings().getFirst().output());
+        assertThat(admitted.terminal().successValue()).isEqualTo(admitted.graph().bindings().getLast().output().identity());
         assertThat(admitted.capabilities()).containsExactlyInAnyOrder(Capability.OPERATION,Capability.TERMINAL);
         assertThat(admitted.authoredIdentity()).startsWith("sha256:");
         assertThatThrownBy(()->admitted.values().clear()).isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(()->admitted.graph().nodes().clear()).isInstanceOf(UnsupportedOperationException.class);
-        assertThatThrownBy(()->admitted.invocations().clear()).isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(()->admitted.graph().bindings().clear()).isInstanceOf(UnsupportedOperationException.class);
     }
 
     @Test void failedTerminalHasNoFabricatedSuccessValue() {
-        ValidatedWorkflow workflow=ValidatedWorkflow.compile(definition("failed",new End(Terminal.FAILED,"explicit reason")),Map.of());
+        var d=definition("failed",call("work"),new End(Terminal.FAILED,"explicit reason"));
+        ValidatedWorkflow workflow=ValidatedWorkflow.compile(d,pins(d));
         assertThat(workflow.terminal().intent()).isEqualTo(Terminal.FAILED);
         assertThat(workflow.terminal().successValue()).isNull(); assertThat(workflow.terminal().reason()).isEqualTo("explicit reason");
     }
@@ -143,21 +167,20 @@ class CompilerBoundaryTest {
 
     @Test void missingExtraAndWrongExecutableSelectionsRefuse() {
         Definition<?,?> d=definition("pins",call("one"),success());
-        Map<Placement,ExecutableIdentity> selections=pins(d); Placement placement=selections.keySet().iterator().next();
+        Map<Placement,io.github.markpollack.workflow.flows.Step<?,?>> selections=pins(d); Placement placement=selections.keySet().iterator().next();
         assertThatThrownBy(()->ValidatedWorkflow.compile(d,Map.of())).hasMessageContaining("missing executable");
-        Map<Placement,ExecutableIdentity> extra=new HashMap<>(selections); extra.put(placement.child("other","x",0),pin(State.class,State.class));
+        Map<Placement,io.github.markpollack.workflow.flows.Step<?,?>> extra=new HashMap<>(selections); extra.put(placement.child("other","x",0),new StateStep());
         assertThatThrownBy(()->ValidatedWorkflow.compile(d,extra)).hasMessageContaining("extraneous");
-        assertThatThrownBy(()->ValidatedWorkflow.compile(d,Map.of(placement,pin(Missing.class,State.class)))).hasMessageContaining("contract disagreement");
-        assertThatThrownBy(()->new ExecutableIdentity("implementation","name-only","sha256:"+"2".repeat(64),State.class,State.class)).hasMessageContaining("SHA-256");
+        assertThatThrownBy(()->ValidatedWorkflow.compile(d,Map.of(placement,new WrongStep()))).hasMessageContaining("contract disagreement");
     }
 
     @Test void malformedGraphFailsIndependentLoweringVerification() {
         Compilation<?,?> c=StructuredWorkflowCompiler.compile(definition("graph",call("one"),success()));
         List<WorkflowEdge> edges=new ArrayList<>(c.graph().edges()); edges.add(WorkflowEdge.sequence(c.graph().startNode(),"missing"));
-        WorkflowGraph<?,?> invalid=WorkflowGraph.of("graph",c.graph().nodes(),edges,c.graph().startNode(),c.graph().finishNode());
+        WorkflowGraph<?,?> invalid=new WorkflowGraph<>("graph",c.graph().nodes(),edges,c.graph().startNode(),c.graph().finishNode(),c.bindings());
         assertThatThrownBy(()->GraphVerification.verify(invalid,c.metadata(),c.summaries(),c.bindings(),c.captures(),c.products(),c.phaseMetadata(),Set.of(),c.definition())).hasMessageContaining("region topology");
         edges=new ArrayList<>(c.graph().edges()); edges.add(WorkflowEdge.sequence(c.graph().finishNode(),c.graph().startNode()));
-        WorkflowGraph<?,?> cycle=WorkflowGraph.of("graph",c.graph().nodes(),edges,c.graph().startNode(),c.graph().finishNode());
+        WorkflowGraph<?,?> cycle=new WorkflowGraph<>("graph",c.graph().nodes(),edges,c.graph().startNode(),c.graph().finishNode(),c.bindings());
         assertThatThrownBy(()->GraphVerification.verify(cycle,c.metadata(),c.summaries(),c.bindings(),c.captures(),c.products(),c.phaseMetadata(),Set.of(),c.definition())).hasMessageContaining("region topology");
     }
 
@@ -184,7 +207,9 @@ class CompilerBoundaryTest {
             assertThatThrownBy(()->new TypeContracts().requireType(invalid)).isInstanceOf(IllegalArgumentException.class);
         }
         Type valid=parameterized(Bounded.class,Integer.class);
-        assertThat(ValidatedWorkflow.compile(new Definition<>("valid",valid,valid,List.of(success()),DEADLINE),Map.of()).inputContract().javaType()).contains("Integer");
+        assertThat(new TypeContracts().contract(valid).javaType()).contains("Integer");
+        assertThatThrownBy(() -> ValidatedWorkflow.compile(definition("empty",success()),Map.of()))
+            .hasMessageContaining("at least one Step");
     }
 
     @Test void admittedRecipesRetainExactEarlierAssembledInput() {
@@ -195,14 +220,15 @@ class CompilerBoundaryTest {
                 new Call("fourth",Op.named("fourth",Third.class,Fourth.class)),
                 new Call("fifth",Op.named("fifth",FifthInput.class,Final.class)),success()),DEADLINE);
         ValidatedWorkflow admitted=ValidatedWorkflow.compile(d,pins(d));
-        ValueId secondInput=admitted.invocations().get(1).input();
-        ValidatedWorkflow.ValueRecipe fifthInput=admitted.values().get(admitted.invocations().get(4).input());
-        assertThat(fifthInput.components()).containsExactly(admitted.invocations().get(3).output(),secondInput);
-        assertThat(admitted.values().get(secondInput).components()).containsExactly(admitted.invocations().getFirst().output(),admitted.invocations().getFirst().input());
+        ValueId secondInput=admitted.graph().bindings().get(1).input().identity();
+        ValidatedWorkflow.ValueRecipe fifthInput=admitted.values().get(admitted.graph().bindings().get(4).input().identity());
+        assertThat(fifthInput.components()).containsExactly(admitted.graph().bindings().get(3).output().identity(),secondInput);
+        assertThat(admitted.values().get(secondInput).components()).containsExactly(admitted.graph().bindings().getFirst().output().identity(),admitted.graph().bindings().getFirst().input().identity());
     }
 
     @Test void explicitCancellationRemainsDifferentFromChildInvocationFailure() {
-        ValidatedWorkflow admitted=ValidatedWorkflow.compile(definition("cancel",new End(Terminal.CANCELLED,"owner")),Map.of());
+        var d=definition("cancel",call("work"),new End(Terminal.CANCELLED,"owner"));
+        ValidatedWorkflow admitted=ValidatedWorkflow.compile(d,pins(d));
         assertThat(admitted.rootSummary().terminals()).containsExactly(Terminal.CANCELLED);
         assertThat(admitted.terminal().successValue()).isNull();
     }
@@ -212,7 +238,7 @@ class CompilerBoundaryTest {
         Placement first=c.bindings().getFirst().placement();
         String terminal=c.metadata().entrySet().stream().filter(e->e.getValue().kind().equals("terminal")).map(e->e.getKey().graphName()).findFirst().orElseThrow();
         List<WorkflowEdge> edges=new ArrayList<>(c.graph().edges()); edges.add(WorkflowEdge.sequence(first.graphName(),terminal));
-        WorkflowGraph<?,?> bypass=WorkflowGraph.of("graph",c.graph().nodes(),edges,c.graph().startNode(),c.graph().finishNode());
+        WorkflowGraph<?,?> bypass=new WorkflowGraph<>("graph",c.graph().nodes(),edges,c.graph().startNode(),c.graph().finishNode(),c.bindings());
         assertThatThrownBy(()->GraphVerification.verify(bypass,c.metadata(),c.summaries(),c.bindings(),c.captures(),c.products(),c.phaseMetadata(),Set.of(),c.definition())).hasMessageContaining("region topology");
         Map<SummaryKey,RegionSummary> summaries=new HashMap<>(c.summaries());
         summaries.put(new SummaryKey(first,"root"),new RegionSummary(first,"root",false,null,List.of(),Set.of(Terminal.FAILED),List.of(),List.of(),Set.of(Capability.OPERATION),Map.of()));
@@ -235,7 +261,7 @@ class CompilerBoundaryTest {
         Compilation<?,?> c=StructuredWorkflowCompiler.compile(definition("kinds",call("first"),success()));
         List<WorkflowNode> nodes=new ArrayList<>(c.graph().nodes());
         nodes.set(0,new WorkflowNode.ForkNode(nodes.getFirst().name(),"missing-join"));
-        WorkflowGraph<?,?> malformed=WorkflowGraph.of("kinds",nodes,c.graph().edges(),c.graph().startNode(),c.graph().finishNode());
+        WorkflowGraph<?,?> malformed=new WorkflowGraph<>("kinds",nodes,c.graph().edges(),c.graph().startNode(),c.graph().finishNode(),c.bindings());
         assertThatThrownBy(()->GraphVerification.verify(malformed,c.metadata(),c.summaries(),c.bindings(),c.captures(),c.products(),c.phaseMetadata(),Set.of(),c.definition())).hasMessageContaining("node kind");
     }
 }

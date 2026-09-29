@@ -61,12 +61,14 @@ final class Greet implements Step<Request, Greeting> {
 Register supplied objects, build and validate the workflow, then open one runtime for the database:
 
 ```java
-var deployment = new ApplicationDeployment("greetings", "build-17",
-        Map.of("prefix", "Hello, "),
-        Map.of("greet", new Greet(service), "receipt", receiptStep));
-var workflow = deployment.define("greeting-receipt")
-        .then("greet").then("receipt").terminate(Terminal.SUCCEEDED).build();
-try (var runtime = DurableWorkflows.open(database, deployment)) {
+var greet = new Greet(service);
+var steps = StepRegistry.of(Map.of("greet", greet, "receipt", receiptStep));
+var compatibility = new ExecutionCompatibility("greetings", "build-17",
+        Map.of("prefix", settings.greetingPrefix()));
+var workflow = Workflows.define("greeting-receipt")
+        .then("greet", greet).then("receipt", receiptStep)
+        .terminate(Terminal.SUCCEEDED).build();
+try (var runtime = DurableWorkflows.open(database, steps, compatibility)) {
     var run = runtime.start(workflow, "customer-17", new Request("Ada"));
     var completed = runtime.resume(run.runId(), workflow);
     System.out.println(runtime.result(completed.runId(), workflow));
@@ -74,6 +76,10 @@ try (var runtime = DurableWorkflows.open(database, deployment)) {
 ```
 
 See the complete, compiling [SequentialRecoveryExample](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/SequentialRecoveryExample.java) for imports, service implementation, registration and a process-death demonstration.
+
+The [Spring example](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/GreetingWorkflowTest.java) supplies settings through an ordinary bean, builds from the actual Step beans and snapshots their canonical names automatically. It includes two configured instances, repeated use of one instance, an unused bean and recovery through a fresh context.
+
+The immutable `WorkflowGraph` determines execution through its entry node and transitions. Stored node/binding order and registry order do not determine traversal. Explicit FAILED and CANCELLED terminals require a reason.
 
 `StepContext` identifies the run, logical step invocation and physical execution attempt. Business inputs are resolved from the validated workflow definition.
 
@@ -83,7 +89,7 @@ See the complete, compiling [SequentialRecoveryExample](workflow-batch/src/test/
 
 Progress and outcomes commit atomically, with `Step.execute` outside persistence transactions. After process death, a compatible application can reopen and resume unfinished work using committed results. An attempt whose outcome was not committed may execute again within its finite allowance, so external effects need application-level idempotency.
 
-Crash recovery is distinct from retrying a known failure or restarting a terminal run. Known step failures are currently terminal; `resume` does not reopen them. Cancellation and deadline expiry prevent further accepted results but do not stop already running application code.
+Crash recovery is distinct from retrying a known failure or restarting a terminal run. Known step failures are currently terminal; `resume` does not reopen them. Operator restart from saved progress after terminal failure remains an open product decision. Cancellation and deadline expiry prevent further accepted results but do not stop already running application code.
 
 See [runtime lifecycle and recovery details](workflow-batch/README-durable.md) for shutdown, concurrency, database paths, compatibility and storage limits.
 

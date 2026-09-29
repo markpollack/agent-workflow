@@ -8,14 +8,15 @@ import java.util.List;
  * view of one committed transition, not a live execution handle: another caller can later
  * cancel or advance the run. No thread, lease or executable object is represented.
  * <p>
- * nextOperation is the zero-based next invocation index in the validated sequence. ACTIVE
+ * currentNode is the durable graph continuation (including an explicit terminal). ACTIVE
  * means unfinished, not necessarily currently executing. A normally interrupted resume
  * can return ACTIVE. reason is null while active; terminal outcomes include a reason.
  * Lists and byte payloads are defensive copies, never writable store handles.
  */
 public record RunSnapshot(String runId, String displayName, Status status, Instant admittedAt, Instant deadline,
-		String deadlineOrigin, String authoredIdentity, ApplicationDeployment.Manifest deployment, int nextOperation,
-		Reason reason, List<Invocation> invocations, List<Value> values, List<Event> events) {
+		String deadlineOrigin, String authoredIdentity, ExecutionCompatibility.Manifest deployment, String currentNode,
+		java.util.Map<String, String> selectedSteps, Reason reason, List<Invocation> invocations, List<Value> values,
+		List<Event> events) {
 	public enum Status {
 
 		ACTIVE, SUCCEEDED, FAILED, CANCELLED
@@ -83,6 +84,7 @@ public record RunSnapshot(String runId, String displayName, Status status, Insta
 	}
 
 	public RunSnapshot {
+		selectedSteps = java.util.Map.copyOf(selectedSteps);
 		invocations = List.copyOf(invocations);
 		values = List.copyOf(values);
 		events = List.copyOf(events);

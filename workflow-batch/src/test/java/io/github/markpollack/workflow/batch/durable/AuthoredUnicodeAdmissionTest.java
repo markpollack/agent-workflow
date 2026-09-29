@@ -26,23 +26,23 @@ class AuthoredUnicodeAdmissionTest {
             calls.incrementAndGet();return input;
         }
     }
-    private static ApplicationDeployment deployment() {
-        return new ApplicationDeployment("authored-unicode","immutable-build",Map.of(),Map.of(Echo.class.getName(),new Echo()));
+    private static TestApplication deployment() {
+        return new TestApplication("authored-unicode","immutable-build",Map.of(),Map.of(Echo.class.getName(),new Echo()));
     }
-    private static ValidatedWorkflow workflow(ApplicationDeployment deployment,String name,String call,String reason,String profile) {
+    private static ValidatedWorkflow workflow(TestApplication deployment,String name,String call,String reason,String profile) {
         var definition=new Definition<>(name,String.class,String.class,
                 List.of(new Call(call,Op.declared("work",String.class,String.class)),new End(Terminal.SUCCEEDED,reason)),Duration.ofMinutes(2));
         var placement=StructuredWorkflowCompiler.compile(definition).bindings().getFirst().placement();
-        return ValidatedWorkflow.compile(definition,Map.of(placement,deployment.selection(Echo.class.getName(),String.class,String.class)),
+        return ValidatedWorkflow.compile(definition,Map.of(placement,deployment.step(Echo.class.getName())),
                 new DeadlinePolicy(profile,Duration.ofHours(1)));
     }
-    private static ValidatedWorkflow changed(ApplicationDeployment deployment,int field,String text) {
+    private static ValidatedWorkflow changed(TestApplication deployment,int field,String text) {
         return workflow(deployment,field==0?text:"?",field==1?text:"work",field==2?text:"",field==3?text:"local-v1");
     }
 
     @Test void malformedDefinitionCannotReachAdmissionOrResumeAndRefusalHasNoEffects() throws Exception {
         Echo.calls.set(0);var deployment=deployment();Path file=directory.resolve("runs");
-        try(var runtime=DurableWorkflows.open(file,deployment)) {
+        try(var runtime=DurableWorkflows.open(file, deployment.registry(), deployment.compatibility())) {
             // The first definition from the former admission/resume collision cannot be admitted.
             assertThatThrownBy(()->runtime.start(changed(deployment,0,"\uD800"),"original","root"))
                     .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("well-formed Unicode");
@@ -70,12 +70,12 @@ class AuthoredUnicodeAdmissionTest {
         var question=changed(deployment,0,"?");var supplementary=changed(deployment,0,"\uD83D\uDE00");
         assertThat(question.authoredIdentity()).isNotEqualTo(supplementary.authoredIdentity());
         String questionId;
-        try(var runtime=DurableWorkflows.open(file,deployment)) {
+        try(var runtime=DurableWorkflows.open(file, deployment.registry(), deployment.compatibility())) {
             var run=runtime.start(question,"question","root");questionId=run.runId();String before=state(file,questionId);
             assertThatThrownBy(()->runtime.resume(questionId,supplementary)).isInstanceOf(WorkflowRefusal.class);
             assertThat(state(file,questionId)).isEqualTo(before);assertThat(Echo.calls.get()).isZero();
         }
-        try(var runtime=DurableWorkflows.open(file,deployment)) {
+        try(var runtime=DurableWorkflows.open(file, deployment.registry(), deployment.compatibility())) {
             runtime.resume(questionId,question);String terminal=state(file,questionId);
             assertThatThrownBy(()->runtime.resume(questionId,supplementary)).isInstanceOf(WorkflowRefusal.class);
             assertThatThrownBy(()->runtime.result(questionId,supplementary)).isInstanceOf(WorkflowRefusal.class);

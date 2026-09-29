@@ -4,18 +4,18 @@ import java.time.Instant;
 import java.util.*;
 
 /**
- * Mutable format-4 aggregate owned by one JdbcRunStore.Tx. Values, logical invocations,
+ * Mutable format-5 aggregate owned by one JdbcRunStore.Tx. Values, logical invocations,
  * physical attempts, continuation and events serialize together; public fields support
  * the store codec and are not an application API. Never retain this object across
  * transactions. snapshot() creates the detached inspection model returned to callers.
  */
 final class RunState {
 
-	public int format = 4;
+	public int format = 5;
 
 	public String id, key, admission, compatibility, display, authored, deadlineOrigin;
 
-	public ApplicationDeployment.Manifest deployment;
+	public ExecutionCompatibility.Manifest deployment;
 
 	public long admitted, deadline, revision;
 
@@ -23,7 +23,11 @@ final class RunState {
 
 	public long terminalAt;
 
-	public int next, maximumAttempts;
+	public String node;
+
+	public Map<String, String> selections = new LinkedHashMap<>();
+
+	public int maximumAttempts;
 
 	public Map<String, Value> values = new LinkedHashMap<>();
 
@@ -121,7 +125,7 @@ final class RunState {
 	 */
 	RunSnapshot snapshot() {
 		return new RunSnapshot(id, display, RunSnapshot.Status.valueOf(status), Instant.ofEpochMilli(admitted),
-				Instant.ofEpochMilli(deadline), deadlineOrigin, authored, deployment, next,
+				Instant.ofEpochMilli(deadline), deadlineOrigin, authored, deployment, node, selections,
 				active() ? null
 						: new RunSnapshot.Reason(reasonCode, reasonMessage, actor, Instant.ofEpochMilli(terminalAt)),
 				invocations.stream().map(Invocation::snapshot).toList(),

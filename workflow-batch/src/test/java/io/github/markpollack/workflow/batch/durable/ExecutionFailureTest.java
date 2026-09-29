@@ -1,5 +1,7 @@
 package io.github.markpollack.workflow.batch.durable;
 
+import io.github.markpollack.workflow.flows.Workflows;
+
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
@@ -50,9 +52,9 @@ class ExecutionFailureTest {
 	@Test
 	void interruptedWaitWrapperPersistsFailureBeforeRestoringCallerFlag() throws Exception {
 		var step = new InterruptedWait();
-		var deployment = new ApplicationDeployment("failure", "v1", Map.of(), Map.of("work", step));
-		var workflow = deployment.define("wait").then("work").terminate(Terminal.SUCCEEDED).build();
-		try (var runtime = DurableWorkflows.open(directory.resolve("runs"), deployment);
+		var deployment = new TestApplication("failure", "v1", Map.of(), Map.of("work", step));
+		var workflow = Workflows.define("wait").then("work", deployment.step("work")).terminate(Terminal.SUCCEEDED).build();
+		try (var runtime = DurableWorkflows.open(directory.resolve("runs"), deployment.registry(), deployment.compatibility());
 				var threads = Executors.newVirtualThreadPerTaskExecutor()) {
 			var run = runtime.start(workflow, "one", new Request("input"));
 			var task = threads.submit(() -> {
@@ -72,7 +74,7 @@ class ExecutionFailureTest {
 				assertThat(step.cause.get()).isNotNull();
 				assertThat(after.status()).isEqualTo(RunSnapshot.Status.FAILED);
 				assertThat(after.reason().code()).isEqualTo("STEP_FAILED");
-				assertThat(after.nextOperation()).isZero();
+				assertThat(after.currentNode()).isEqualTo(workflow.graph().startNode());
 				assertThat(runtime.inspect(run.runId())).isEqualTo(after);
 				assertThat(runtime.resume(run.runId(), workflow)).isEqualTo(after);
 			}
@@ -104,10 +106,9 @@ class ExecutionFailureTest {
 		for (RuntimeException failure : java.util.List.of(unchecked,
 				new WorkflowRefusal("ENCODE_FAILED", "from application"))) {
 			var step = new Failure(failure);
-			var deployment = new ApplicationDeployment("failure", "v1", Map.of(), Map.of("work", step));
-			var workflow = deployment.define("failure").then("work").terminate(Terminal.SUCCEEDED).build();
-			try (var runtime = DurableWorkflows.open(directory.resolve(failure.getClass().getSimpleName()),
-					deployment)) {
+			var deployment = new TestApplication("failure", "v1", Map.of(), Map.of("work", step));
+			var workflow = Workflows.define("failure").then("work", deployment.step("work")).terminate(Terminal.SUCCEEDED).build();
+			try (var runtime = DurableWorkflows.open(directory.resolve(failure.getClass().getSimpleName()), deployment.registry(), deployment.compatibility())) {
 				var run = runtime.start(workflow, "one", new Request("input"));
 				assertThatThrownBy(() -> step
 					.execute(new StepContext("r", "i", "a", 1, java.time.Instant.MAX, Map.of()), new Request("x")))

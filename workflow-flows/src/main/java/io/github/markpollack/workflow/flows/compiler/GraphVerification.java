@@ -6,9 +6,9 @@ import static io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
 
 /**
  * Checks emitted graph topology and type/fact metadata against analyzed regions. The
- * graph holds inert refusing adapters, not registered application Step instances. Their
- * full Type fields must agree with the analyzed metadata, including generic arguments;
- * this consistency check is separate from runtime declaration validation in StepTypes.
+ * graph holds semantic metadata, not registered application Step instances. Its full Type
+ * fields must agree with the analyzed metadata, including generic arguments; this
+ * consistency check is separate from runtime declaration validation in StepTypes.
  * Bindings and captures retain source identities and full Types throughout verification.
  */
 final class GraphVerification {
@@ -34,6 +34,8 @@ final class GraphVerification {
 			Map<SummaryKey, RegionSummary> summaries, List<Binding> bindings, List<Capture> captures,
 			List<Product> products, Map<SummaryKey, Metadata> phaseMetadata, Set<WorkflowEdge> ownedBackEdges,
 			Definition<?, ?> definition) {
+		require(new HashSet<>(graph.bindings()).equals(new HashSet<>(bindings))
+				&& graph.bindings().size() == bindings.size(), "graph binding disagreement");
 		Set<WorkflowEdge> provenBackEdges = RegionTopology.verify(definition, graph, summaries);
 		require(provenBackEdges.equals(ownedBackEdges), "loop ownership disagrees with regions");
 		Set<String> ids = new HashSet<>();
@@ -59,14 +61,20 @@ final class GraphVerification {
 		for (var item : metadata.entrySet()) {
 			WorkflowNode node = graph.findNode(item.getKey().graphName()).orElseThrow();
 			if (node instanceof WorkflowNode.StepNode step) {
-				verifyAdapter(step.step(), item.getValue());
+				verifyTypes(step.input(), step.output(), item.getValue());
+			}
+			else if (node instanceof WorkflowNode.ControlNode control) {
+				verifyTypes(control.input(), control.output(), item.getValue());
 			}
 			else if (node instanceof WorkflowNode.DecisionNode decision) {
-				verifyAdapter(decision.routingStep(), item.getValue());
+				verifyTypes(decision.input(), decision.output(), item.getValue());
 			}
 
 			if (item.getValue().kind().equals("terminal")) {
 				Terminal intent = Terminal.valueOf(item.getValue().configuration().get("intent"));
+				require(node instanceof WorkflowNode.TerminalNode terminal && terminal.intent() == intent
+						&& Objects.equals(terminal.reason(), item.getValue().configuration().get("reason")),
+						"terminal node disagreement");
 				require(summaries.values()
 					.stream()
 					.anyMatch(s -> s.placement().equals(item.getKey()) && !s.continues()
@@ -149,11 +157,9 @@ final class GraphVerification {
 	 * Check the emitter's full type metadata, including generic arguments and internal
 	 * products.
 	 */
-	static void verifyAdapter(io.github.markpollack.workflow.flows.Step<?, ?> step, Metadata expected) {
-		require(step instanceof GraphLowering.RefusingStep, "graph contains an executable application step");
-		GraphLowering.RefusingStep adapter = (GraphLowering.RefusingStep) step;
-		require(Objects.equals(adapter.input(), expected.input())
-				&& Objects.equals(adapter.output(), expected.output()), "graph adapter type disagreement");
+	static void verifyTypes(java.lang.reflect.Type input, java.lang.reflect.Type output, Metadata expected) {
+		require(Objects.equals(input, expected.input()) && Objects.equals(output, expected.output()),
+				"graph node type disagreement");
 	}
 
 	private static void require(boolean condition, String diagnostic) {

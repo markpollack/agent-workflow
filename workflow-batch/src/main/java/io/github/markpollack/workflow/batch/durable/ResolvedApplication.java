@@ -1,5 +1,6 @@
 package io.github.markpollack.workflow.batch.durable;
 
+import io.github.markpollack.workflow.flows.workflow.WorkflowNode;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.ParameterizedType;
 import io.github.markpollack.workflow.flows.Step;
@@ -12,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 
 import io.github.markpollack.workflow.flows.compiler.TypeContracts;
+import io.github.markpollack.workflow.flows.compiler.StepTypes;
 import io.github.markpollack.workflow.flows.compiler.ValidatedWorkflow;
 
 /**
@@ -28,7 +30,13 @@ final class ResolvedApplication {
 
 	private final TypeContracts codec = new TypeContracts();
 
-	private final Map<String, Step<?, ?>> operations = new HashMap<>();
+	private final Map<String, Step<?, ?>> operations;
+
+	private final Map<String, String> selections;
+
+	Map<String, String> selections() {
+		return selections;
+	}
 
 	/**
 	 * Validate the supplied deployment against every immutable definition contract
@@ -38,32 +46,39 @@ final class ResolvedApplication {
 	 * @throws WorkflowRefusal for changed codecs/types, unavailable registrations or a
 	 * supplied Step declaration that differs from the selected executable contract
 	 */
-	ResolvedApplication(ApplicationDeployment deployment, ValidatedWorkflow workflow) {
+	ResolvedApplication(StepRegistry registry, ExecutionCompatibility compatibility, ValidatedWorkflow workflow) {
 		if (!codec.identity().equals(workflow.codecIdentity())
-				|| !codec.identity().equals(deployment.manifest().codec())) {
+				|| !codec.identity().equals(compatibility.manifest().codec())) {
 			throw new WorkflowRefusal("CODEC_CHANGED", "deployed codec contract differs");
 		}
+		Map<String, Step<?, ?>> selectedObjects = new HashMap<>();
+		Map<String, String> selectedNames = new java.util.TreeMap<>();
 		try {
 			for (var value : workflow.values().values()) {
-				if (!codec.contract(value.declaration()).equals(value.contract())) {
+				if (!codec.contract(value.declaration()).equals(value.contract()))
 					throw new WorkflowRefusal("TYPE_CHANGED", "declared type/shape/codec differs: " + value.identity());
-				}
 			}
-			for (var call : workflow.invocations()) {
-				var selected = call.executable();
-				if (!deployment.manifest().deploymentDigest().equals(selected.deploymentManifestDigest())
-						|| !deployment.manifest().configurationDigest().equals(selected.configurationDigest())) {
-					throw new WorkflowRefusal("EXECUTABLE_CHANGED",
-							"selected deployment/configuration differs at " + call.placement());
-				}
-				Step<?, ?> step = deployment.step(selected.entryPoint());
+			for (var association : workflow.suppliedSteps().entrySet()) {
+				String nodeId = association.getKey().graphName();
+				var node = workflow.graph().nodeByName(nodeId);
+				if (!(node instanceof WorkflowNode.StepNode requirement))
+					throw new WorkflowRefusal("STEP_CONTRACT", "selection does not address an operation: " + nodeId);
+				Step<?, ?> step = association.getValue();
+				String name = registry.nameOf(step);
 				StepTypes actual = StepTypes.of(step.getClass());
-				if (!actual.input().equals(selected.input()) || !actual.output().equals(selected.output())) {
-					throw new WorkflowRefusal("STEP_CONTRACT",
-							"supplied Step contract differs: " + selected.entryPoint());
-				}
-				operations.put(selected.entryPoint(), step);
+				if (!actual.input().equals(requirement.input()) || !actual.output().equals(requirement.output()))
+					throw new WorkflowRefusal("STEP_CONTRACT", "supplied Step contract differs: " + name);
+				selectedObjects.put(nodeId, step);
+				selectedNames.put(nodeId, name);
 			}
+			var required = workflow.graph()
+				.nodes()
+				.stream()
+				.filter(WorkflowNode.StepNode.class::isInstance)
+				.map(n -> n.name())
+				.collect(java.util.stream.Collectors.toSet());
+			if (!required.equals(selectedNames.keySet()))
+				throw new WorkflowRefusal("STEP_CONTRACT", "missing or extraneous prepared node selections");
 		}
 		catch (LinkageError ex) {
 			throw new WorkflowRefusal("STEP_UNAVAILABLE", "deployed operation/type resolution failed", ex);
@@ -71,6 +86,8 @@ final class ResolvedApplication {
 		catch (IllegalArgumentException ex) {
 			throw new WorkflowRefusal("TYPE_CHANGED", "deployed type contract refused", ex);
 		}
+		operations = Map.copyOf(selectedObjects);
+		selections = java.util.Collections.unmodifiableMap(selectedNames);
 	}
 
 	/**
@@ -145,7 +162,7 @@ final class ResolvedApplication {
 	 * Types. DurableWorkflows has verified the chosen input recipe/provenance and decoded
 	 * its bytes against that Type before charging and checking this attempt. This method
 	 * does not choose a value by its runtime class or use a mutable context lookup.
-	 * @param entry selected registration ID from the validated invocation recipe
+	 * @param entry graph node ID whose supplied implementation was frozen at preparation
 	 * @param input decoded effective input for that recipe
 	 * @param context metadata for the already charged physical attempt
 	 * @return the provisional application result; encoding/acceptance happens separately

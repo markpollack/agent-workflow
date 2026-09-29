@@ -19,8 +19,6 @@ import java.util.stream.Collectors;
 import io.github.markpollack.judge.jury.Verdict;
 import io.github.markpollack.judge.jury.interpretation.Interpretation;
 import io.github.markpollack.judge.jury.interpretation.VerdictReading;
-import io.github.markpollack.workflow.flows.StepContext;
-import io.github.markpollack.workflow.flows.Step;
 import io.github.markpollack.workflow.flows.r1probe.evidence.PinnedRecordCodec;
 import io.github.markpollack.workflow.flows.workflow.EdgeCondition;
 import io.github.markpollack.workflow.flows.workflow.WorkflowEdge;
@@ -417,7 +415,7 @@ public final class IntegratedCompiler {
         final List<String> terminals=new ArrayList<>();
         final Map<Placement,Metadata> metadata;
         Graph(Map<Placement,Metadata> metadata) { this.metadata=metadata; }
-        void addAdapter(String id,Type input,Type output) { nodes.add(WorkflowNode.deterministic(id,new RefusingStep(id,input,output))); }
+        void addAdapter(String id,Type input,Type output) { nodes.add(new WorkflowNode.StepNode(id,input,output)); }
         Fragment sequence(List<Node> ast,Placement parent) {
             String entry=null; List<String> previous=new ArrayList<>();
             for(int index=0;index<ast.size();index++) {
@@ -442,8 +440,8 @@ public final class IntegratedCompiler {
                         addAdapter(interpretation,Verdict.class,Interpretation.class);
                         routing=p.child("routing","native-reading",0).graphName();
                         edges.add(WorkflowEdge.sequence(id,interpretation)); edges.add(WorkflowEdge.sequence(interpretation,routing));
-                        nodes.add(new WorkflowNode.DecisionNode(routing,new RefusingStep(routing,Interpretation.class,VerdictReading.class),declaredJoin));
-                    } else nodes.add(new WorkflowNode.DecisionNode(id,new RefusingStep(id,info.input(),info.output()),declaredJoin));
+                        nodes.add(new WorkflowNode.DecisionNode(routing,Interpretation.class,VerdictReading.class,declaredJoin));
+                    } else nodes.add(new WorkflowNode.DecisionNode(id,info.input(),info.output(),declaredJoin));
                     boolean continuing=false;
                     for(int a=0;a<c.arms().size();a++) {
                         Arm arm=c.arms().get(a); Fragment body=sequence(arm.nodes(),p.child("arm",arm.outcome().name(),a));
@@ -477,7 +475,7 @@ public final class IntegratedCompiler {
                     Fragment body=sequence(loop.body(),p.child("body","loop",0));
                     String test=p.child("test",loop.test().name(),0).graphName();
                     String exit=p.child("exit","loop",0).graphName();
-                    nodes.add(new WorkflowNode.LoopCheckNode(test,value->{throw new UnsupportedOperationException("compile-only loop test");}));
+                    nodes.add(new WorkflowNode.LoopCheckNode(test,info.input()));
                     nodes.add(new WorkflowNode.LoopExitNode(exit));
                     edges.add(WorkflowEdge.sequence(id,body.entry()));
                     for(String tail:body.exits()) edges.add(WorkflowEdge.sequence(tail,test));
@@ -494,8 +492,5 @@ public final class IntegratedCompiler {
                 default -> { addAdapter(id,info.input(),info.output()); return new Fragment(id,List.of(id)); }
             }
         }
-    }
-    private record RefusingStep(String name,Type input,Type output) implements Step<Object,Object> {
-        @Override public Object execute(StepContext context,Object input) { throw new UnsupportedOperationException("compile-only validated graph; no runtime adapter"); }
     }
 }

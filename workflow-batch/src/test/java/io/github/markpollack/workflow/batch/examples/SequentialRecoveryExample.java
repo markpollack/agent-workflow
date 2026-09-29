@@ -1,5 +1,7 @@
 package io.github.markpollack.workflow.batch.examples;
 
+import io.github.markpollack.workflow.flows.Workflows;
+
 import java.nio.file.*;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -14,6 +16,9 @@ import io.github.markpollack.workflow.flows.compiler.WorkflowModel.Terminal;
  * A supplied service, two concrete typed steps and process recovery using saved progress.
  */
 public final class SequentialRecoveryExample {
+
+	public record ExampleSettings(String greetingPrefix, String receiptTemplate) {
+	}
 
 	private SequentialRecoveryExample() {
 	}
@@ -102,28 +107,32 @@ public final class SequentialRecoveryExample {
 		Path directory = Path.of(args[0]).toAbsolutePath().normalize();
 		Files.createDirectories(directory);
 		String mode = args[1];
-		var service = new GreetingService("Hello, ", directory.resolve("greet.calls"));
-		var deployment = new ApplicationDeployment("sequential-example", "example-v1",
-				Map.of("greetingPrefix", "Hello, ", "receiptTemplate", "Receipt: %s", "evidenceDirectory",
-						directory.toString()),
-				Map.of("greet", new Greet(service), "receipt", new PrintReceipt("Receipt: %s")));
-		var workflow = deployment.define("greeting-receipt")
-			.then("greet")
-			.then("receipt")
+		var settings = new ExampleSettings("Hello, ", "Receipt: %s");
+		var service = new GreetingService(settings.greetingPrefix(), directory.resolve("greet.calls"));
+		var greet = new Greet(service);
+		var receipt = new PrintReceipt(settings.receiptTemplate());
+		var registry = StepRegistry.builder().register("greet", greet).register("receipt", receipt).build();
+		var compatibility = new ExecutionCompatibility("sequential-example", "example-v1",
+				Map.of("greetingPrefix", settings.greetingPrefix(), "receiptTemplate", settings.receiptTemplate(),
+						"evidenceDirectory", directory.toString()));
+		var workflow = Workflows.define("greeting-receipt")
+			.then("greet", greet)
+			.then("receipt", receipt)
 			.terminate(Terminal.SUCCEEDED)
 			.build();
+
 		System.out.printf("PROCESS pid=%d thread=%s mode=%s%n", ProcessHandle.current().pid(),
 				Thread.currentThread().getName(), mode);
-		try (var runtime = DurableWorkflows.open(directory.resolve("runs"), deployment)) {
+		try (var runtime = DurableWorkflows.open(directory.resolve("runs"), registry, compatibility)) {
 			var admitted = runtime.start(workflow, "customer-17", new Request("Ada"));
 			var saved = runtime.inspect(admitted.runId());
-			System.out.printf("SAVED run=%s next=%d status=%s%n", saved.runId(), saved.nextOperation(), saved.status());
+			System.out.printf("SAVED run=%s node=%s status=%s%n", saved.runId(), saved.currentNode(), saved.status());
 			if (mode.equals("pause-after-first")) {
 				var progress = runtime.advance(admitted.runId(), workflow);
 				Files.writeString(directory.resolve("ready.txt"),
-						ProcessHandle.current().pid() + " " + admitted.runId() + " " + progress.nextOperation());
-				System.out.printf("READY pid=%d next=%d; kill this process, then run recover%n",
-						ProcessHandle.current().pid(), progress.nextOperation());
+						ProcessHandle.current().pid() + " " + admitted.runId() + " " + progress.currentNode());
+				System.out.printf("READY pid=%d node=%s; kill this process, then run recover%n",
+						ProcessHandle.current().pid(), progress.currentNode());
 				System.out.flush();
 				new CountDownLatch(1).await();
 			}

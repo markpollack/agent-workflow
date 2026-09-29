@@ -1,32 +1,21 @@
 package io.github.markpollack.workflow.flows.compiler;
 
 import java.lang.reflect.Type;
+import io.github.markpollack.workflow.flows.Step;
+import io.github.markpollack.workflow.flows.workflow.WorkflowNode;
 import java.util.*;
 import io.github.markpollack.workflow.flows.workflow.WorkflowGraph;
 import static io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
 
 /**
- * Immutable result of workflow validation and executable preparation for a bounded
- * capability set. A fluent facade or programmatic {@link Definition} enters the same
- * compile methods: ownership snapshot, deadline resolution, capability admission,
- * structured analysis, checked graph construction, then invocation/value preparation.
- * This is workflow-definition validation, not Java source compilation.
- * <p>
- * The graph and recipes come from the same owned definition and analysis. The graph is
- * available for inspection and contains adapters that refuse direct execution. A durable
- * sequential runtime follows {@link #invocations()} in order and resolves their exact
- * inputs through {@link #values()}; it does not traverse that graph or search for inputs
- * by runtime class. Only the runtime creates run, invocation and attempt state.
- * <p>
- * Executable selections are declarations of stable registration and deployment identity,
- * not supplied Step objects. Admission must additionally compare the actual application
- * registration, concrete Step signatures, configuration and codec. No application Step,
- * database transaction or executor is entered here. Construction-only {@link Compilation}
- * and unchecked graphs are not substitutes for this object.
+ * Immutable registry-independent result of owned definition, structural, binding, type
+ * and graph validation. The runtime follows this graph; no ordered invocation program is
+ * retained. Supplied Step associations are separate local preparation data, not graph
+ * semantics or durable identity. Raw graphs and Compilation are not admission tokens.
  */
 public final class ValidatedWorkflow {
 
-	public static final String COMPILER_CONTRACT = "structured-workflow-compiler-v1";
+	public static final String COMPILER_CONTRACT = "structured-workflow-compiler-v2";
 
 	private static final Set<Capability> SUPPORTED = Set.of(Capability.OPERATION, Capability.TERMINAL);
 
@@ -45,32 +34,17 @@ public final class ValidatedWorkflow {
 		}
 	}
 
-	/**
-	 * One logical occurrence in authored execution order, independent of physical
-	 * attempts. Input aliases retain the original ValueId; assembled dispatch inputs have
-	 * their own retained ID. Executable is absent for child placements, whose selection
-	 * is in {@link #children()}.
-	 */
-	public record InvocationRecipe(Placement placement, ValueId input, ValueId output, ExecutableIdentity executable) {
-	}
-
-	/** Explicit terminal intent and selected success value (absent for non-success). */
-	public record TerminalRecipe(Placement placement, Terminal intent, String reason, ValueId successValue) {
-	}
-
 	private final Definition<?, ?> definition;
 
 	private final WorkflowGraph<?, ?> graph;
 
 	private final RegionSummary rootSummary;
 
-	private final List<InvocationRecipe> invocations;
+	private final Map<Placement, Step<?, ?>> suppliedSteps;
 
 	private final Map<Placement, ValidatedWorkflow> children;
 
 	private final Map<ValueId, ValueRecipe> values;
-
-	private final TerminalRecipe terminal;
 
 	private final TypeContracts.Contract input, output;
 
@@ -85,80 +59,127 @@ public final class ValidatedWorkflow {
 	private final String deadlineOrigin;
 
 	/**
-	 * Prepare executable recipes from checked bindings, checking complete placement
-	 * coverage and exact type agreement with selections. The authored fingerprint covers
-	 * behavior/value identities and deadline policy; selected deployment identities are
-	 * checked separately by runtime compatibility. The private constructor cannot admit a
-	 * caller-authored binding map or unverified graph.
+	 * Prepare a semantic graph and value recipes from checked bindings, checking complete
+	 * placement coverage and exact type agreement with selections. The authored
+	 * fingerprint covers behavior/value identities and deadline policy; selected
+	 * deployment identities are checked separately by runtime compatibility. The private
+	 * constructor cannot admit a caller-authored binding map or unverified graph.
 	 */
-	private ValidatedWorkflow(Compilation<?, ?> compiled, Map<Placement, ExecutableIdentity> selections,
+	private ValidatedWorkflow(Compilation<?, ?> compiled, Map<Placement, Step<?, ?>> selections,
 			Map<Placement, ValidatedWorkflow> children, DeadlinePolicy policy, java.time.Duration authoredDuration) {
 		this.children = Map.copyOf(children);
 		this.deadlinePolicy = policy;
 		this.authoredDuration = authoredDuration;
 		this.deadlineOrigin = policy.origin(authoredDuration);
 		definition = compiled.definition();
-		graph = compiled.graph();
+		suppliedSteps = Map.copyOf(selections);
 		rootSummary = compiled.summaries().get(new SummaryKey(Coordinates.root(definition), "root"));
 		TypeContracts contracts = new TypeContracts();
 		codec = contracts.identity();
 		input = contracts.contract(definition.input());
 		output = contracts.contract(definition.output());
-		List<InvocationRecipe> calls = new ArrayList<>();
-		Map<ValueId, ValueRecipe> recipes = new LinkedHashMap<>();
+
+		validateSuppliedSteps(compiled, selections, children, contracts);
+		Map<ValueId, ValueRecipe> recipes = valueRecipes(compiled, contracts);
+		graph = withTerminalValue(compiled);
+		values = Collections.unmodifiableMap(recipes);
+		authoredIdentity = authoredIdentity(contracts);
+	}
+
+	private static void validateSuppliedSteps(Compilation<?, ?> compiled, Map<Placement, Step<?, ?>> selections,
+			Map<Placement, ValidatedWorkflow> children, TypeContracts contracts) {
 		Set<Placement> required = new HashSet<>();
 		for (Binding binding : compiled.bindings()) {
-			ValidatedWorkflow child = children.get(binding.placement());
-			if (child == null)
-				required.add(binding.placement());
-			ExecutableIdentity selected = selections.get(binding.placement());
-			if (child == null && selected == null)
+			if (children.containsKey(binding.placement()))
+				continue;
+			required.add(binding.placement());
+			Step<?, ?> selected = selections.get(binding.placement());
+			if (selected == null)
 				throw new IllegalArgumentException("missing executable selection at " + binding.placement());
-			if (child == null && (!contracts.compatible(binding.input().type(), selected.input())
-					|| !contracts.compatible(binding.output().type(), selected.output())))
+			StepTypes declaration = StepTypes.of(selected.getClass());
+			if (!contracts.compatible(binding.input().type(), declaration.input())
+					|| !contracts.compatible(binding.output().type(), declaration.output()))
 				throw new IllegalArgumentException("executable contract disagreement at " + binding.placement());
-			recipe(binding.input(), recipes, contracts);
-			recipe(binding.output(), recipes, contracts);
-			calls.add(new InvocationRecipe(binding.placement(), binding.input().identity(), binding.output().identity(),
-					selected));
 		}
 		if (!required.equals(selections.keySet()))
 			throw new IllegalArgumentException("extraneous executable selection");
-		int last = definition.nodes().size() - 1;
-		Node tail = definition.nodes().get(last);
-		Placement endPlacement = Coordinates.node(Coordinates.root(definition), tail, last);
-		Fact finalValue;
-		if (calls.isEmpty())
-			finalValue = new Fact(new ValueId(Coordinates.root(definition), "root", "root"), "root", definition.input(),
-					List.of(), List.of());
-		else
-			finalValue = compiled.bindings().getLast().output();
-		recipe(finalValue, recipes, contracts);
-		terminal = tail instanceof End end
-				? new TerminalRecipe(endPlacement, end.terminal(), end.reason() == null ? "" : end.reason(),
-						end.terminal() == Terminal.SUCCEEDED ? finalValue.identity() : null)
-				: null;
-		invocations = List.copyOf(calls);
-		values = Collections.unmodifiableMap(new LinkedHashMap<>(recipes));
+	}
+
+	private static Map<ValueId, ValueRecipe> valueRecipes(Compilation<?, ?> compiled, TypeContracts contracts) {
+		Map<ValueId, ValueRecipe> recipes = new LinkedHashMap<>();
+		for (Binding binding : compiled.bindings()) {
+			recipe(binding.input(), recipes, contracts);
+			recipe(binding.output(), recipes, contracts);
+		}
+		return recipes;
+	}
+
+	/**
+	 * The graph predecessor, not binding storage order, determines the terminal value.
+	 */
+	private static WorkflowGraph<?, ?> withTerminalValue(Compilation<?, ?> compiled) {
+		var source = compiled.graph();
+		List<WorkflowNode> nodes = new ArrayList<>();
+		for (WorkflowNode node : source.nodes()) {
+			if (node instanceof WorkflowNode.TerminalNode terminal && terminal.intent() == Terminal.SUCCEEDED) {
+				var predecessors = source.edges().stream().filter(e -> e.to().equals(terminal.name())).toList();
+				if (predecessors.size() != 1)
+					throw new IllegalArgumentException("sequential terminal requires one predecessor");
+				ValueId result = source.binding(predecessors.getFirst().from()).output().identity();
+				node = new WorkflowNode.TerminalNode(terminal.name(), terminal.intent(), terminal.reason(), result);
+			}
+			nodes.add(node);
+		}
+		return new WorkflowGraph<>(source.name(), nodes, source.edges(), source.startNode(), source.finishNode(),
+				source.bindings());
+	}
+
+	private String authoredIdentity(TypeContracts contracts) {
 		StringBuilder authored = new StringBuilder();
 		for (String field : List.of(COMPILER_CONTRACT, Coordinates.SCHEME, definition.name(),
 				definition.deadline().toString()))
 			IdentityEncoding.field(authored, field);
-		for (String field : List.of(policy.profile(), policy.maximum().toString(),
+		for (String field : List.of(deadlinePolicy.profile(), deadlinePolicy.maximum().toString(),
 				authoredDuration == null ? "default" : authoredDuration.toString(), deadlineOrigin))
 			IdentityEncoding.field(authored, field);
 		contractIdentity(authored, input);
 		contractIdentity(authored, output);
-		for (InvocationRecipe call : calls) {
-			IdentityEncoding.field(authored, call.placement().graphName());
-			valueIdentity(authored, call.input());
-			valueIdentity(authored, call.output());
-			if (children.containsKey(call.placement())) {
-				IdentityEncoding.field(authored, "child");
-				IdentityEncoding.field(authored, children.get(call.placement()).authoredIdentity());
+		IdentityEncoding.field(authored, graph.startNode());
+		IdentityEncoding.field(authored, graph.finishNode());
+		for (var node : graph.nodes().stream().sorted(Comparator.comparing(n -> n.name())).toList()) {
+			IdentityEncoding.field(authored, node.name());
+			IdentityEncoding.field(authored, node.getClass().getSimpleName());
+			if (node instanceof WorkflowNode.StepNode step) {
+				contractIdentity(authored, contracts.contract(step.input()));
+				contractIdentity(authored, contracts.contract(step.output()));
+				Binding binding = graph.binding(node.name());
+				valueIdentity(authored, binding.input().identity());
+				valueIdentity(authored, binding.output().identity());
+			}
+			if (node instanceof WorkflowNode.TerminalNode terminal) {
+				IdentityEncoding.field(authored, terminal.intent().name());
+				IdentityEncoding.field(authored, terminal.reason());
+				if (terminal.successValue() != null)
+					valueIdentity(authored, terminal.successValue());
 			}
 		}
-		for (ValueRecipe value : recipes.values()) {
+		graph.edges()
+			.stream()
+			.sorted(Comparator.comparing(io.github.markpollack.workflow.flows.workflow.WorkflowEdge::from)
+				.thenComparing(io.github.markpollack.workflow.flows.workflow.WorkflowEdge::to))
+			.forEach(edge -> {
+				IdentityEncoding.field(authored, edge.from());
+				IdentityEncoding.field(authored, edge.to());
+				IdentityEncoding.field(authored, edge.condition().toString());
+			});
+		children.entrySet().stream().sorted(Comparator.comparing(e -> e.getKey().graphName())).forEach(e -> {
+			IdentityEncoding.field(authored, e.getKey().graphName());
+			IdentityEncoding.field(authored, e.getValue().authoredIdentity());
+		});
+		for (ValueRecipe value : values.values()
+			.stream()
+			.sorted(Comparator.comparing(v -> v.identity().toString()))
+			.toList()) {
 			valueIdentity(authored, value.identity());
 			contractIdentity(authored, value.contract());
 			IdentityEncoding.field(authored, Integer.toString(value.components().size()));
@@ -166,33 +187,25 @@ public final class ValidatedWorkflow {
 			IdentityEncoding.field(authored, Integer.toString(value.consumed().size()));
 			value.consumed().forEach(id -> valueIdentity(authored, id));
 		}
-		if (terminal != null) {
-			IdentityEncoding.field(authored, terminal.placement().graphName());
-			IdentityEncoding.field(authored, terminal.intent().name());
-			IdentityEncoding.field(authored, terminal.reason());
-			if (terminal.successValue() != null)
-				valueIdentity(authored, terminal.successValue());
-		}
-		else
-			IdentityEncoding.field(authored, "nonreturning-child");
-		authoredIdentity = IdentityEncoding.digest(authored.toString());
+
+		return IdentityEncoding.digest(authored.toString());
 	}
 
 	/**
 	 * Compiles and checks one owned definition for the fixed initial capability set.
-	 * Selections are deployment attestations keyed by stable authored call placements.
+	 * Selections are supplied objects keyed by stable authored call placements.
 	 * Unsupported composition refuses; support can expand only with compiler/runtime
 	 * proof. Authored identity fields must contain well-formed Unicode; valid text is not
 	 * normalized.
 	 */
-	public static ValidatedWorkflow compile(Definition<?, ?> source, Map<Placement, ExecutableIdentity> selections) {
+	public static ValidatedWorkflow compile(Definition<?, ?> source, Map<Placement, Step<?, ?>> selections) {
 		return compile(source, selections, DeadlinePolicy.DEFAULT);
 	}
 
 	/**
 	 * Snapshot and validate a programmatic definition with a finite deadline policy.
 	 * Reject unsupported constructs before region analysis. The same owned definition is
-	 * analyzed and lowered; checked bindings then become executable recipes.
+	 * analyzed and lowered; checked bindings remain facts on the resulting graph.
 	 * @param source caller-owned construction data; do not mutate during this call
 	 * @param selections exact operation selections keyed by compiler placements
 	 * @param policy finite maximum/default used when resolving the authored duration
@@ -200,17 +213,19 @@ public final class ValidatedWorkflow {
 	 * @throws IllegalArgumentException for malformed structure/types, ambiguous or
 	 * missing bindings, unsupported capabilities or missing/extraneous selections
 	 */
-	public static ValidatedWorkflow compile(Definition<?, ?> source, Map<Placement, ExecutableIdentity> selections,
+	public static ValidatedWorkflow compile(Definition<?, ?> source, Map<Placement, Step<?, ?>> selections,
 			DeadlinePolicy policy) {
 		Definition<?, ?> owned = DefinitionOwnership.acquire(source);
 		Objects.requireNonNull(policy, "deadline policy");
 		java.time.Duration authored = owned.deadline();
 		owned = new Definition<>(owned.name(), owned.input(), owned.output(), owned.nodes(), policy.resolve(authored));
-		Map<Placement, ExecutableIdentity> selected = Map.copyOf(selections);
+		Map<Placement, Step<?, ?>> selected = Map.copyOf(selections);
 		for (Node node : owned.nodes())
 			if (!SUPPORTED.contains(Coordinates.capability(node)))
 				throw new IllegalArgumentException(
 						"unsupported production capability: " + Coordinates.capability(node));
+		if (owned.nodes().stream().noneMatch(Call.class::isInstance))
+			throw new IllegalArgumentException("sequential workflow requires at least one Step");
 		Compilation<?, ?> compiled = StructuredWorkflowCompiler.compileOwned(owned);
 		return new ValidatedWorkflow(compiled, selected, Map.of(), policy, authored);
 	}
@@ -228,10 +243,10 @@ public final class ValidatedWorkflow {
 	 * @throws IllegalArgumentException for count disagreement or definition validation
 	 * failure; no application Step has run and no durable run exists
 	 */
-	public static ValidatedWorkflow compileSequential(Definition<?, ?> source, List<ExecutableIdentity> selections,
+	public static ValidatedWorkflow compileSequential(Definition<?, ?> source, List<? extends Step<?, ?>> selections,
 			DeadlinePolicy policy) {
 		Definition<?, ?> owned = DefinitionOwnership.acquire(source);
-		Map<Placement, ExecutableIdentity> selected = new LinkedHashMap<>();
+		Map<Placement, Step<?, ?>> selected = new LinkedHashMap<>();
 		int call = 0;
 		for (int i = 0; i < owned.nodes().size(); i++) {
 			Node node = owned.nodes().get(i);
@@ -261,9 +276,8 @@ public final class ValidatedWorkflow {
 	 * @return immutable executable parent
 	 * @throws IllegalArgumentException for missing, conflicting or unsupported selections
 	 */
-	public static ValidatedWorkflow compileWithChildren(Definition<?, ?> source,
-			Map<Placement, ExecutableIdentity> selections, Map<Placement, ValidatedWorkflow> children,
-			DeadlinePolicy policy) {
+	public static ValidatedWorkflow compileWithChildren(Definition<?, ?> source, Map<Placement, Step<?, ?>> selections,
+			Map<Placement, ValidatedWorkflow> children, DeadlinePolicy policy) {
 		Definition<?, ?> owned = DefinitionOwnership.acquire(source);
 		Objects.requireNonNull(policy, "deadline policy");
 		Map<Placement, ValidatedWorkflow> selectedChildren = Map.copyOf(children);
@@ -279,8 +293,8 @@ public final class ValidatedWorkflow {
 					throw new IllegalArgumentException("missing validated child selection at " + placement);
 				if (!selected.children.isEmpty())
 					throw new IllegalArgumentException("unsupported production capability: nested child");
-				Map<Placement, ExecutableIdentity> executable = new LinkedHashMap<>();
-				selected.invocations.forEach(call -> executable.put(call.placement(), call.executable()));
+				Map<Placement, Step<?, ?>> executable = new LinkedHashMap<>();
+				executable.putAll(selected.suppliedSteps);
 				ValidatedWorkflow expected = compile(child.definition(), executable, selected.deadlinePolicy);
 				if (!expected.authoredIdentity.equals(selected.authoredIdentity))
 					throw new IllegalArgumentException("child definition disagreement at " + placement);
@@ -331,8 +345,8 @@ public final class ValidatedWorkflow {
 	}
 
 	/**
-	 * Checked graph for inspection, built from the same analysis as execution recipes.
-	 * Its adapters refuse application execution; a raw graph cannot start a durable run.
+	 * Authoritative semantic graph shared by runtime and inspection. A raw graph cannot
+	 * start a durable run.
 	 */
 	public WorkflowGraph<?, ?> graph() {
 		return graph;
@@ -370,9 +384,9 @@ public final class ValidatedWorkflow {
 		return output;
 	}
 
-	/** Authored sequential execution order; unrelated to registration map iteration. */
-	public List<InvocationRecipe> invocations() {
-		return invocations;
+	/** Immutable local associations for preparation, outside semantic graph data. */
+	public Map<Placement, Step<?, ?>> suppliedSteps() {
+		return suppliedSteps;
 	}
 
 	/** Validated children, isolated from the parent's value namespace. */
@@ -386,13 +400,18 @@ public final class ValidatedWorkflow {
 	}
 
 	/**
-	 * Explicit root terminal; a statically nonreturning child has no normal terminal
-	 * continuation.
+	 * The explicit terminal of the sequential subset; never inferred from list
+	 * exhaustion.
 	 */
-	public TerminalRecipe terminal() {
-		if (terminal == null)
-			throw new IllegalStateException("nonreturning child has no normal terminal continuation");
-		return terminal;
+	public WorkflowNode.TerminalNode terminal() {
+		return graph.nodes()
+			.stream()
+			.filter(WorkflowNode.TerminalNode.class::isInstance)
+			.map(WorkflowNode.TerminalNode.class::cast)
+			.reduce((a, b) -> {
+				throw new IllegalStateException("not a sequential terminal");
+			})
+			.orElseThrow();
 	}
 
 	public DeadlinePolicy deadlinePolicy() {

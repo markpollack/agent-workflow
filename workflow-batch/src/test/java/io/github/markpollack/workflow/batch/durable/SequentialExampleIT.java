@@ -20,7 +20,7 @@ class SequentialExampleIT {
                 Thread.sleep(10);
             }
             String[] marker=Files.readString(directory.resolve("ready.txt")).split(" ");
-            assertThat(Long.parseLong(marker[0])).isEqualTo(first.pid());assertThat(marker[2]).isEqualTo("1");
+            assertThat(Long.parseLong(marker[0])).isEqualTo(first.pid());assertThat(marker[2]).contains("receipt");
             // An independently launched JVM must refuse ownership while the original process is alive.
             Process duplicate=launch(directory,"run");
             try {assertThat(duplicate.waitFor(20,TimeUnit.SECONDS)).isTrue();assertThat(duplicate.exitValue()).isNotZero();}
@@ -33,7 +33,7 @@ class SequentialExampleIT {
             assertThat(recovered.pid()).isNotEqualTo(first.pid());
             assertThat(Files.readAllLines(directory.resolve("greet.calls"))).hasSize(1);
             String log=Files.readString(directory.resolve("recover.log"));
-            assertThat(log).contains("next=1 status=ACTIVE","STEP receipt thread=main run="+marker[1],"Receipt: Hello, Ada").doesNotContain("STEP greet");
+            assertThat(log).contains("node="+marker[2]+" status=ACTIVE","STEP receipt thread=main run="+marker[1],"Receipt: Hello, Ada").doesNotContain("STEP greet");
             Files.writeString(directory.resolve("receipt.json"),new ObjectMapper().writeValueAsString(Map.of(
                     "killedPid",first.pid(),"exit",first.exitValue(),"recoveredPid",recovered.pid(),"runId",marker[1],
                     "duplicatePid",duplicate.pid(),"duplicateExit",duplicate.exitValue(),"method","Process.destroyForcibly")));

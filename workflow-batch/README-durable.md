@@ -6,15 +6,15 @@ This developer guide describes the current sequential runtime. Start with the [p
 
 ## Application-supplied steps
 
-Implement `Step<I,O>` with concrete input/output types and register supplied objects in `ApplicationDeployment`. Constructor dependencies are ordinary application objects, including objects obtained from a DI container. The runtime calls the registered instance directly; it does not require a public no-argument constructor, construct a fresh step per attempt or close its dependencies.
+Implement `Step<I,O>` with concrete input/output types and register supplied objects in `StepRegistry`. Constructor dependencies are ordinary application objects, including objects obtained from a DI container. The runtime calls the registered instance directly; it does not require a public no-argument constructor, construct a fresh step per attempt or close its dependencies.
 
-`deployment.define(name).then(registration).terminate(...).build()` builds and validates a sequential workflow. Concrete step declarations supply the types; authors do not write explicit fluent generic arguments. `then(placement, registration)` gives repeated uses of one registration distinct authored locations. Names and identity/configuration strings must contain well-formed Unicode; validation does not normalize them.
+`Workflows.define(name).then(actualStep).terminate(...).build()` builds and validates a sequential workflow. Concrete step declarations supply the types; authors do not write explicit fluent generic arguments. `then(placement, actualStep)` gives repeated uses of one registration distinct authored locations. Names and identity/configuration strings must contain well-formed Unicode; validation does not normalize them.
 
 `StepContext` carries the run ID, stable logical invocation ID, unique physical attempt ID/number, absolute deadline and immutable declared configuration. It is not a business-result map or a live cancellation token. Business inputs come from the validated bindings and saved values.
 
 ## Types, validation and invocation
 
-Java erases generic method dispatch, but a concrete class declaration such as `implements Step<Request, List<Reply>>` retains a generic signature. [`StepTypes`](src/main/java/io/github/markpollack/workflow/batch/durable/StepTypes.java) reads those signatures, including concrete inherited declarations. `new GenericStep<Request>()` alone does not retain the argument in its runtime class. Raw/unresolved declarations and erased lambda classes refuse registration selection. There are no public `inputType()`/`outputType()` hints to maintain.
+Java erases generic method dispatch, but a concrete class declaration such as `implements Step<Request, List<Reply>>` retains a generic signature. [`StepTypes`](../workflow-flows/src/main/java/io/github/markpollack/workflow/flows/compiler/StepTypes.java) reads those signatures, including concrete inherited declarations. `new GenericStep<Request>()` alone does not retain the argument in its runtime class. Raw/unresolved declarations, conflicting proxy contracts and erased lambda classes refuse validation. All inherited Step declarations must agree; proxy interface order cannot select a contract. There are no public `inputType()`/`outputType()` hints to maintain.
 
 `then` selects those full types; `build` validates control structure, input bindings and durable value shapes. The existing [RegionAnalyzer](../workflow-flows/src/main/java/io/github/markpollack/workflow/flows/compiler/RegionAnalyzer.java) resolves record components in declaration order and derives captures from typed facts across continuing paths. Captures are analysis of where a value comes from, not reflective invocation or object-field guessing. They do not require type-hint methods. Broader path analysis exists in the validator; this sequential runtime still refuses those composition constructs.
 
@@ -40,7 +40,32 @@ For an assembled record input, the recipe retains component order and source ide
 
 No workflow timers, waiting joins or background resume facility exist here. After a process restart, the application opens the runtime and calls `resume` with the compatible definition. Discovery alone does not continue execution.
 
+## Caller thread and transaction boundaries
+
+```mermaid
+sequenceDiagram
+    participant Caller
+    participant Runtime as DurableWorkflows
+    participant Store as JdbcRunStore
+    participant Step as Supplied Step
+    Caller->>Runtime: advance / resume
+    Note over Caller,Runtime: Same caller thread; one guard per run
+    Runtime->>Store: TX: verify compatibility + graph prefix
+    Runtime->>Store: TX: save exact input + charge attempt
+    Runtime->>Store: TX: recheck cancellation / deadline
+    Runtime->>Step: execute(context, decoded input)
+    Note over Runtime,Step: Outside persistence TX; no executor handoff
+    Step-->>Runtime: provisional output
+    Runtime->>Runtime: encode and check full value contract
+    Runtime->>Store: TX: recheck eligibility; output + successor + terminal + events
+    Runtime-->>Caller: committed snapshot
+```
+
+Project Reactor and other reactive stacks are not used for scheduling or execution orchestration.
+
 ## Atomic progress and exact values
+
+The runtime reads the durable current node, obtains its binding by node ID and follows its one unconditional edge after success. Explicit terminal metadata supplies the final intent and successful value. A shared completion sink exists for structural analysis; the runtime stops at the explicit terminal. It never dispatches by an index into stored nodes or bindings. Recovery verifies that saved invocations form a graph prefix and the cursor points to its first uncommitted node.
 
 The execution sequence separates saved state from application execution:
 
@@ -48,7 +73,7 @@ The execution sequence separates saved state from application execution:
 2. In a transaction, select or recover the exact input and charge a physical attempt.
 3. In a separate transaction, recheck eligibility immediately before application entry.
 4. Call `Step.execute` and encode its returned value outside those transactions.
-5. In a transaction, recheck eligibility and atomically accept the outcome, values, progress and events.
+5. In a transaction, recheck eligibility and atomically accept the output, successor node, attempt disposition and events. If the successor is terminal, its outcome commits in that same transaction.
 
 [`JdbcRunStore`](src/main/java/io/github/markpollack/workflow/batch/durable/JdbcRunStore.java) serializes state transactions across runs through a database transition lock. The lock does not span step execution. Typed decoding and record assembly may occur inside preparation transactions; the outside-transaction guarantee applies to `Step.execute`.
 
@@ -60,7 +85,7 @@ An earlier assembled input remains its own saved value. A later step can consume
 
 A compatible application can reopen after process death and continue unfinished runs. Committed results are reused. A charged attempt without a committed outcome may execute again with its saved input. `ExecutionPolicy.DEFAULT` permits three total physical attempts per logical invocation; exhausting the allowance fails the run. A changed allowance is a compatibility change.
 
-This is not exactly-once external execution. If a process dies after an external effect but before its result commits, recovery can repeat that effect. Use the stable invocation ID for external idempotency where supported. Known step exceptions fail the run immediately; there is no engine retry/backoff facility. `resume` returns a terminal run unchanged and does not provide saved-progress restart after terminal failure.
+This is not exactly-once external execution. If a process dies after an external effect but before its result commits, recovery can repeat that effect. Use the stable invocation ID for external idempotency where supported. Known step exceptions fail the run immediately; there is no engine retry/backoff facility. `resume` returns a terminal run unchanged and does not provide saved-progress restart after terminal failure. That restart policy remains an open product decision.
 
 The default maximum duration is one hour (`DeadlinePolicy.DEFAULT`, profile `local-v1`). An authored shorter duration tightens it; a longer duration is capped. The lower-level validation API accepts another positive finite `DeadlinePolicy`. Admission saves an absolute deadline and its origin, which recovery never extends.
 
@@ -80,7 +105,9 @@ Pass the database base path, without H2's `.mv.db` suffix. Parent directories an
 
 ## Deployment compatibility
 
-[`ApplicationDeployment`](src/main/java/io/github/markpollack/workflow/batch/durable/ApplicationDeployment.java) copies the named step registration and declared configuration. The manifest records application/build identities, the exact configuration digest, fixed codec identity, Jackson core/databind versions and Java runtime version/vendor/VM name. Admission, execution, admission reuse and terminal resume/result access compare supplied compatibility facts against the saved run. Authored definition, selected registrations/types and execution policy also participate in compatibility checks.
+[`StepRegistry`](src/main/java/io/github/markpollack/workflow/batch/durable/StepRegistry.java) freezes canonical names and supplied object identities. Duplicate names and aliases for one object refuse; unrelated unused entries are allowed. Preparation records exactly the selected node-to-name associations. Fresh objects may recover when these selections and full contracts match.
+
+[`ExecutionCompatibility`](src/main/java/io/github/markpollack/workflow/batch/durable/ExecutionCompatibility.java) copies declared compatibility facts. Application settings are supplied separately to Step constructors from the same settings source. The manifest records application/build identities, the exact configuration digest, fixed codec identity, Jackson core/databind versions and Java runtime version/vendor/VM name. Admission, execution, admission reuse and terminal resume/result access compare supplied compatibility facts against the saved run. Authored definition, selected registrations/types and execution policy also participate in compatibility checks.
 
 The application must assign a new immutable build ID when code, dependencies, codec implementation or relevant deployment specification changes. Even a plausibly compatible build with a different ID refuses recovery. The runtime checks declared identities and observable contracts; it does not prove that dependency bytes or external services are unchanged. Relevant immutable behavior configuration must be explicit. Reusing a build ID for changed code violates this contract and cannot generally be detected.
 
@@ -90,6 +117,18 @@ Steps use the ordinary application class loader. Workflow does not archive execu
 
 ## Store and verification limits
 
-The store uses H2 embedded file mode with `WRITE_DELAY=0` and format-4 run aggregates. Old, incomplete or unknown store formats refuse before writable initialization; there is no checkpoint migration or automatic conversion. Remote workers and simultaneous embedded owners are unsupported. Values and events are retained indefinitely; no pruning API is provided. Filesystem/hardware durability remains within H2's guarantees; JVM-kill tests are not power-loss tests.
+The store uses H2 embedded file mode with `WRITE_DELAY=0` and format-5 run aggregates. Older (including format 4), incomplete, malformed or unknown store formats refuse before writable initialization; there is no checkpoint migration or automatic conversion. Remote workers and simultaneous embedded owners are unsupported. Values and events are retained indefinitely; no pruning API is provided. Filesystem/hardware durability remains within H2's guarantees; JVM-kill tests are not power-loss tests.
 
 Run `./mvnw -pl workflow-batch -am verify` from the project root for unit, consumer and separate-JVM recovery checks. The process harness records PIDs, kill boundaries, recovered facts and external invocation counts under `workflow-batch/target/durable-evidence/`. The full project gate is `./mvnw verify`.
+
+## IDE reading order and examples
+
+1. [Workflows](../workflow-flows/src/main/java/io/github/markpollack/workflow/flows/Workflows.java): staged nonempty sequence, actual objects, explicit terminal, shared validation.
+2. [ValidatedWorkflow](../workflow-flows/src/main/java/io/github/markpollack/workflow/flows/compiler/ValidatedWorkflow.java): owned definition, semantic graph and value contracts. Follow StructuredWorkflowCompiler into RegionAnalyzer, GraphLowering and GraphVerification for binding and topology checks.
+3. [WorkflowGraph](../workflow-flows/src/main/java/io/github/markpollack/workflow/flows/workflow/WorkflowGraph.java): immutable nodes, edges and per-node binding indexes. Supplied objects live separately on ValidatedWorkflow.
+4. StepRegistry and ExecutionCompatibility above, then [ResolvedApplication](src/main/java/io/github/markpollack/workflow/batch/durable/ResolvedApplication.java): preparation freezes selected names/instances and verifies full types without invoking a Step.
+5. DurableWorkflows: start, resolve, prepareAdvance, executeAttempt and commitResult. JdbcRunStore owns short transactions and aggregate persistence; RuntimeLifecycle and StoreOwnership own caller exclusion and local store lifetime.
+
+The compiling [standalone example](src/test/java/io/github/markpollack/workflow/batch/examples/SequentialRecoveryExample.java) demonstrates launch, inspection and process recovery. The [Spring test](src/test/java/io/github/markpollack/workflow/batch/examples/GreetingWorkflowTest.java) uses ordinary ExampleSettings and constructor injection, derives compatibility from that same source and takes the canonical Step map from the container. A changed selected configuration refuses recovery before entry. A new business input uses a new launch key without changing application settings.
+
+Recovery means continuing unfinished work after process death. A retry of an unresolved invocation consumes another bounded physical attempt with the exact saved input. Operator restart after terminal failure is a separate unresolved policy. Future scheduler/dashboard integrations can use this launch/management boundary; scheduling, launch-request deduplication beyond the current local idempotency key, same-run composite scopes and independent child runs are not provided by this runtime.
