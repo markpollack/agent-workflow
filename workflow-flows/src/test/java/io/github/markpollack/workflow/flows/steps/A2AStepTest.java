@@ -27,8 +27,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class A2AStepTest {
 
-	private final StepContext ctx = new StepContext("run", "invocation", "attempt", 1, java.time.Instant.MAX,
-			java.util.Map.of());
+	private final StepContext ctx = new StepContext("run", "invocation", "attempt", 1, java.time.Instant.MAX);
 
 	@Test
 	void executeShouldDelegateToSenderAndReturnResponse() {

@@ -26,7 +26,7 @@ import io.github.markpollack.workflow.flows.compiler.ValidatedWorkflow;
  * this object to decode or assemble them, then invokes the selected object directly. The
  * codec is shared with definition validation; there is no second binding resolver.
  */
-final class ResolvedApplication {
+final class WorkflowExecutionBindings {
 
 	private final TypeContracts codec = new TypeContracts();
 
@@ -46,7 +46,7 @@ final class ResolvedApplication {
 	 * @throws WorkflowRefusal for changed codecs/types, unavailable registrations or a
 	 * supplied Step declaration that differs from the selected executable contract
 	 */
-	ResolvedApplication(StepRegistry registry, ExecutionCompatibility compatibility, ValidatedWorkflow workflow) {
+	WorkflowExecutionBindings(StepRegistry registry, ExecutionCompatibility compatibility, ValidatedWorkflow workflow) {
 		if (!codec.identity().equals(workflow.codecIdentity())
 				|| !codec.identity().equals(compatibility.manifest().codec())) {
 			throw new WorkflowRefusal("CODEC_CHANGED", "deployed codec contract differs");

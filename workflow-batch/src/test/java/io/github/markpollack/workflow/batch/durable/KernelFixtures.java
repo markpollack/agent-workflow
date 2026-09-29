@@ -44,9 +44,14 @@ public final class KernelFixtures {
 
 	public static class FirstOperation implements Step<Request, First> {
 
+		private final OperationEvidence evidence;
+
+		public FirstOperation(OperationEvidence evidence) {
+			this.evidence = evidence;
+		}
+
 		public First execute(StepContext context, Request input) {
-			Map<String, String> config = context.configuration();
-			OperationEvidence.count(config, "first", context, input.text());
+			evidence.count("first", context, input.text());
 			return new First("first:" + input.text());
 		}
 
@@ -54,9 +59,14 @@ public final class KernelFixtures {
 
 	public static class SecondOperation implements Step<SecondInput, Second> {
 
+		private final OperationEvidence evidence;
+
+		public SecondOperation(OperationEvidence evidence) {
+			this.evidence = evidence;
+		}
+
 		public Second execute(StepContext context, SecondInput input) {
-			Map<String, String> config = context.configuration();
-			OperationEvidence.count(config, "second", context, input.first().text() + "/" + input.original().text());
+			evidence.count("second", context, input.first().text() + "/" + input.original().text());
 			return new Second("second:" + input.first().text() + "/" + input.original().text());
 		}
 
@@ -64,9 +74,14 @@ public final class KernelFixtures {
 
 	public static class ThirdOperation implements Step<Second, Third> {
 
+		private final OperationEvidence evidence;
+
+		public ThirdOperation(OperationEvidence evidence) {
+			this.evidence = evidence;
+		}
+
 		public Third execute(StepContext context, Second input) {
-			Map<String, String> config = context.configuration();
-			OperationEvidence.count(config, "third", context, input.text());
+			evidence.count("third", context, input.text());
 			return new Third(input.text());
 		}
 
@@ -74,9 +89,14 @@ public final class KernelFixtures {
 
 	public static class FourthOperation implements Step<Third, Fourth> {
 
+		private final OperationEvidence evidence;
+
+		public FourthOperation(OperationEvidence evidence) {
+			this.evidence = evidence;
+		}
+
 		public Fourth execute(StepContext context, Third input) {
-			Map<String, String> config = context.configuration();
-			OperationEvidence.count(config, "fourth", context, input.text());
+			evidence.count("fourth", context, input.text());
 			return new Fourth(new First("changed-first"), new Request("changed-request"), input.text());
 		}
 
@@ -84,9 +104,14 @@ public final class KernelFixtures {
 
 	public static class FifthOperation implements Step<FifthInput, Reply> {
 
+		private final OperationEvidence evidence;
+
+		public FifthOperation(OperationEvidence evidence) {
+			this.evidence = evidence;
+		}
+
 		public Reply execute(StepContext context, FifthInput input) {
-			Map<String, String> config = context.configuration();
-			OperationEvidence.count(config, "fifth", context,
+			evidence.count("fifth", context,
 					input.earlier().first().text() + "/" + input.earlier().original().text());
 			return new Reply(input.earlier().first().text() + "/" + input.earlier().original().text() + "/"
 					+ input.latest().laterFirst().text());
@@ -96,9 +121,14 @@ public final class KernelFixtures {
 
 	public static class ChangedThird implements Step<Second, Request> {
 
+		private final OperationEvidence evidence;
+
+		public ChangedThird(OperationEvidence evidence) {
+			this.evidence = evidence;
+		}
+
 		public Request execute(StepContext context, Second input) {
-			Map<String, String> config = context.configuration();
-			OperationEvidence.count(config, "third", context, input.text());
+			evidence.count("third", context, input.text());
 			return new Request("changed-request");
 		}
 
@@ -106,9 +136,14 @@ public final class KernelFixtures {
 
 	public static class ChangedFourth implements Step<Request, First> {
 
+		private final OperationEvidence evidence;
+
+		public ChangedFourth(OperationEvidence evidence) {
+			this.evidence = evidence;
+		}
+
 		public First execute(StepContext context, Request input) {
-			Map<String, String> config = context.configuration();
-			OperationEvidence.count(config, "fourth", context, input.text());
+			evidence.count("fourth", context, input.text());
 			return new First("changed-first");
 		}
 
@@ -116,9 +151,14 @@ public final class KernelFixtures {
 
 	public static class ChangedFifth implements Step<ChangedFifthInput, Reply> {
 
+		private final OperationEvidence evidence;
+
+		public ChangedFifth(OperationEvidence evidence) {
+			this.evidence = evidence;
+		}
+
 		public Reply execute(StepContext context, ChangedFifthInput input) {
-			Map<String, String> config = context.configuration();
-			OperationEvidence.count(config, "fifth", context,
+			evidence.count("fifth", context,
 					input.earlier().first().text() + "/" + input.earlier().original().text());
 			return new Reply(input.earlier().first().text() + "/" + input.earlier().original().text() + "/"
 					+ input.latest().text());
@@ -128,10 +168,18 @@ public final class KernelFixtures {
 
 	public static class Echo implements Step<Request, Request> {
 
+		private final OperationEvidence evidence;
+
+		private final String suffix;
+
+		public Echo(OperationEvidence evidence, String suffix) {
+			this.evidence = evidence;
+			this.suffix = suffix;
+		}
+
 		public Request execute(StepContext context, Request input) {
-			Map<String, String> config = context.configuration();
-			OperationEvidence.count(config, "echo", context, input.text());
-			return new Request(input.text() + config.getOrDefault("suffix", ""));
+			evidence.count("echo", context, input.text());
+			return new Request(input.text() + suffix);
 		}
 
 	}
@@ -139,7 +187,6 @@ public final class KernelFixtures {
 	public static class NullOutput implements Step<Request, Request> {
 
 		public Request execute(StepContext context, Request input) {
-			Map<String, String> config = context.configuration();
 			return null;
 		}
 
@@ -148,7 +195,6 @@ public final class KernelFixtures {
 	public static class Slow implements Step<Request, Request> {
 
 		public Request execute(StepContext context, Request input) {
-			Map<String, String> config = context.configuration();
 			try {
 				Thread.sleep(2200);
 				return input;
@@ -164,7 +210,6 @@ public final class KernelFixtures {
 	public static class Throws implements Step<Request, Request> {
 
 		public Request execute(StepContext context, Request input) {
-			Map<String, String> config = context.configuration();
 			throw new IllegalStateException("business failure");
 		}
 
@@ -173,7 +218,6 @@ public final class KernelFixtures {
 	public static class NestedEcho implements Step<Nested<Request>, Nested<Request>> {
 
 		public Nested<Request> execute(StepContext context, Nested<Request> input) {
-			Map<String, String> config = context.configuration();
 			return input;
 		}
 
@@ -181,10 +225,18 @@ public final class KernelFixtures {
 
 	public static class Blocking implements Step<Request, Request> {
 
+		private final OperationEvidence evidence;
+
+		private final Path signalDirectory;
+
+		public Blocking(OperationEvidence evidence, Path signalDirectory) {
+			this.evidence = evidence;
+			this.signalDirectory = signalDirectory;
+		}
+
 		public Request execute(StepContext context, Request input) {
-			Map<String, String> config = context.configuration();
-			OperationEvidence.count(config, "blocking", context, input.text());
-			Path dir = Path.of(config.get("evidence"));
+			evidence.count("blocking", context, input.text());
+			Path dir = signalDirectory;
 			try {
 				Files.writeString(dir.resolve("entered-" + context.attemptNumber()),
 						Long.toString(ProcessHandle.current().pid()));
@@ -208,10 +260,14 @@ public final class KernelFixtures {
 	}
 
 	static TestApplication deployment(String build, Map<String, String> config) {
+		Path evidenceDirectory = config.containsKey("evidence") ? Path.of(config.get("evidence")) : null;
+		var evidence = new OperationEvidence(evidenceDirectory);
 		return new TestApplication("kernel-fixtures", build, config,
-				steps(new FirstOperation(), new SecondOperation(), new ThirdOperation(), new FourthOperation(),
-						new FifthOperation(), new ChangedThird(), new ChangedFourth(), new ChangedFifth(), new Echo(),
-						new NullOutput(), new Slow(), new Throws(), new NestedEcho(), new Blocking()));
+				steps(new FirstOperation(evidence), new SecondOperation(evidence), new ThirdOperation(evidence),
+						new FourthOperation(evidence), new FifthOperation(evidence), new ChangedThird(evidence),
+						new ChangedFourth(evidence), new ChangedFifth(evidence),
+						new Echo(evidence, config.getOrDefault("suffix", "")), new NullOutput(), new Slow(), new Throws(),
+						new NestedEcho(), new Blocking(evidence, evidenceDirectory)));
 	}
 
 	static Map<String, Step<?, ?>> steps(Step<?, ?>... steps) {

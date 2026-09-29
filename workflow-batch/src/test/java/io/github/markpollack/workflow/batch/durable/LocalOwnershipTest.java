@@ -132,6 +132,40 @@ class LocalOwnershipTest {
 	}
 
 	@Test
+	void anotherRunCommitsWhileOneStepRemainsBlocked() throws Exception {
+		CountDownLatch release = new CountDownLatch(1);
+		var blocked = new BlockingStep(1, release);
+		var echo = new Echo(new OperationEvidence(null), "!");
+		var registry = StepRegistry.of(Map.of("blocked", blocked, "echo", echo));
+		var compatibility = new ExecutionCompatibility("app", "v1", Map.of("suffix", "!"));
+		var waiting = Workflows.define("blocked").then(blocked).terminate(Terminal.SUCCEEDED).build();
+		var quick = Workflows.define("quick").then(echo).terminate(Terminal.SUCCEEDED).build();
+		try (var runtime = DurableWorkflows.open(directory.resolve("runs"), registry, compatibility);
+				var callers = Executors.newVirtualThreadPerTaskExecutor()) {
+			var one = runtime.start(waiting, "one", new Request("one"));
+			var first = callers.submit(() -> runtime.resume(one.runId(), waiting));
+			try {
+				assertThat(blocked.entered.await(10, TimeUnit.SECONDS)).isTrue();
+				var second = callers.submit(() -> {
+					var two = runtime.start(quick, "two", new Request("two"));
+					return runtime.resume(two.runId(), quick);
+				});
+				var completed = second.get(5, TimeUnit.SECONDS);
+				assertThat(completed.status()).isEqualTo(RunSnapshot.Status.SUCCEEDED);
+				assertThat(runtime.inspect(completed.runId())).isEqualTo(completed);
+				assertThat(runtime.result(completed.runId(), quick)).isEqualTo(new Request("two!"));
+				assertThat(first.isDone()).isFalse();
+				assertThat(release.getCount()).isEqualTo(1);
+				assertThat(runtime.inspect(one.runId()).status()).isEqualTo(RunSnapshot.Status.ACTIVE);
+			}
+			finally {
+				release.countDown();
+			}
+			assertThat(first.get(10, TimeUnit.SECONDS).status()).isEqualTo(RunSnapshot.Status.SUCCEEDED);
+		}
+	}
+
+	@Test
 	void shutdownRetainsOwnershipUntilApplicationReturnsThenConcurrentClosersDrain() throws Exception {
 		CountDownLatch release = new CountDownLatch(1);
 		var step = new BlockingStep(1, release);

@@ -85,7 +85,7 @@ class ManagedAgentStepIT {
 			.name("it-agent")
 			.timeout(Duration.ofMinutes(3));
 
-		String result = step.execute(new StepContext("run", "invocation", "attempt", 1, java.time.Instant.MAX, java.util.Map.of()), "What is 2+2? Reply with just the number.");
+		String result = step.execute(new StepContext("run", "invocation", "attempt", 1, java.time.Instant.MAX), "What is 2+2? Reply with just the number.");
 
 		assertThat(result).isNotBlank();
 		assertThat(result).contains("4");

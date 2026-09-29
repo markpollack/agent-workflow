@@ -111,7 +111,7 @@ class ExecutionFailureTest {
 			try (var runtime = DurableWorkflows.open(directory.resolve(failure.getClass().getSimpleName()), deployment.registry(), deployment.compatibility())) {
 				var run = runtime.start(workflow, "one", new Request("input"));
 				assertThatThrownBy(() -> step
-					.execute(new StepContext("r", "i", "a", 1, java.time.Instant.MAX, Map.of()), new Request("x")))
+					.execute(new StepContext("r", "i", "a", 1, java.time.Instant.MAX), new Request("x")))
 					.isSameAs(failure);
 				var after = runtime.resume(run.runId(), workflow);
 				assertThat(after.reason().code()).isEqualTo("STEP_FAILED");

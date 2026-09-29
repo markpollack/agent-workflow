@@ -23,8 +23,17 @@ import io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
  * <p>
  * start() admits without execution; advance() performs at most one boundary; resume()
  * repeats advancement on its caller. A call first resolves contracts, commits exact input
- * and attempt charge, rechecks eligibility, calls Step.execute outside the transaction,
- * then accepts the result in a new transaction. Inspection returns immutable snapshots.
+ * and attempt charge in a transaction, then rechecks eligibility in a separate short
+ * transaction. Both transactions commit and release the store lock before Step.execute.
+ * Preparation can decode values and construct input records inside its transaction.
+ * Result encoding occurs outside transactions; a final transaction accepts output and
+ * advances the graph atomically, including terminal success when reached.
+ * <p>
+ * A slow application call holds no workflow-store database lock. Distinct callers may
+ * advance different runs concurrently; same-run duplicate execution refuses. The shared
+ * store lock row serializes transitions, not Step calls. Transactions opened by
+ * application code itself are outside this guarantee. Inspection returns immutable
+ * snapshots but may persist deadline expiry.
  * Known application failures are terminal; unfinished crash recovery is not automatic
  * retry or operator restart of a terminal run.
  */
@@ -129,7 +138,7 @@ public final class DurableWorkflows implements AutoCloseable {
 		requireSequential(workflow);
 		requireText(idempotencyKey, "idempotency key");
 		requireText(displayName, "display name");
-		ResolvedApplication resolved = new ResolvedApplication(registry, requireDeployment(), workflow);
+		WorkflowExecutionBindings resolved = new WorkflowExecutionBindings(registry, requireDeployment(), workflow);
 		byte[] root = resolved.encode(input, workflow.definition().input());
 		resolved.decode(root, workflow.definition().input());
 		String compatibility = compatibility(workflow, resolved.selections(), requireDeployment().manifest(), policy);
@@ -195,7 +204,13 @@ public final class DurableWorkflows implements AutoCloseable {
 		});
 	}
 
-	/** Find unfinished runs. This is observation, not a background execution facility. */
+	/**
+	 * Find unfinished runs after observing their deadlines. Observation persists terminal
+	 * failure for expired active runs and excludes them from the returned list. Like
+	 * {@link #inspect(String)}, this is not a read-only query and invokes no Step.
+	 * @return immutable snapshots of runs still active after deadline observation
+	 * @throws WorkflowRefusal if the runtime is closing or the store refuses
+	 */
 	public List<RunSnapshot> discover() {
 		try (var activity = lifecycle.enter(null)) {
 			return store.transaction(tx -> {
@@ -243,7 +258,7 @@ public final class DurableWorkflows implements AutoCloseable {
 	public RunSnapshot resume(String runId, ValidatedWorkflow workflow) {
 		requireText(runId, "run ID");
 		try (var activity = lifecycle.enter(runId)) {
-			ResolvedApplication resolved = resolve(runId, workflow);
+			WorkflowExecutionBindings resolved = resolve(runId, workflow);
 			RunSnapshot result;
 			do {
 				result = advanceOwned(runId, workflow, resolved, activity);
@@ -277,7 +292,7 @@ public final class DurableWorkflows implements AutoCloseable {
 	 * recheck entry, not permission to ignore a cancellation or expiry that wins after
 	 * preparation.
 	 */
-	private RunSnapshot advanceOwned(String runId, ValidatedWorkflow workflow, ResolvedApplication resolved,
+	private RunSnapshot advanceOwned(String runId, ValidatedWorkflow workflow, WorkflowExecutionBindings resolved,
 			RuntimeLifecycle.Activity activity) {
 		// Preparation commits exact input and a charged attempt; it never calls
 		// Step.execute.
@@ -295,7 +310,7 @@ public final class DurableWorkflows implements AutoCloseable {
 	 * yesterday's values.
 	 */
 	private Advancement prepareAdvance(JdbcRunStore.Tx tx, String runId, ValidatedWorkflow workflow,
-			ResolvedApplication resolved) throws Exception {
+			WorkflowExecutionBindings resolved) throws Exception {
 		RunState run = tx.get(runId);
 		compatible(run, workflow, resolved);
 		tx.observe(run);
@@ -337,7 +352,7 @@ public final class DurableWorkflows implements AutoCloseable {
 	 * transaction.
 	 */
 	private Advancement chargeAttempt(JdbcRunStore.Tx tx, RunState run, RunState.Invocation invocation, Binding recipe,
-			ValidatedWorkflow workflow, ResolvedApplication resolved) throws Exception {
+			ValidatedWorkflow workflow, WorkflowExecutionBindings resolved) throws Exception {
 		if (invocation.attempts.size() >= run.maximumAttempts) {
 			tx.terminal(run, "FAILED", "ATTEMPTS_EXHAUSTED", "finite execution attempt allowance exhausted", "runtime");
 			return new Progress(run.snapshot());
@@ -355,7 +370,7 @@ public final class DurableWorkflows implements AutoCloseable {
 		tx.save(run);
 		hooks.at("BEFORE_DISPATCH_COMMIT", run.id);
 		StepContext context = new StepContext(run.id, invocation.id, attempt.id, attempt.number,
-				Instant.ofEpochMilli(run.deadline), requireDeployment().configuration());
+				Instant.ofEpochMilli(run.deadline));
 		return new Dispatch(recipe, input, context);
 	}
 
@@ -367,7 +382,7 @@ public final class DurableWorkflows implements AutoCloseable {
 	 * infrastructure/refusal errors; they are never caught as application Step failures.
 	 * Non-Linkage JVM Errors propagate.
 	 */
-	private RunSnapshot executeAttempt(String runId, ValidatedWorkflow workflow, ResolvedApplication resolved,
+	private RunSnapshot executeAttempt(String runId, ValidatedWorkflow workflow, WorkflowExecutionBindings resolved,
 			Dispatch dispatch, RuntimeLifecycle.Activity activity) {
 		hooks.at("AFTER_DISPATCH_COMMIT", runId);
 		boolean mayEnter = store.transaction(tx -> {
@@ -417,7 +432,7 @@ public final class DurableWorkflows implements AutoCloseable {
 	 * together. A graph terminal successor supplies its explicit completion outcome.
 	 */
 	private RunSnapshot commitResult(JdbcRunStore.Tx tx, String runId, ValidatedWorkflow workflow,
-			ResolvedApplication resolved, Dispatch dispatch, byte[] output) throws Exception {
+			WorkflowExecutionBindings resolved, Dispatch dispatch, byte[] output) throws Exception {
 		RunState run = tx.get(runId);
 		compatible(run, workflow, resolved);
 		tx.observe(run);
@@ -449,7 +464,7 @@ public final class DurableWorkflows implements AutoCloseable {
 	 */
 	public Object result(String runId, ValidatedWorkflow workflow) {
 		try (var activity = lifecycle.enter(null)) {
-			ResolvedApplication resolved = resolve(runId, workflow);
+			WorkflowExecutionBindings resolved = resolve(runId, workflow);
 			byte[] bytes = store.transaction(tx -> {
 				RunState run = tx.get(runId);
 				compatible(run, workflow, resolved);
@@ -470,7 +485,7 @@ public final class DurableWorkflows implements AutoCloseable {
 	 * this store transition propagates; it must not be converted into another application
 	 * failure.
 	 */
-	private RunSnapshot failAttempt(String runId, ValidatedWorkflow workflow, ResolvedApplication resolved,
+	private RunSnapshot failAttempt(String runId, ValidatedWorkflow workflow, WorkflowExecutionBindings resolved,
 			Dispatch dispatch, RuntimeLifecycle.Activity activity, String code, Throwable failure) {
 		activity.captureInterrupt(failure);
 		String message = failure.getClass().getName() + ": " + String.valueOf(failure.getMessage());
@@ -497,10 +512,10 @@ public final class DurableWorkflows implements AutoCloseable {
 	 * Steps, then compare their frozen names and compatibility facts with the saved run
 	 * in a transaction. Saved metadata never vouches for current objects.
 	 */
-	private ResolvedApplication resolve(String runId, ValidatedWorkflow workflow) {
+	private WorkflowExecutionBindings resolve(String runId, ValidatedWorkflow workflow) {
 		requireSequential(workflow);
 		ExecutionCompatibility supplied = requireDeployment();
-		ResolvedApplication resolved = new ResolvedApplication(registry, supplied, workflow);
+		WorkflowExecutionBindings resolved = new WorkflowExecutionBindings(registry, supplied, workflow);
 		store.transaction(tx -> {
 			compatible(tx.get(runId), workflow, resolved);
 			return null;
@@ -554,7 +569,7 @@ public final class DurableWorkflows implements AutoCloseable {
 	 * component values. Store its exact bytes/provenance before any Step can execute.
 	 */
 	private void materialize(JdbcRunStore.Tx tx, RunState run, ValueId id, ValidatedWorkflow workflow,
-			ResolvedApplication resolved, String producer) throws Exception {
+			WorkflowExecutionBindings resolved, String producer) throws Exception {
 		if (run.values.containsKey(valueId(id))) {
 			verifiedValue(tx, run, id, workflow);
 			return;
@@ -573,7 +588,7 @@ public final class DurableWorkflows implements AutoCloseable {
 	}
 
 	private Object decode(JdbcRunStore.Tx tx, RunState run, ValueId id, ValidatedWorkflow workflow,
-			ResolvedApplication resolved) throws Exception {
+			WorkflowExecutionBindings resolved) throws Exception {
 		RunState.Value value = verifiedValue(tx, run, id, workflow);
 		return resolved.decode(value.payload, workflow.values().get(id).declaration());
 	}
@@ -634,7 +649,7 @@ public final class DurableWorkflows implements AutoCloseable {
 				codec(workflow.codecIdentity()), policy.identity());
 	}
 
-	private void compatible(RunState run, ValidatedWorkflow workflow, ResolvedApplication resolved) {
+	private void compatible(RunState run, ValidatedWorkflow workflow, WorkflowExecutionBindings resolved) {
 		ExecutionCompatibility.Manifest supplied = requireDeployment().manifest();
 		if (!supplied.equals(run.deployment))
 			throw new WorkflowRefusal("COMPATIBILITY",

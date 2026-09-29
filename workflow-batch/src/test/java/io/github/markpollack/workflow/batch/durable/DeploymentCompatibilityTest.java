@@ -90,17 +90,17 @@ class DeploymentCompatibilityTest {
 
     public static class Counting implements Step<Request,Request> {
         static int constructions, executions;
-        public Counting() { constructions++; }
-        public Request execute(StepContext context,Request input) { Map<String,String> config=context.configuration();
+        private final String suffix;
+        public Counting(String suffix) { this.suffix=suffix; constructions++; }
+        public Request execute(StepContext context,Request input) {
             executions++;
-            assertThatThrownBy(()->config.put("suffix","mutation")).isInstanceOf(UnsupportedOperationException.class);
-            return new Request(input.text()+config.get("suffix"));
+            return new Request(input.text()+suffix);
         }
     }
-    @Test void fixedRegistrationAndConfigurationGovernActualApplicationInvocation() throws Exception {
+    @Test void constructorSettingsAndDeclaredCompatibilityShareOneSource() throws Exception {
         Counting.constructions=0;Counting.executions=0;
         var config=new HashMap<>(Map.of("suffix","original"));
-        Map<String,Step<?,?>> operations=new HashMap<>(steps(new Counting()));
+        Map<String,Step<?,?>> operations=new HashMap<>(steps(new Counting(config.get("suffix"))));
         var deployment=new TestApplication("application","immutable-build",config,operations);
         config.put("suffix","changed");operations.clear();
         assertThat(deployment.manifest().configurationDigest()).isEqualTo(
@@ -117,7 +117,7 @@ class DeploymentCompatibilityTest {
     }
 
     @Test void duplicateMissingAndWrongConcreteTypeRegistrationsRefuse() throws Exception {
-        assertThatThrownBy(()->new TestApplication("app","v1",Map.of(),Map.of("",new Echo()))).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(()->new TestApplication("app","v1",Map.of(),Map.of("",new Echo(new OperationEvidence(null), "")))).isInstanceOf(IllegalArgumentException.class);
         var deployment=deployment(Map.of());
         assertThatThrownBy(()->deployment.step(Counting.class.getName())).isInstanceOf(WorkflowRefusal.class);
         assertThatThrownBy(() -> single(deployment,Echo.class,First.class,First.class,null,Terminal.SUCCEEDED))
@@ -148,7 +148,7 @@ class DeploymentCompatibilityTest {
     }
 
     public static class LinkageFailure implements Step<Request,Request> {
-        public Request execute(StepContext context,Request input) { Map<String,String> config=context.configuration(); throw new NoSuchMethodError("deployment omitted method"); }
+        public Request execute(StepContext context,Request input) { throw new NoSuchMethodError("deployment omitted method"); }
     }
     @Test void runtimeLinkageFailureIsExplicitAndCannotProduceSuccess() throws Exception {
         var deployment=new TestApplication("app","v1",Map.of(),steps(new LinkageFailure()));
@@ -165,7 +165,7 @@ class DeploymentCompatibilityTest {
 
     public record Upper(String text) { public Upper { text=text.toUpperCase(Locale.ROOT); } }
     public static class UpperEcho implements Step<Upper,Upper> {
-        public Upper execute(StepContext context,Upper input) { Map<String,String> config=context.configuration();return input;}
+        public Upper execute(StepContext context,Upper input) {return input;}
     }
     @Test void sameShapeConstructorTransformationsCannotChangeSavedInputOrResult() throws Exception {
         var deployment=new TestApplication("app","v1",Map.of(),steps(new UpperEcho()));

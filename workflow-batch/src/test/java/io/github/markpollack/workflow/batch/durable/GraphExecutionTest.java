@@ -136,8 +136,8 @@ class GraphExecutionTest {
 			identity.set(changed, fingerprint.invoke(changed, new TypeContracts()));
 			assertThat(changed.authoredIdentity()).isNotEqualTo(original.authoredIdentity());
 			var registry = StepRegistry.of(Map.of("step", step));
-			assertThat(new ResolvedApplication(registry, compatibility(), changed).selections())
-				.isEqualTo(new ResolvedApplication(registry, compatibility(), original).selections());
+			assertThat(new WorkflowExecutionBindings(registry, compatibility(), changed).selections())
+				.isEqualTo(new WorkflowExecutionBindings(registry, compatibility(), original).selections());
 			Path file = directory.resolve(changeEdge ? "edge" : "binding");
 			try (var runtime = DurableWorkflows.open(file, registry, compatibility())) {
 				String id = runtime.start(original, "one", new Text("x")).runId();

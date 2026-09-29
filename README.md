@@ -12,7 +12,7 @@ A workflow should make its sequence and choices easy to see. Connecting its data
 
 Agent Workflow derives step inputs from declared Java types and the values available along the workflow's execution paths. A step can consume a preceding result, an earlier available result, or a domain record combining several required values. When those values do not identify a unique valid input, validation rejects the definition rather than guessing. These checks happen when the workflow is built and validated; `javac` alone does not check the entire workflow.
 
-Business data travels through inputs and return values. `StepContext` carries execution metadata, deadline and declared configuration. Application dependencies arrive through constructors.
+Business data travels through inputs and return values. `StepContext` carries execution metadata and the saved deadline. Application dependencies arrive through constructors.
 
 The broader R1 DSL is intended to express decisions, verdict-based routing, parallel branches, bounded iteration, reusable workflows and durable waits while keeping these data-flow rules consistent.
 
@@ -77,7 +77,9 @@ try (var runtime = DurableWorkflows.open(database, steps, compatibility)) {
 
 See the complete, compiling [SequentialRecoveryExample](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/SequentialRecoveryExample.java) for imports, service implementation, registration and a process-death demonstration.
 
-The [Spring example](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/GreetingWorkflowTest.java) supplies settings through an ordinary bean, builds from the actual Step beans and snapshots their canonical names automatically. It includes two configured instances, repeated use of one instance, an unused bean and recovery through a fresh context.
+Start with the [simple Spring example](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/SimpleGreetingWorkflowTest.java): two distinct Step beans, constructor-injected settings, a workflow bean and automatic registration from Spring's named Step map. The [advanced Spring example](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/GreetingWorkflowTest.java) separately covers two configured instances of the same type, repeated use, an unused bean and recovery through a fresh context.
+
+Spring qualifiers select a bean when injection by type is ambiguous. DSL labels name authored positions, not bean lookup requests. Unlabeled calls generate positional labels; identity is not guaranteed stable across workflow edits. Both examples use `@Configuration(proxyBeanMethods = false)` with factory-method parameter injection and ordinary singleton scope. This configuration-class choice is separate from generic contract checking for proxies of Step implementations.
 
 The immutable `WorkflowGraph` determines execution through its entry node and transitions. Stored node/binding order and registry order do not determine traversal. Explicit FAILED and CANCELLED terminals require a reason.
 

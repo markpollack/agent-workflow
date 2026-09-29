@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @EnabledIfEnvironmentVariable(named = "CLAUDE_STEP_IT", matches = "true")
 class ClaudeStepIntegrationTest {
 
-    private final StepContext ctx = new StepContext("run", "invocation", "attempt", 1, java.time.Instant.MAX, java.util.Map.of());
+    private final StepContext ctx = new StepContext("run", "invocation", "attempt", 1, java.time.Instant.MAX);
 
     @Test
     void subprocessRunsWithWorkingDirectory(@TempDir Path tempDir) {

@@ -22,7 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class AgentClientStepTest {
 
-    private final StepContext ctx = new StepContext("run", "invocation", "attempt", 1, java.time.Instant.MAX, java.util.Map.of());
+    private final StepContext ctx = new StepContext("run", "invocation", "attempt", 1, java.time.Instant.MAX);
 
     @Test
     void ofShouldSubstituteInputInPromptTemplate() {
@@ -34,7 +34,7 @@ class AgentClientStepTest {
 
     @Test
     void ofShouldPassContextToClient() {
-        StepContext namedCtx = new StepContext("run-test", "invocation", "attempt", 1, java.time.Instant.MAX, java.util.Map.of());
+        StepContext namedCtx = new StepContext("run-test", "invocation", "attempt", 1, java.time.Instant.MAX);
         AgentClient captureCtxClient = (prompt, c) -> c.runId();
         AgentClientStep step = AgentClientStep.of(captureCtxClient, "prompt: {input}");
 

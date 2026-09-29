@@ -69,7 +69,7 @@ class StepRegistryTest {
 			.terminate(Terminal.SUCCEEDED)
 			.build();
 		assertThat(workflow.graph().bindings()).hasSize(3);
-		assertThat(new ResolvedApplication(registry, new ExecutionCompatibility("app", "v1", Map.of()), workflow)
+		assertThat(new WorkflowExecutionBindings(registry, new ExecutionCompatibility("app", "v1", Map.of()), workflow)
 			.selections()).hasSize(3).containsValues("first", "second");
 	}
 

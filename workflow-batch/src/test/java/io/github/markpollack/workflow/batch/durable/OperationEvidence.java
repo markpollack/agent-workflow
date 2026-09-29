@@ -3,19 +3,20 @@ package io.github.markpollack.workflow.batch.durable;
 import java.nio.file.*;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.util.Map;
 import io.github.markpollack.workflow.flows.StepContext;
 
 public final class OperationEvidence {
 
-	private OperationEvidence() {
+	private final Path directory;
+
+	public OperationEvidence(Path directory) {
+		this.directory = directory;
 	}
 
-	public static void count(Map<String, String> configuration, String operation, StepContext context, String input) {
+	public void count(String operation, StepContext context, String input) {
 		try {
-			String directory = configuration.get("evidence");
 			if (directory != null) {
-				Path dir = Path.of(directory);
+				Path dir = directory;
 				Files.createDirectories(dir);
 				Files.writeString(
 						dir.resolve(operation + ".calls"), context.invocationId() + " " + context.attemptId() + " "

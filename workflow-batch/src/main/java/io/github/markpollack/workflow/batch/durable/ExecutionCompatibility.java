@@ -14,12 +14,12 @@ import io.github.markpollack.workflow.flows.compiler.TypeContracts;
 public final class ExecutionCompatibility {
 
 	/**
-	 * Inspectable deployment attestation and observed metadata, not an executable
-	 * archive.
+	 * Inspectable declared compatibility and observed metadata. These facts do not
+	 * attest to every supplied object's internal state or archive executable bytes.
 	 *
 	 * @param applicationId application namespace
 	 * @param buildId immutable application/dependency build identifier
-	 * @param configurationDigest digest of the exact configuration supplied to operations
+	 * @param configurationDigest digest of the declared settings used for compatibility checks
 	 * @param codec fixed value codec contract
 	 * @param jacksonCoreVersion observed Jackson core version
 	 * @param jacksonDatabindVersion observed Jackson databind version
@@ -59,8 +59,6 @@ public final class ExecutionCompatibility {
 
 	private final Manifest manifest;
 
-	private final Map<String, String> configuration;
-
 	/**
 	 * Record declared settings and observe codec/runtime compatibility. This is not an
 	 * application settings service; supply the same settings separately to Step
@@ -70,13 +68,13 @@ public final class ExecutionCompatibility {
 	 * @param configuration copied declared configuration used for compatibility
 	 */
 	public ExecutionCompatibility(String applicationId, String buildId, Map<String, String> configuration) {
-		this.configuration = Map.copyOf(configuration);
-		this.configuration.forEach((key, value) -> {
+		Map<String, String> settings = Map.copyOf(configuration);
+		settings.forEach((key, value) -> {
 			requireUnicode(key);
 			requireUnicode(value);
 		});
 
-		String[] fields = new TreeMap<>(this.configuration).entrySet()
+		String[] fields = new TreeMap<>(settings).entrySet()
 			.stream()
 			.flatMap(entry -> java.util.stream.Stream.of(entry.getKey(), entry.getValue()))
 			.toArray(String[]::new);
@@ -91,10 +89,6 @@ public final class ExecutionCompatibility {
 	 */
 	public Manifest manifest() {
 		return manifest;
-	}
-
-	Map<String, String> configuration() {
-		return configuration;
 	}
 
 	private static void requireUnicode(String text) {

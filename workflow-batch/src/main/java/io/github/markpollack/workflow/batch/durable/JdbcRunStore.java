@@ -15,6 +15,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * StoreOwnership must already be held. Existing formats are checked read-only before
  * writable initialization. The keeper connection retains store lifetime; each transaction
  * uses its own connection. RuntimeLifecycle drains callers before close().
+ * <p>
+ * The shared transition lock row serializes transactions across runs and is released
+ * at commit or rollback. Attempt preparation and the separate execution-eligibility
+ * check finish before Step.execute; result encoding also finishes before the result
+ * transaction starts. A blocked Step therefore does not retain this store's database
+ * lock and another caller can make durable progress on another run. This boundary says
+ * nothing about transactions that the application opens for its own work.
  */
 final class JdbcRunStore implements AutoCloseable {
 

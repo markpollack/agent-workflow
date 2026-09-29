@@ -236,6 +236,8 @@ public final class ValidatedWorkflow {
 	 * placement rule, then delegate to {@link #compile(Definition, Map, DeadlinePolicy)}.
 	 * A registration map's iteration order is irrelevant; the selection list must match
 	 * the ordered Calls. Both entry points acquire owned data before trusting it.
+	 * This association-by-order convenience is limited to sequential construction; it
+	 * does not define selection or boundary inference for branches or loops.
 	 * @param source sequence of Call occurrences and explicit terminal
 	 * @param selections one selection per Call, in authored order
 	 * @param policy finite deadline policy
