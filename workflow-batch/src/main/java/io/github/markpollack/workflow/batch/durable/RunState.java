@@ -215,7 +215,7 @@ final class RunState {
 				node.phase = "REVOKED";
 		}
 		for (Invocation call : invocations) {
-			if (call.scope.equals(scope.id) && call.status.equals("UNRESOLVED")) {
+			if (call.scope.equals(scope.id) && Set.of("PREPARED", "UNRESOLVED").contains(call.status)) {
 				call.status = "REVOKED";
 				for (Attempt attempt : call.attempts)
 					if (attempt.disposition.equals("UNRESOLVED"))

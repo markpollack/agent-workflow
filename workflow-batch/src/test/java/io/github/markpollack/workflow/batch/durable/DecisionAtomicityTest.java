@@ -128,4 +128,50 @@ class DecisionAtomicityTest {
 		}
 	}
 
+	@ParameterizedTest
+	@CsvSource({ "false,cancel", "true,cancel", "false,expire", "true,expire" })
+	void acceptedDecisionSurvivesRevocationOfPreparedArm(boolean nativeVerdict, String action) throws Exception {
+		var choose = new Choose(Route.RIGHT);
+		var prefix = new Prefix("R");
+		var assess = new Assess(JudgmentStatus.ERROR);
+		var explain = new Explain();
+		var workflow = nativeVerdict ? NativeVerdictExecutionTest.workflow(assess, explain)
+				: Workflows.define("ordinary")
+					.decision("choice", choose)
+					.when(Route.LEFT)
+					.then(prefix)
+					.terminate(SUCCEEDED)
+					.when(Route.RIGHT)
+					.then(prefix)
+					.terminate(SUCCEEDED)
+					.end()
+					.build();
+		var registry = nativeVerdict ? StepRegistry.of(Map.of("assess", assess, "explain", explain))
+				: StepRegistry.of(Map.of("choose", choose, "prefix", prefix));
+		Path file = directory.resolve("prepared-" + nativeVerdict + action);
+		String id;
+		try (var runtime = DurableWorkflows.open(file, registry, DecisionExecutionTest.deployment())) {
+			StoreTestSupport.controlledClock(file, 200_000);
+			id = runtime.start(workflow, "key", nativeVerdict ? new Subject("s", "original") : new Text("original"))
+				.runId();
+			var accepted = runtime.advance(id, workflow);
+			assertThat(accepted.invocations().getLast().status()).isEqualTo("PREPARED");
+			if (action.equals("cancel"))
+				runtime.cancel(id, "owner", "stop prepared arm");
+			else
+				StoreTestSupport.time(accepted.deadline().toEpochMilli());
+			var stopped = runtime.resume(id, workflow);
+			assertThat(stopped.reason().code()).isEqualTo(action.equals("cancel") ? "CANCELLED" : "DEADLINE_EXCEEDED");
+			assertThat(stopped.decisions()).isEqualTo(accepted.decisions());
+			assertThat(stopped.values()).isEqualTo(accepted.values());
+			assertThat(stopped.invocations().getLast().status()).isEqualTo("REVOKED");
+			assertThat(stopped.invocations().getLast().attempts()).isEmpty();
+			assertThat(prefix.calls + explain.calls).isZero();
+		}
+		try (var runtime = DurableWorkflows.open(file, registry, DecisionExecutionTest.deployment())) {
+			assertThat(runtime.resume(id, workflow).invocations().getLast().status()).isEqualTo("REVOKED");
+			assertThat(choose.calls + assess.calls).isEqualTo(1);
+		}
+	}
+
 }
