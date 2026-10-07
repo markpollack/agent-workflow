@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.function.Supplier;
 
-import io.github.markpollack.judge.jury.interpretation.VerdictReading;
+import io.github.markpollack.judge.verdict.Verdict.Conclusion;
 
 /** Test-only grammar experiment. No execution or persistence implementation. */
 public final class GrammarPrototype {
@@ -121,7 +121,7 @@ public final class GrammarPrototype {
             consume(); return rootChoice(session, nodes, id, operation.output(), this::next);
         }
         public <I> RootChoice<Root<R>> verdict(String id, Assessment<I> assessment) {
-            consume(); return rootChoice(session, nodes, id, VerdictReading.class, this::next);
+            consume(); return rootChoice(session, nodes, id, Conclusion.class, this::next);
         }
         public Closed<R> terminate(Terminal terminal) { return terminate(terminal, ""); }
         public Closed<R> terminate(Terminal terminal, String reason) {
@@ -183,7 +183,7 @@ public final class GrammarPrototype {
             consume(); return rootChoice(session, nodes, id, operation.output(), this::next);
         }
         public <I> RootChoice<RootArm<P>> verdict(String id, Assessment<I> assessment) {
-            consume(); return rootChoice(session, nodes, id, VerdictReading.class, this::next);
+            consume(); return rootChoice(session, nodes, id, Conclusion.class, this::next);
         }
     }
 
@@ -193,7 +193,7 @@ public final class GrammarPrototype {
             consume(); return localChoice(session, nodes, id, operation.output(), this::next);
         }
         public <I> LocalChoice<S> verdict(String id, Assessment<I> assessment) {
-            consume(); return localChoice(session, nodes, id, VerdictReading.class, this::next);
+            consume(); return localChoice(session, nodes, id, Conclusion.class, this::next);
         }
     }
 

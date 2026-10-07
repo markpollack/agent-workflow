@@ -11,13 +11,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
-import io.github.markpollack.judge.jury.Verdict;
+import io.github.markpollack.judge.verdict.Verdict;
 import io.github.markpollack.judge.Judges;
 import io.github.markpollack.judge.jury.SimpleJury;
-import io.github.markpollack.judge.jury.ConsensusStrategy;
-import io.github.markpollack.judge.jury.interpretation.VerdictReading;
-import io.github.markpollack.judge.jury.interpretation.Verdicts;
-import io.github.markpollack.judge.result.Judgment;
+import io.github.markpollack.judge.verdict.Verdict.Conclusion;
+import io.github.markpollack.judge.judgment.Judgment;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -81,48 +79,6 @@ class EvidenceCodecTest {
 		Box<Line> recovered = codec.decode(codec.encode(original, type), type);
 		assertThat(recovered).isEqualTo(original);
 		assertThat(recovered.values().getFirst()).isInstanceOf(Line.class);
-	}
-
-	@ParameterizedTest
-	@EnumSource(VerdictReading.class)
-	void fullNativeEvidenceRoundTripsForEverySupportedReading(VerdictReading reading) {
-		var original = NativeJudgeProbe.assess(NativeJudgeProbe.jury(reading), NativeJudgeProbe.CONTEXT);
-		var type = new TypeReference<NativeJudgeProbe.Assessment>() { };
-		var decoded = codec.decode(codec.encode(original, type), type);
-		assertThat(decoded).isEqualTo(original);
-		assertThat(decoded.verdict()).isNotSameAs(original.verdict());
-		assertThat(decoded.verdict().individualByName()).isEqualTo(original.verdict().individualByName());
-		assertThat(decoded.verdict().aggregated().metadata()).isEqualTo(original.verdict().aggregated().metadata());
-		assertThat(decoded.interpretation()).isEqualTo(Verdicts.interpret(decoded.verdict()));
-	}
-
-	@Test
-	void nativeCompositeAttemptsFailuresChecksAndProvenanceAreNotFlattened() {
-		var original = NativeJudgeProbe.assess(NativeJudgeProbe.composite(), NativeJudgeProbe.CONTEXT);
-		assertThat(original.verdict().compositeAttempts()).hasSize(2);
-		assertThat(original.interpretation().stages()).hasSize(2);
-		var type = new TypeReference<NativeJudgeProbe.Assessment>() { };
-		var decoded = codec.decode(codec.encode(original, type), type);
-		assertThat(decoded).isEqualTo(original);
-		assertThat(decoded.verdict().compositeAttempts().getFirst().verdict()).isNull();
-		assertThat(decoded.verdict().compositeAttempts().get(1).verdict().individual().getFirst().checks()).hasSize(1);
-		assertThat(decoded.interpretation().decidedBy()).isEqualTo(original.interpretation().decidedBy());
-	}
-
-	@Test
-	void failedStrictAssessmentKeepsFullAvailableEvidenceAndReason() {
-		Verdict verdict = Verdict.single("manual", Judgment.pass("legacy record"));
-		var interpretation = Verdicts.interpret(verdict);
-		var original = new NativeJudgeProbe.Assessment(verdict, interpretation,
-				NativeJudgeProbe.route(interpretation), NativeJudgeProbe.failure(interpretation));
-		var type = new TypeReference<NativeJudgeProbe.Assessment>() { };
-		var decoded = codec.decode(codec.encode(original, type), type);
-		assertThat(decoded).isEqualTo(original);
-		assertThat(decoded.route()).isNull();
-		assertThat(decoded.failure()).contains("UNDETERMINED");
-		assertThat(decoded.interpretation().defects()).isNotEmpty();
-		var exception = NativeJudgeProbe.assess(NativeJudgeProbe.throwing(), NativeJudgeProbe.CONTEXT);
-		assertThat(codec.decode(codec.encode(exception, type), type)).isEqualTo(exception);
 	}
 
 	@Test
@@ -197,52 +153,6 @@ class EvidenceCodecTest {
 	}
 
 	@Test
-	void directJacksonNativeMetadataLosesNumericWrapperIdentityCounterexample() throws Exception {
-		Judgment judgment = Judgment.pass("numeric evidence").toBuilder()
-			.metadata("smallLong", 7L).metadata("fraction", 0.5f).build();
-		Verdict original = Verdict.single("numeric", judgment);
-		ObjectMapper mapper = new ObjectMapper();
-		Verdict decoded = mapper.readValue(mapper.writeValueAsBytes(original), Verdict.class);
-		assertThat(original.aggregated().metadata()).containsAllEntriesOf(Map.of("smallLong", 7L, "fraction", 0.5f));
-		assertThat(decoded.aggregated().metadata().get("smallLong")).isInstanceOf(Integer.class);
-		assertThat(decoded.aggregated().metadata().get("fraction")).isInstanceOf(Double.class);
-		assertThat(decoded).isNotEqualTo(original);
-		assertThat(Verdicts.interpret(decoded)).isEqualTo(Verdicts.interpret(original));
-		var type = new TypeReference<Verdict>() { };
-		Verdict recovered = codec.decode(codec.encode(original, type), type);
-		assertThat(mapper.readTree(mapper.writeValueAsBytes(recovered)))
-			.isEqualTo(mapper.readTree(mapper.writeValueAsBytes(original)));
-		assertThat(mapper.valueToTree(recovered).get("aggregated").get("metadata"))
-			.isEqualTo(mapper.readTree("{\"smallLong\":7,\"fraction\":0.5}"));
-	}
-
-	@Test
-	void nativePortableNumericBoundariesPreserveFullWireEvidenceAndInterpretation() throws Exception {
-		Judgment judgment = Judgment.pass("portable numeric boundaries").toBuilder()
-			.metadata("minimum", -9007199254740991L).metadata("maximum", 9007199254740991L)
-			.metadata("floatFraction", 0.1f).metadata("doubleFraction", 0.1234567890123456d).build();
-		var jury = SimpleJury.builder().judge(Judges.named(context -> judgment, "numeric"))
-			.votingStrategy(new ConsensusStrategy()).parallel(false).build();
-		var original = NativeJudgeProbe.assess(jury, NativeJudgeProbe.CONTEXT);
-		var type = new TypeReference<NativeJudgeProbe.Assessment>() { };
-		var decoded = codec.decode(codec.encode(original, type), type);
-		ObjectMapper mapper = new ObjectMapper();
-		assertThat(mapper.readTree(mapper.writeValueAsBytes(decoded)))
-			.isEqualTo(mapper.readTree(mapper.writeValueAsBytes(original)));
-		com.fasterxml.jackson.databind.JsonNode metadata = mapper.valueToTree(decoded.verdict().individual().getFirst().metadata());
-		assertThat(metadata)
-			.isEqualTo(mapper.readTree("{\"minimum\":-9007199254740991,\"maximum\":9007199254740991,"
-					+ "\"floatFraction\":0.1,\"doubleFraction\":0.1234567890123456}"));
-		assertThat(decoded.interpretation()).isEqualTo(original.interpretation());
-		assertThat(decoded.route()).isEqualTo(VerdictReading.ACCEPTED);
-		for (Object forbidden : List.of(9007199254740992L, -9007199254740992L,
-				Double.NaN, Double.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY)) {
-			assertThatThrownBy(() -> Judgment.pass("ok").toBuilder().metadata("forbidden", forbidden).build())
-				.isInstanceOf(IllegalArgumentException.class).hasMessageContaining("metadata.forbidden");
-		}
-	}
-
-	@Test
 	void declaredApplicationLongAndFloatTypesRemainExact() {
 		var type = new TypeReference<NumericInput>() { };
 		NumericInput original = new NumericInput(Long.MAX_VALUE, 0.1f, List.of(7L, Long.MIN_VALUE));
@@ -270,13 +180,10 @@ class EvidenceCodecTest {
 			.hasMessageContaining("encode failed").hasRootCauseMessage("expected JSON object");
 	}
 
-	@Test
-	void globalMissingCreatorPolicyRejectsLegallyAbsentNativeFieldsCounterexample() throws Exception {
-		ObjectMapper mapper = new ObjectMapper();
-		byte[] bytes = mapper.writeValueAsBytes(Verdict.single("one", Judgment.pass("ok")));
-		mapper.enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES);
-		assertThatThrownBy(() -> mapper.readValue(bytes, Verdict.class)).hasMessageContaining("Missing creator property 'score'");
-	}
+    @Test void strictProducerCodecRefusesMissingNativeFields() {
+        var nativeCodec=new io.github.markpollack.judge.serialization.VerdictCodec();
+        assertThatThrownBy(()->nativeCodec.read("{}" )).isInstanceOf(IllegalArgumentException.class);
+    }
 
 	@Test
 	void disablingScalarCoercionAloneStillCoercesNumberToStringCounterexample() throws Exception {

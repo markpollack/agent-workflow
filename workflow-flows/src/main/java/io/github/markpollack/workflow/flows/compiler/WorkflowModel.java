@@ -150,7 +150,7 @@ public final class WorkflowModel {
 	/**
 	 * An authored control-flow occurrence. Availability here means the analyzer knows the
 	 * construct, not that a particular runtime admits it. Production admission currently
-	 * accepts Call, Child and End; other constructs require separate runtime support.
+	 * accepts Call, Choice, Child and End; other constructs require separate runtime support.
 	 */
 	public sealed interface Node permits Call, Choice, Parallel, Fan, Loop, Child, Timer, End {
 
@@ -391,9 +391,11 @@ public final class WorkflowModel {
 	 * runtime type-search instruction. Reflection supplies type declarations, not the
 	 * decision about which producer reaches this point.
 	 */
-	public record Capture(Placement placement, Fact result, List<Fact> alternatives) {
+	public record Capture(Placement placement, Fact result, List<Fact> alternatives, Map<String,Fact> routes) {
+        public Capture(Placement placement,Fact result,List<Fact> alternatives) { this(placement,result,alternatives,Map.of()); }
 		public Capture {
 			alternatives = List.copyOf(alternatives);
+            routes=Map.copyOf(routes);
 		}
 	}
 

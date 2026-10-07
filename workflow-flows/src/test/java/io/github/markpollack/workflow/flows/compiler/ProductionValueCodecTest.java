@@ -3,10 +3,9 @@ package io.github.markpollack.workflow.flows.compiler;
 import java.util.*;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.github.markpollack.judge.jury.Verdict;
-import io.github.markpollack.judge.jury.interpretation.Interpretation;
-import io.github.markpollack.judge.jury.interpretation.Verdicts;
-import io.github.markpollack.judge.result.Judgment;
+import io.github.markpollack.judge.verdict.Verdict;
+import io.github.markpollack.judge.verdict.Verdict.Conclusion;
+import io.github.markpollack.judge.judgment.Judgment;
 import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.*;
 
@@ -22,16 +21,13 @@ class ProductionValueCodecTest {
         assertThat(decoded).isEqualTo(original);
         assertThat(decoded.references().getFirst()).isInstanceOf(Long.class);
     }
-    @Test void nativeEvidenceUsesItsPortableEqualityAndPreservesInterpretation() throws Exception {
+    @Test void nativeEvidenceUsesItsPortableEqualityAndPreservesConclusion() throws Exception {
         Verdict original=Verdict.single("numeric",Judgment.pass("evidence").toBuilder().metadata("smallLong",7L).metadata("fraction",.5f).build());
         var type=new TypeReference<Verdict>() {};
         Verdict decoded=codec.decode(codec.encode(original,type),type);
-        ObjectMapper mapper=new ObjectMapper();
+        ObjectMapper mapper=new ObjectMapper().registerModule(io.github.markpollack.judge.serialization.ResultJson.module());
         assertThat(mapper.readTree(mapper.writeValueAsBytes(decoded))).isEqualTo(mapper.readTree(mapper.writeValueAsBytes(original)));
-        Interpretation interpretation=Verdicts.interpret(original);
-        var interpretationType=new TypeReference<Interpretation>() {};
-        assertThat(codec.decode(codec.encode(interpretation,interpretationType),interpretationType)).isEqualTo(interpretation);
-        assertThat(Verdicts.interpret(decoded)).isEqualTo(interpretation);
+        assertThat(decoded.requireUsable().conclusion()).isEqualTo(original.conclusion());
     }
     @Test void savedBytesSurviveCallerMutationAndCodecMismatchRefuses() {
         var type=new TypeReference<Renamed>() {}; List<Integer> numbers=new ArrayList<>(List.of(1,2));

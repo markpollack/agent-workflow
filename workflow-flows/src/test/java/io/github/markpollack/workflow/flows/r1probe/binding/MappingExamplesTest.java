@@ -4,8 +4,8 @@ import java.lang.reflect.Type;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
-import io.github.markpollack.judge.jury.Verdict;
-import io.github.markpollack.judge.jury.interpretation.Interpretation;
+import io.github.markpollack.judge.verdict.Verdict;
+import io.github.markpollack.judge.verdict.Verdict.Conclusion;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static io.github.markpollack.workflow.flows.r1probe.binding.TypedPlan.*;
@@ -106,10 +106,10 @@ class MappingExamplesTest {
     record RinsedLaundry() {}
     record DryLaundry() {}
     record StoryRequest() {}
-    record StoryDecisionInput(StoryRequest request, Outline outline, Interpretation reading) {}
+    record StoryDecisionInput(StoryRequest request, Outline outline, Conclusion reading) {}
     record RevisionState() {}
     record GeneratedRevision() {}
-    record RevisionInput(GeneratedRevision generated, Verdict evidence, Interpretation reading) {}
+    record RevisionInput(GeneratedRevision generated, Verdict evidence, Conclusion reading) {}
     record PrRequest() {}
     record PrContext() {}
     record RebaseResult() {}
@@ -122,8 +122,8 @@ class MappingExamplesTest {
     record QualityAssessment() {}
     record BackportAssessment() {}
     record FullReportInput(QualityAssessment quality, BackportAssessment backport, PrContext context,
-            Verdict evidence, Interpretation reading) {}
-    record EarlyReportInput(PrContext context, Interpretation reading, BuildResult build) {}
+            Verdict evidence, Conclusion reading) {}
+    record EarlyReportInput(PrContext context, Conclusion reading, BuildResult build) {}
     record ReviewReport() {}
     record FirstResult() {}
     record SecondInput(FirstResult first, Request original) {}
@@ -404,7 +404,7 @@ class MappingExamplesTest {
 
     static void assess(Scope s, String name, Type subject, String expected) {
         assertThat(s.control(name, subject, Verdict.class).mapping()).isEqualTo(expected);
-        assertThat(s.control(name + "Reading", Verdict.class, Interpretation.class).mapping()).isEqualTo(name + ".out");
+        assertThat(s.control(name + "Reading", Verdict.class, Conclusion.class).mapping()).isEqualTo(name + ".out");
     }
 
     @Test void assessedStoryRepliesReceiveSubjectRootAndSelectedEvidence() {

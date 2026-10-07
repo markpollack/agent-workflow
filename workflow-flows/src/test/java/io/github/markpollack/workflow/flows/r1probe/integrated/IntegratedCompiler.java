@@ -16,9 +16,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import io.github.markpollack.judge.jury.Verdict;
-import io.github.markpollack.judge.jury.interpretation.Interpretation;
-import io.github.markpollack.judge.jury.interpretation.VerdictReading;
+import io.github.markpollack.judge.verdict.Verdict;
+import io.github.markpollack.judge.verdict.Verdict.Conclusion;
 import io.github.markpollack.workflow.flows.r1probe.evidence.PinnedRecordCodec;
 import io.github.markpollack.workflow.flows.workflow.EdgeCondition;
 import io.github.markpollack.workflow.flows.workflow.WorkflowEdge;
@@ -138,9 +137,9 @@ public final class IntegratedCompiler {
                         domain=(Class<?>)choice.operation().output();
                         call(scope,placement,choice.id(),choice.operation().input(),domain,true);
                     } else {
-                        domain=VerdictReading.class;
+                        domain=Conclusion.class;
                         call(scope,placement,choice.id(),choice.assessment().input(),Verdict.class,true);
-                        call(scope,placement.child("evidence","interpretation",0),choice.id()+"Reading",Verdict.class,Interpretation.class,true);
+                        call(scope,placement.child("evidence","interpretation",0),choice.id()+"Reading",Verdict.class,Conclusion.class,true);
                     }
                     require(choice.arms()!=null,"choice arms required");
                     Set<Enum<?>> expected=new LinkedHashSet<>();
@@ -160,7 +159,7 @@ public final class IntegratedCompiler {
                     if(!scope.terminated) meta(placement.child("join","choice",0),"exclusive-join",null,typeOf(scope.carrier),Map.of());
                     meta(placement,choice.assessment()==null?"decision":"verdict",choice.operation()!=null?choice.operation().input():choice.assessment().input(),choice.assessment()==null?domain:Verdict.class,
                             choice.assessment()==null?Map.of():Map.of("support","SUPPORTED","reading","non-null"));
-                    if(choice.assessment()!=null) meta(placement.child("routing","native-reading",0),"native-route",Interpretation.class,VerdictReading.class,Map.of("support","SUPPORTED","reading","non-null"));
+                    if(choice.assessment()!=null) meta(placement.child("routing","native-reading",0),"native-route",Conclusion.class,Conclusion.class,Map.of("support","SUPPORTED","reading","non-null"));
                 }
                 case Parallel parallel -> {
                     if(parallel.output()!=null) applicationType(parallel.output());
@@ -437,10 +436,10 @@ public final class IntegratedCompiler {
                     if(c.assessment()!=null) {
                         addAdapter(id,info.input(),Verdict.class);
                         String interpretation=p.child("evidence","interpretation",0).graphName();
-                        addAdapter(interpretation,Verdict.class,Interpretation.class);
+                        addAdapter(interpretation,Verdict.class,Conclusion.class);
                         routing=p.child("routing","native-reading",0).graphName();
                         edges.add(WorkflowEdge.sequence(id,interpretation)); edges.add(WorkflowEdge.sequence(interpretation,routing));
-                        nodes.add(new WorkflowNode.DecisionNode(routing,Interpretation.class,VerdictReading.class,declaredJoin));
+                        nodes.add(new WorkflowNode.DecisionNode(routing,Conclusion.class,Conclusion.class,declaredJoin));
                     } else nodes.add(new WorkflowNode.DecisionNode(id,info.input(),info.output(),declaredJoin));
                     boolean continuing=false;
                     for(int a=0;a<c.arms().size();a++) {

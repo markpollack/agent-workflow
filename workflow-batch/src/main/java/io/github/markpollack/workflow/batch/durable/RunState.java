@@ -4,14 +4,14 @@ import java.time.Instant;
 import java.util.*;
 
 /**
- * Format-6 aggregate owned by one JdbcRunStore.Tx. Scopes hold graph progress;
+ * Format-7 aggregate owned by one JdbcRunStore.Tx. Scopes hold graph progress;
  * invocation, attempt, value, outcome and return records retain facts. No field is a Java
  * call stack. Public fields serve the store codec only. Never retain this mutable object
  * across TXs.
  */
 final class RunState {
 
-	public int format = 6;
+	public int format = 7;
 
 	public String id, key, admission, compatibility, display, authored, deadlineOrigin;
 
@@ -40,6 +40,15 @@ final class RunState {
 	public List<Invocation> invocations = new ArrayList<>();
 
 	public Map<String, Return> returns = new LinkedHashMap<>();
+
+	public Map<String, Decision> decisions = new LinkedHashMap<>();
+
+	public record Decision(String invocation, String outcome, String target, long acceptedAt, String armInvocation,
+			String armInput, Map<String, String> captures) {
+		public Decision {
+			captures = Map.copyOf(captures);
+		}
+	}
 
 	public List<Event> events = new ArrayList<>();
 
@@ -294,7 +303,12 @@ final class RunState {
 							e -> new RunSnapshot.DefinitionSelection(e.getValue().authored(), e.getValue().leaves(),
 									e.getValue().callees()))),
 				new RunSnapshot.Resources(maximumAttempts, maximumDepth, maximumInvocations, bounds.leaves(),
-						bounds.composites(), bounds.depth(), bounds.logical(), bounds.scopes(), bounds.attempts()));
+						bounds.composites(), bounds.depth(), bounds.logical(), bounds.scopes(), bounds.attempts()),
+				decisions.values()
+					.stream()
+					.map(d -> new RunSnapshot.Decision(d.invocation(), d.outcome(), d.target(),
+							Instant.ofEpochMilli(d.acceptedAt()), d.armInvocation(), d.armInput(), d.captures()))
+					.toList());
 	}
 
 }

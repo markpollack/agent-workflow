@@ -27,7 +27,7 @@ import io.github.markpollack.workflow.patterns.statemachine.StateMachineConfig.T
 import io.github.markpollack.workflow.strategy.TerminationStrategy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import io.github.markpollack.judge.jury.Verdict;
+import io.github.markpollack.judge.verdict.Verdict;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.tool.ToolCallback;
@@ -56,7 +56,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   <li>State-specific handlers</li>
  *   <li>Terminal states end the loop</li>
  *   <li>Tool calling via Spring AI ChatClient</li>
- *   <li>Full W&B-lite observability</li>
+ *   <li>Full W&amp;B-lite observability</li>
  * </ul>
  *
  * <p>Typical state flow:
@@ -258,11 +258,11 @@ public class StateMachineLoop implements LoopPattern<StateMachineResult> {
                 );
 
                 if (verdict != null) {
-                    boolean passed = verdict.aggregated().pass();
-                    OptionalDouble score = verdict.aggregated().effectiveScore();
+                    boolean passed = verdict.judgment().pass();
+                    OptionalDouble score = verdict.judgment().effectiveScore();
 
                     log.debug("Iteration {} jury evaluation completed: status={}, score={}",
-                            iteration, verdict.aggregated().status(), ScoreText.describe(score));
+                            iteration, verdict.judgment().status(), ScoreText.describe(score));
 
                     if (passed) {
                         // A passing jury that measured nothing still passes; the reported score

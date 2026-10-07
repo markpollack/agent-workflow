@@ -18,141 +18,91 @@ package io.github.markpollack.workflow.patterns.judge;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import io.github.markpollack.workflow.core.LoopState;
-import io.github.markpollack.judge.context.ExecutionStatus;
-import io.github.markpollack.judge.context.JudgmentContext;
+
 import io.github.markpollack.judge.jury.Jury;
-import io.github.markpollack.judge.jury.Verdict;
+import io.github.markpollack.judge.verdict.Verdict;
 import org.springframework.ai.chat.model.ChatResponse;
 
 import java.nio.file.Path;
-import java.util.Optional;
 
 /**
- * Adapter that bridges the agent-judge Judge/Jury framework with agent-workflow.
- * <p>
- * This adapter enables using the rich judge ecosystem (BuildSuccessJudge, FileExistsJudge,
- * LLMJudge, etc.) within our agent loop patterns.
- * <p>
- * It does exactly two things: it builds a {@link JudgmentContext} out of a {@link LoopState}, and
- * it runs the jury's vote synchronously, logging the outcome. There is no reactive wrapper — the
- * call blocks and returns a {@link Verdict} — and no metrics are recorded here; a caller that
- * wants observability instruments its own loop.
- *
- * <p>Reading the outcome is the caller's job and belongs at the caller, where the policy is:
- * {@code verdict.aggregated()} carries the status, and its {@code effectiveScore()} is present
- * only when the jury reached a finding.
- *
- * <p>Example usage:
- * <pre>{@code
- * Jury jury = SimpleJury.builder()
- *     .judge(BuildSuccessJudge.compile(), 0.5)
- *     .judge(new FileExistsJudge(Path.of("output.txt")), 0.5)
- *     .votingStrategy(new WeightedAverageStrategy())
- *     .build();
- *
- * SpringAiJuryAdapter adapter = new SpringAiJuryAdapter(jury, "build-health-jury");
- *
- * // In loop pattern:
- * Verdict verdict = adapter.evaluate(loopState, response, workingDir);
- * if (verdict.aggregated().pass()) {
- *     // Terminate loop
- * }
- * }</pre>
+ * Supplies a configured native Jury for the current loop observation and invokes it
+ * synchronously.
  */
 public class SpringAiJuryAdapter {
 
-    private static final Logger log = LoggerFactory.getLogger(SpringAiJuryAdapter.class);
+	private static final Logger log = LoggerFactory.getLogger(SpringAiJuryAdapter.class);
 
-    private final Jury jury;
-    private final String juryName;
+	private final java.util.function.Function<Input, Jury> factory;
 
-    public SpringAiJuryAdapter(Jury jury) {
-        this(jury, "jury");
-    }
+	private final Jury configured;
 
-    public SpringAiJuryAdapter(Jury jury, String juryName) {
-        this.jury = jury;
-        this.juryName = juryName;
-    }
+	public record Input(LoopState state, ChatResponse response, Path workingDirectory) {
+	}
 
-    /**
-     * Evaluates the current loop state using the agent-judge jury.
-     * <p>
-     * This is a synchronous call that executes all judges and aggregates their verdicts.
-     *
-     * @param state the current loop state
-     * @param response the ChatResponse to evaluate (may be null)
-     * @param workingDirectory the workspace directory for file-based judges
-     * @return the verdict from the jury
-     */
-    public Verdict evaluate(LoopState state, ChatResponse response, Path workingDirectory) {
-        long startTime = System.currentTimeMillis();
+	private final String juryName;
 
-        try {
-            // Extract output text from ChatResponse if available
-            Optional<String> agentOutput = Optional.empty();
-            if (response != null && response.getResult() != null) {
-                var output = response.getResult().getOutput();
-                if (output != null && output.getText() != null) {
-                    agentOutput = Optional.of(output.getText());
-                }
-            }
+	public SpringAiJuryAdapter(Jury jury) {
+		this(jury, "jury");
+	}
 
-            // Build the agent-judge JudgmentContext from LoopState
-            JudgmentContext context = buildContext(state, workingDirectory, agentOutput);
+	public SpringAiJuryAdapter(Jury jury, String juryName) {
+		this.configured = java.util.Objects.requireNonNull(jury);
+		this.factory = input -> jury;
+		this.juryName = juryName;
+	}
 
-            // Execute jury vote
-            log.debug("{} evaluation started: runId={}, turn={}, judgeCount={}",
-                    juryName, state.runId(), state.currentTurn(), jury.getJudges().size());
+	public SpringAiJuryAdapter(java.util.function.Function<Input, Jury> factory, String juryName) {
+		this.factory = java.util.Objects.requireNonNull(factory);
+		this.configured = null;
+		this.juryName = juryName;
+	}
 
-            Verdict verdict = jury.vote(context);
+	/**
+	 * Evaluates the current loop state using the agent-judge jury.
+	 * <p>
+	 * This is a synchronous call that executes all judges and aggregates their verdicts.
+	 * @param state the current loop state
+	 * @param response the ChatResponse to evaluate (may be null)
+	 * @param workingDirectory the workspace directory for file-based judges
+	 * @return the verdict from the jury
+	 */
+	public Verdict evaluate(LoopState state, ChatResponse response, Path workingDirectory) {
+		long startTime = System.currentTimeMillis();
 
-            // Log results
-            long durationMs = System.currentTimeMillis() - startTime;
+		try {
+			Jury jury = java.util.Objects.requireNonNull(factory.apply(new Input(state, response, workingDirectory)));
+			Verdict verdict = jury.vote();
 
-            log.debug("{} evaluation completed: runId={}, turn={}, status={}, score={}, duration={}ms",
-                    juryName, state.runId(), state.currentTurn(), verdict.aggregated().status(),
-                    ScoreText.describe(verdict.aggregated().effectiveScore()), durationMs);
+			// Log results
+			long durationMs = System.currentTimeMillis() - startTime;
 
-            return verdict;
+			log.debug("{} evaluation completed: runId={}, turn={}, status={}, score={}, duration={}ms", juryName,
+					state.runId(), state.currentTurn(), verdict.judgment().status(),
+					ScoreText.describe(verdict.judgment().effectiveScore()), durationMs);
 
-        } catch (Exception e) {
-            long durationMs = System.currentTimeMillis() - startTime;
+			return verdict;
 
-            log.error("{} evaluation failed: runId={}, turn={}, error={}, duration={}ms",
-                    juryName, state.runId(), state.currentTurn(),
-                    e.getMessage() != null ? e.getMessage() : "Unknown error", durationMs);
+		}
+		catch (Exception e) {
+			long durationMs = System.currentTimeMillis() - startTime;
 
-            throw new RuntimeException("Jury evaluation failed", e);
-        }
-    }
+			log.error("{} evaluation failed: runId={}, turn={}, error={}, duration={}ms", juryName, state.runId(),
+					state.currentTurn(), e.getMessage() != null ? e.getMessage() : "Unknown error", durationMs);
 
-    /**
-     * Builds an agent-judge JudgmentContext from our LoopState.
-     */
-    private JudgmentContext buildContext(LoopState state, Path workingDirectory, Optional<String> agentOutput) {
-        JudgmentContext.Builder builder = JudgmentContext.builder()
-                .goal("Agent loop turn " + state.currentTurn())
-                .workspace(workingDirectory)
-                .executionTime(state.elapsed())
-                .startedAt(state.startedAt())
-                .status(state.abortSignalled() ? ExecutionStatus.CANCELLED : ExecutionStatus.SUCCESS);
+			throw new RuntimeException("Jury evaluation failed", e);
+		}
+	}
 
-        agentOutput.ifPresent(builder::agentOutput);
+	/**
+	 * Returns the fixed configured jury.
+	 * @return configured jury
+	 * @throws IllegalStateException when this adapter uses a per-observation factory
+	 */
+	public Jury getJury() {
+		if (configured == null)
+			throw new IllegalStateException("adapter uses a per-observation jury factory");
+		return configured;
+	}
 
-        // Add loop state metadata for judges that need it
-        builder.metadata("runId", state.runId());
-        builder.metadata("turn", state.currentTurn());
-        builder.metadata("totalTokens", state.totalTokensUsed());
-        builder.metadata("estimatedCost", state.estimatedCost());
-
-        return builder.build();
-    }
-
-    /**
-     * Returns the underlying jury.
-     */
-    public Jury getJury() {
-        return jury;
-    }
 }

@@ -25,7 +25,7 @@ import io.github.markpollack.workflow.strategy.TerminationStrategy;
 import io.github.markpollack.workflow.strategy.TerminationStrategy.TerminationResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import io.github.markpollack.judge.jury.Verdict;
+import io.github.markpollack.judge.verdict.Verdict;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.tool.ToolCallback;
@@ -314,9 +314,9 @@ public class TurnLimitedLoop implements LoopPattern<TurnLimitedResult> {
 
         // Evaluate with jury (synchronous call)
         Verdict verdict = juryAdapter.evaluate(state, response, config.workingDirectory());
-        OptionalDouble score = verdict.aggregated().effectiveScore();
+        OptionalDouble score = verdict.judgment().effectiveScore();
 
-        if (verdict.aggregated().pass()) {
+        if (verdict.judgment().pass()) {
             return PostTurnCheck.terminate(
                     TerminationReason.SCORE_THRESHOLD_MET,
                     verdict,

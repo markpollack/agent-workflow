@@ -17,11 +17,25 @@ public record RunSnapshot(String runId, String displayName, Status status, Insta
 		String deadlineOrigin, String authoredIdentity, ExecutionCompatibility.Manifest deployment, String currentNode,
 		java.util.Map<String, String> selectedSteps, Reason reason, List<Invocation> invocations, List<Value> values,
 		List<Event> events, String rootScope, String rootDefinition, long logicalInvocations, List<Scope> scopes,
-		List<ReturnReceipt> returns, java.util.Map<String, DefinitionSelection> definitions, Resources resources) {
+		List<ReturnReceipt> returns, java.util.Map<String, DefinitionSelection> definitions, Resources resources,
+		List<Decision> decisions) {
 	public enum Status {
 
 		ACTIVE, SUCCEEDED, FAILED, CANCELLED
 
+	}
+
+	/**
+	 * Accepted enum or native conclusion and its exact graph target. The invocation
+	 * output references the complete decision result. armInput is the initial selected
+	 * executable input, accepted before any arm entry. captures map convergence values to
+	 * selected source values and are accepted when the arm completes.
+	 */
+	public record Decision(String invocationId, String outcome, String target, Instant acceptedAt, String armInvocation,
+			String armInput, java.util.Map<String, String> captures) {
+		public Decision {
+			captures = java.util.Map.copyOf(captures);
+		}
 	}
 
 	public record Reason(String code, String message, String actor, Instant time) {
@@ -33,7 +47,8 @@ public record RunSnapshot(String runId, String displayName, Status status, Insta
 	 * ID. kind distinguishes LEAF from COMPOSITE. The localOutcome field holds a leaf
 	 * disposition (for example COMMITTED or STEP_FAILED), or the child's local-outcome ID
 	 * after a composite returns; it is empty while unresolved or revoked. Composite calls
-	 * have no physical attempts.
+	 * have no physical attempts. PREPARED means the exact arm input is accepted but no
+	 * delivery or child entry has been charged.
 	 */
 	public record Invocation(String invocationId, String placement, String inputValue, String outputValue,
 			String status, List<Attempt> attempts, String scope, String kind, String childScope, String localOutcome) {
@@ -143,6 +158,7 @@ public record RunSnapshot(String runId, String displayName, Status status, Insta
 		scopes = List.copyOf(scopes);
 		returns = List.copyOf(returns);
 		definitions = java.util.Map.copyOf(definitions);
+		decisions = List.copyOf(decisions);
 	}
 
 	public boolean terminal() {

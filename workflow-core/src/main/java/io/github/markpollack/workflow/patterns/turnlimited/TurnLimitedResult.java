@@ -19,7 +19,7 @@ import io.github.markpollack.workflow.core.LoopResult;
 import io.github.markpollack.workflow.core.LoopState;
 import io.github.markpollack.workflow.core.LoopStatus;
 import io.github.markpollack.workflow.core.TerminationReason;
-import io.github.markpollack.judge.jury.Verdict;
+import io.github.markpollack.judge.verdict.Verdict;
 import org.springframework.lang.Nullable;
 
 import java.time.Duration;
@@ -56,14 +56,14 @@ public record TurnLimitedResult(
      */
     public OptionalDouble finalScore() {
         if (lastVerdict == null) return OptionalDouble.empty();
-        return lastVerdict.aggregated().effectiveScore();
+        return lastVerdict.judgment().effectiveScore();
     }
 
     /**
      * Returns true if the jury passed on the final evaluation.
      */
     public boolean juryPassed() {
-        return lastVerdict != null && lastVerdict.aggregated().pass();
+        return lastVerdict != null && lastVerdict.judgment().pass();
     }
 
     /**

@@ -4,9 +4,8 @@ import java.lang.reflect.Type;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import io.github.markpollack.judge.jury.Verdict;
-import io.github.markpollack.judge.jury.interpretation.Interpretation;
-import io.github.markpollack.judge.jury.interpretation.VerdictReading;
+import io.github.markpollack.judge.verdict.Verdict;
+import io.github.markpollack.judge.verdict.Verdict.Conclusion;
 import org.junit.jupiter.api.Test;
 import static io.github.markpollack.workflow.flows.r1probe.integrated.IntegratedModel.*;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -91,10 +90,10 @@ class IntegratedCorpusTest {
     record RinsedLaundry() {}
     record DryLaundry() {}
     record StoryRequest() {}
-    record StoryDecisionInput(StoryRequest request, Outline outline, Interpretation reading) {}
+    record StoryDecisionInput(StoryRequest request, Outline outline, Conclusion reading) {}
     record RevisionState() {}
     record GeneratedRevision() {}
-    record RevisionInput(GeneratedRevision generated, Verdict evidence, Interpretation reading) {}
+    record RevisionInput(GeneratedRevision generated, Verdict evidence, Conclusion reading) {}
     record PrRequest() {}
     record PrContext() {}
     record RebaseResult() {}
@@ -107,8 +106,8 @@ class IntegratedCorpusTest {
     record QualityAssessment() {}
     record BackportAssessment() {}
     record FullReportInput(QualityAssessment quality, BackportAssessment backport, PrContext context,
-            Verdict evidence, Interpretation reading) {}
-    record EarlyReportInput(PrContext context, Interpretation reading, BuildResult build) {}
+            Verdict evidence, Conclusion reading) {}
+    record EarlyReportInput(PrContext context, Conclusion reading, BuildResult build) {}
     record ReviewReport() {}
     record FirstResult() {}
     record SecondInput(FirstResult first, Request original) {}
@@ -336,22 +335,20 @@ class IntegratedCorpusTest {
     }
     @Test void judgedStory() {
         verify(definition("judgedStory",StoryRequest.class,Reply.class,c("outline",StoryRequest.class,Outline.class),judge("judge",Outline.class,
-            a(VerdictReading.ACCEPTED,c("write",Outline.class,Reply.class),end()),
-            a(VerdictReading.REJECTED,c("rejected",StoryDecisionInput.class,Reply.class),end()),
-            a(VerdictReading.UNDECIDED,c("undecided",StoryDecisionInput.class,Reply.class),end()),
-            a(VerdictReading.NOT_APPLICABLE,c("inapplicable",StoryDecisionInput.class,Reply.class),end()),
-            a(VerdictReading.NOT_ASSESSED,fail()))),
+            a(Conclusion.PASS,c("write",Outline.class,Reply.class),end()),
+            a(Conclusion.FAIL,c("rejected",StoryDecisionInput.class,Reply.class),end()),
+            a(Conclusion.INCONCLUSIVE,c("undecided",StoryDecisionInput.class,Reply.class),end()),
+            a(Conclusion.NOT_APPLICABLE,c("inapplicable",StoryDecisionInput.class,Reply.class),end()))),
             "outline=root","judge=outline.out","judgeReading=judge.out","write=outline.out",
             "rejected=StoryDecisionInput(root,outline.out,judgeReading.out)","undecided=StoryDecisionInput(root,outline.out,judgeReading.out)","inapplicable=StoryDecisionInput(root,outline.out,judgeReading.out)",
-            "end=write.out","end=rejected.out","end=undecided.out","end=inapplicable.out","end:FAILED");
+            "end=write.out","end=rejected.out","end=undecided.out","end=inapplicable.out");
     }
     @Test void evaluatorOptimizer() {
         Choice review=judge("review",GeneratedRevision.class,
-            a(VerdictReading.ACCEPTED,c("accepted",RevisionInput.class,RevisionState.class)),
-            a(VerdictReading.REJECTED,c("rejected",RevisionInput.class,RevisionState.class)),
-            a(VerdictReading.UNDECIDED,c("undecided",RevisionInput.class,RevisionState.class)),
-            a(VerdictReading.NOT_APPLICABLE,c("inapplicable",RevisionInput.class,RevisionState.class)),
-            a(VerdictReading.NOT_ASSESSED,c("unassessed",RevisionInput.class,RevisionState.class)));
+            a(Conclusion.PASS,c("accepted",RevisionInput.class,RevisionState.class)),
+            a(Conclusion.FAIL,c("rejected",RevisionInput.class,RevisionState.class)),
+            a(Conclusion.INCONCLUSIVE,c("undecided",RevisionInput.class,RevisionState.class)),
+            a(Conclusion.NOT_APPLICABLE,c("inapplicable",RevisionInput.class,RevisionState.class)));
         verify(definition("revision",StoryRequest.class,Reply.class,c("start",StoryRequest.class,RevisionState.class),
             new Loop("revision",Op.named("complete",RevisionState.class,Boolean.class),5,LimitPolicy.FAIL,
                 List.of(c("generate",RevisionState.class,GeneratedRevision.class),review)),
@@ -359,14 +356,14 @@ class IntegratedCorpusTest {
                 a(RevisionOutcome.ACCEPTED,c("finalOutline",RevisionState.class,Reply.class),end()),
                 a(RevisionOutcome.NOT_APPLICABLE,c("noApplicable",RevisionState.class,Reply.class),end()),
                 a(RevisionOutcome.NOT_ASSESSED,fail()))),
-            "capture:review.capture<RevisionState>@root/first=accepted.out@root/first,rejected.out@root/first,undecided.out@root/first,inapplicable.out@root/first,unassessed.out@root/first",
-            "capture:review.capture<RevisionState>@root/carried=accepted.out@root/carried,rejected.out@root/carried,undecided.out@root/carried,inapplicable.out@root/carried,unassessed.out@root/carried",
+            "capture:review.capture<RevisionState>@root/first=accepted.out@root/first,rejected.out@root/first,undecided.out@root/first,inapplicable.out@root/first",
+            "capture:review.capture<RevisionState>@root/carried=accepted.out@root/carried,rejected.out@root/carried,undecided.out@root/carried,inapplicable.out@root/carried",
             "start=root","generate@root/first=start.out","review@root/first=generate.out","reviewReading@root/first=review.out",
             "accepted@root/first=RevisionInput(generate.out,review.out,reviewReading.out)","rejected@root/first=RevisionInput(generate.out,review.out,reviewReading.out)",
-            "undecided@root/first=RevisionInput(generate.out,review.out,reviewReading.out)","inapplicable@root/first=RevisionInput(generate.out,review.out,reviewReading.out)","unassessed@root/first=RevisionInput(generate.out,review.out,reviewReading.out)","complete@root/first=review.capture<RevisionState>",
+            "undecided@root/first=RevisionInput(generate.out,review.out,reviewReading.out)","inapplicable@root/first=RevisionInput(generate.out,review.out,reviewReading.out)","complete@root/first=review.capture<RevisionState>",
             "generate@root/carried=revision.result","review@root/carried=generate.out","reviewReading@root/carried=review.out",
             "accepted@root/carried=RevisionInput(generate.out,review.out,reviewReading.out)","rejected@root/carried=RevisionInput(generate.out,review.out,reviewReading.out)",
-            "undecided@root/carried=RevisionInput(generate.out,review.out,reviewReading.out)","inapplicable@root/carried=RevisionInput(generate.out,review.out,reviewReading.out)","unassessed@root/carried=RevisionInput(generate.out,review.out,reviewReading.out)","complete@root/carried=review.capture<RevisionState>",
+            "undecided@root/carried=RevisionInput(generate.out,review.out,reviewReading.out)","inapplicable@root/carried=RevisionInput(generate.out,review.out,reviewReading.out)","complete@root/carried=review.capture<RevisionState>",
             "outcome=revision.result","finalOutline=revision.result","noApplicable=revision.result","end=finalOutline.out","end=noApplicable.out","end:FAILED");
     }
     @Test void reviewRepairConvergence() {
@@ -374,14 +371,14 @@ class IntegratedCorpusTest {
             c("fetch",PrRequest.class,PrContext.class),c("rebase",PrContext.class,RebaseResult.class),c("conflicts",RebaseResult.class,ConflictReport.class),c("test",ConflictReport.class,BuildResult.class),
             choose("build",RepairInput.class,RepairChoice.class,a(RepairChoice.REPAIR,c("fix",FixInput.class,FixResult.class),c("retest",ConflictReport.class,BuildResult.class)),a(RepairChoice.SKIP)),
             c("cleanup",PrContext.class,CleanupReceipt.class),judge("judge",BuildResult.class,
-                a(VerdictReading.ACCEPTED,group("assess",member("quality",c("quality",PrContext.class,QualityAssessment.class)),member("backport",c("backport",PrContext.class,BackportAssessment.class))),c("full",FullReportInput.class,ReviewReport.class),end()),
-                a(VerdictReading.REJECTED,c("early",EarlyReportInput.class,ReviewReport.class),end()),
-                a(VerdictReading.UNDECIDED,c("unresolved",EarlyReportInput.class,ReviewReport.class),end()),
-                a(VerdictReading.NOT_APPLICABLE,c("inapplicable",EarlyReportInput.class,ReviewReport.class),end()),a(VerdictReading.NOT_ASSESSED,fail()))),
+                a(Conclusion.PASS,group("assess",member("quality",c("quality",PrContext.class,QualityAssessment.class)),member("backport",c("backport",PrContext.class,BackportAssessment.class))),c("full",FullReportInput.class,ReviewReport.class),end()),
+                a(Conclusion.FAIL,c("early",EarlyReportInput.class,ReviewReport.class),end()),
+                a(Conclusion.INCONCLUSIVE,c("unresolved",EarlyReportInput.class,ReviewReport.class),end()),
+                a(Conclusion.NOT_APPLICABLE,c("inapplicable",EarlyReportInput.class,ReviewReport.class),end()))),
             "product:assess.product=quality.out,backport.out","capture:build.capture<BuildResult>=retest.out,test.out","fetch=root","rebase=fetch.out","conflicts=rebase.out","test=conflicts.out","build=RepairInput(rebase.out,conflicts.out,test.out)","fix=FixInput(test.out,conflicts.out)","retest=conflicts.out","cleanup=fetch.out",
             "judge=build.capture<BuildResult>","judgeReading=judge.out","quality=fetch.out","backport=fetch.out","full=FullReportInput(quality.out,backport.out,fetch.out,judge.out,judgeReading.out)",
             "early=EarlyReportInput(fetch.out,judgeReading.out,build.capture<BuildResult>)","unresolved=EarlyReportInput(fetch.out,judgeReading.out,build.capture<BuildResult>)","inapplicable=EarlyReportInput(fetch.out,judgeReading.out,build.capture<BuildResult>)",
-            "end=full.out","end=early.out","end=unresolved.out","end=inapplicable.out","end:FAILED");
+            "end=full.out","end=early.out","end=unresolved.out","end=inapplicable.out");
     }
     @Test void exactEarlierInput() {
         verify(definition("savedInput",Request.class,FinalResult.class,c("first",Request.class,FirstResult.class),c("second",SecondInput.class,SecondResult.class),

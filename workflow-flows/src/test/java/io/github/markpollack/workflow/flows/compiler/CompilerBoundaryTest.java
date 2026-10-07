@@ -155,8 +155,6 @@ class CompilerBoundaryTest {
 
     @Test void everyUnsupportedConstructRefusesProductionAdmission() {
         List<Node> nodes=List.of(
-                new Choice("decision",Op.named("choose",State.class,Route.class),null,List.of()),
-                new Choice("verdict",null,new Assessment<>("quality",State.class),List.of()),
                 new Parallel("parallel",null,true,List.of()),
                 new Fan("fan",State.class,1,1,true,List.of(call("body"))),
                 new Loop("loop",Op.named("test",State.class,Boolean.class),1,LimitPolicy.FAIL,List.of(call("body"))),

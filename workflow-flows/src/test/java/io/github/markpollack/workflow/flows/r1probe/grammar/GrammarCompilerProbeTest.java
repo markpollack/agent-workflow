@@ -37,7 +37,7 @@ class GrammarCompilerProbeTest {
                 import static io.github.markpollack.workflow.flows.r1probe.grammar.GrammarFixtures.*;
                 import static io.github.markpollack.workflow.flows.r1probe.grammar.GrammarPrototype.Terminal.*;
                 import static io.github.markpollack.workflow.flows.r1probe.grammar.GrammarFixtures.CreditOutcome.*;
-                import static io.github.markpollack.judge.jury.interpretation.VerdictReading.*;
+                import static io.github.markpollack.judge.verdict.Verdict.Conclusion.*;
                 public class %s { %s }
                 """.formatted(name, body);
         JavaFileObject unit = new SimpleJavaFileObject(URI.create("string:///" + name + ".java"), JavaFileObject.Kind.SOURCE) {
@@ -92,11 +92,11 @@ class GrammarCompilerProbeTest {
     @Test void allNativeReadingsCompileWithoutWorkflowReadingEnum() throws Exception {
         var built = executes("StoryRequest", """
                 return GrammarPrototype.define("story").then(outline).verdict("quality", jury)
-                    .when(ACCEPTED).then(story).terminate(SUCCEEDED)
-                    .when(REJECTED).then(rejectionReply).terminate(SUCCEEDED)
-                    .when(UNDECIDED).then(unresolvedReply).terminate(SUCCEEDED)
+                    .when(PASS).then(story).terminate(SUCCEEDED)
+                    .when(FAIL).then(rejectionReply).terminate(SUCCEEDED)
+                    .when(INCONCLUSIVE).then(unresolvedReply).terminate(SUCCEEDED)
                     .when(NOT_APPLICABLE).then(notApplicableReply).terminate(SUCCEEDED)
-                    .when(NOT_ASSESSED).terminate(FAILED, "assessment-failed").end().build();
+                    .end().build();
                 """);
         assertEquals(Set.of(StoryReply.class), built.successfulOutputs());
     }

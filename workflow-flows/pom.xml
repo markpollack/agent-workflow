@@ -15,6 +15,12 @@
     <description>Composable step-based flow combinators for agent workflows (sequential, parallel, loop)</description>
 
     <dependencies>
+        <dependency>
+            <groupId>io.github.markpollack</groupId>
+            <artifactId>agent-judge-json-jackson2</artifactId>
+            <version>${agent-judge.version}</version>
+            <optional>true</optional>
+        </dependency>
         <!-- Consumer-visible floors for runtime families otherwise governed only by the parent. -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>

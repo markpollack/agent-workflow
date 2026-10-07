@@ -39,7 +39,7 @@ class IntegratedFluentCompilerTest {
                 import static io.github.markpollack.workflow.flows.r1probe.integrated.FluentCandidate.*;
                 import static io.github.markpollack.workflow.flows.r1probe.integrated.IntegratedFluentFixtures.*;
                 import static io.github.markpollack.workflow.flows.r1probe.integrated.IntegratedFluentFixtures.CreditOutcome.*;
-                import static io.github.markpollack.judge.jury.interpretation.VerdictReading.*;
+                import static io.github.markpollack.judge.verdict.Verdict.Conclusion.*;
                 public class %s { public static Built<%s,%s> run() { %s } }
                 """.formatted(name, root, outputType, body);
         JavaFileObject unit = new SimpleJavaFileObject(URI.create("string:///" + name + ".java"), JavaFileObject.Kind.SOURCE) {
@@ -91,11 +91,11 @@ class IntegratedFluentCompilerTest {
             """;
     private static final String JUDGE = """
             return define("story").then(outline).verdict("quality", jury)
-                .when(ACCEPTED).then(story).terminate(SUCCEEDED)
-                .when(REJECTED).then(rejectionReply).terminate(SUCCEEDED)
-                .when(UNDECIDED).then(unresolvedReply).terminate(SUCCEEDED)
+                .when(PASS).then(story).terminate(SUCCEEDED)
+                .when(FAIL).then(rejectionReply).terminate(SUCCEEDED)
+                .when(INCONCLUSIVE).then(unresolvedReply).terminate(SUCCEEDED)
                 .when(NOT_APPLICABLE).then(notApplicableReply).terminate(SUCCEEDED)
-                .when(NOT_ASSESSED).terminate(FAILED, "assessment-failed").end().build();
+                .end().build();
             """;
     private static final String LOOP = """
             return define("draft").then(initial).repeatUntil("ready", ready).maxIterations(5)

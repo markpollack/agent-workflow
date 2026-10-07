@@ -23,7 +23,7 @@ import io.github.markpollack.workflow.patterns.judge.SpringAiJuryAdapter;
 import io.github.markpollack.workflow.strategy.TerminationStrategy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import io.github.markpollack.judge.jury.Verdict;
+import io.github.markpollack.judge.verdict.Verdict;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.tool.ToolCallback;
@@ -53,7 +53,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   <li>Tracks score progression across trials</li>
  *   <li>Detects when agent is stuck (no improvement)</li>
  *   <li>Tool calling in actor phase via ChatClient</li>
- *   <li>Full W&B-lite observability</li>
+ *   <li>Full W&amp;B-lite observability</li>
  * </ul>
  *
  * <p>Uses Spring AI ChatClient directly - synchronous API, no Reactor.
@@ -255,9 +255,9 @@ public class EvaluatorOptimizerLoop implements LoopPattern<EvaluatorOptimizerRes
                     verdict = juryAdapter.evaluate(currentState, null, config.workingDirectory());
 
                     if (verdict != null) {
-                        passed = verdict.aggregated().pass();
-                        score = verdict.aggregated().effectiveScore();
-                        reasoning = verdict.aggregated().reasoning();
+                        passed = verdict.judgment().pass();
+                        score = verdict.judgment().effectiveScore();
+                        reasoning = verdict.judgment().reasoning();
                     }
                     log.debug("Trial {} evaluator phase completed: score={}, passed={}",
                             trial, ScoreText.describe(score), passed);

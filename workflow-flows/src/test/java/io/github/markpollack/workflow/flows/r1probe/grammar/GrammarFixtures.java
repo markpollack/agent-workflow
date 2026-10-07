@@ -2,7 +2,7 @@ package io.github.markpollack.workflow.flows.r1probe.grammar;
 
 import java.util.List;
 
-import io.github.markpollack.judge.jury.interpretation.Interpretation;
+import io.github.markpollack.judge.verdict.Verdict.Conclusion;
 
 import io.github.markpollack.workflow.flows.r1probe.grammar.GrammarPrototype.Assessment;
 import io.github.markpollack.workflow.flows.r1probe.grammar.GrammarPrototype.Operation;
@@ -29,7 +29,7 @@ public final class GrammarFixtures {
     public record Outline(String value) {}
     public record StoryReply(String value) {}
     public record AssessmentContext(StoryRequest request, Outline outline) {}
-    public record AssessedReplyInput(StoryRequest request, Outline outline, Interpretation interpretation) {}
+    public record AssessedReplyInput(StoryRequest request, Outline outline, Conclusion interpretation) {}
     public record DraftRequest(String value) {}
     public record Draft(String value) {}
     public record Published(String value) {}

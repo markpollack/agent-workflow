@@ -15,6 +15,13 @@
     <description>Local durable execution of validated workflows with JDBC saved progress</description>
 
     <dependencies>
+        <!-- Optional native assessment routing and strict producer JSON. -->
+        <dependency>
+            <groupId>io.github.markpollack</groupId>
+            <artifactId>agent-judge-json-jackson2</artifactId>
+            <version>${agent-judge.version}</version>
+            <optional>true</optional>
+        </dependency>
         <!-- Consumer-visible floors for runtime families otherwise governed only by the parent. -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>

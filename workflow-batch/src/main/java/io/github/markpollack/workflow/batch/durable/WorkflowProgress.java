@@ -47,6 +47,13 @@ final class WorkflowProgress {
 
 	static void validate(RunState r, WorkflowExecutionBindings resolved) {
 		RunIntegrity.validate(r);
+		for (var receipt : r.decisions.values()) {
+			var call = invocation(r, receipt.invocation());
+			var scope = r.scopes.get(call.scope);
+			require(resolved.definition(scope.definition)
+				.graph()
+				.nodeByName(call.placement) instanceof WorkflowNode.DecisionNode, "receipt attached to non-decision");
+		}
 		for (var scope : r.scopes.values()) {
 			var workflow = resolved.definition(scope.definition);
 			require(scope.input.equals(ScopeIds.value(r.id, scope, ScopedValues.root(workflow).identity())),
@@ -70,7 +77,7 @@ final class WorkflowProgress {
 			}
 			require(scope.deadline == localDeadline && scope.deadlineOrigin.equals(origin),
 					"absolute scope deadline/origin");
-			validatePrefix(r, scope, workflow);
+			validatePrefix(r, scope, workflow, resolved);
 			Map<String, ValidatedWorkflow.ValueRecipe> recipes = new HashMap<>();
 			workflow.values().values().forEach(v -> recipes.put(ScopeIds.localValue(v.identity()), v));
 			for (var value : r.values.values())
@@ -82,7 +89,8 @@ final class WorkflowProgress {
 		}
 	}
 
-	private static void validatePrefix(RunState r, RunState.Scope s, ValidatedWorkflow w) {
+	private static void validatePrefix(RunState r, RunState.Scope s, ValidatedWorkflow w,
+			WorkflowExecutionBindings resolved) {
 		String node = w.graph().startNode();
 		Set<String> seen = new HashSet<>();
 		while (true) {
@@ -102,8 +110,15 @@ final class WorkflowProgress {
 							"terminal value identity");
 				break;
 			}
-			require(graphNode instanceof WorkflowNode.StepNode || graphNode instanceof WorkflowNode.CompositeNode,
-					"unsupported progress node");
+			if (graphNode instanceof WorkflowNode.ControlNode control && control.kind().equals("exclusive-join")) {
+				require(progress.phase.equals("SETTLED") && progress.invocation.isEmpty()
+						&& progress.settlement.equals(node), "join acceptance");
+				DecisionProgress.verifyJoin(r, s, w, node);
+				node = w.graph().unconditionalSuccessor(node);
+				continue;
+			}
+			require(graphNode instanceof WorkflowNode.StepNode || graphNode instanceof WorkflowNode.CompositeNode
+					|| graphNode instanceof WorkflowNode.DecisionNode, "unsupported progress node");
 			var call = find(r, s.id, node);
 			if (call != null) {
 				var binding = w.graph().binding(node);
@@ -132,7 +147,22 @@ final class WorkflowProgress {
 				break;
 			}
 			ScopedValues.verify(r, s, w.graph().binding(node).output().identity(), w);
-			node = w.graph().unconditionalSuccessor(node);
+			if (graphNode instanceof WorkflowNode.DecisionNode) {
+				var route = DecisionProgress.accepted(r, s, w, node);
+				var output = w.graph().binding(node);
+				var routeFact = output.output()
+					.type()
+					.getTypeName()
+					.equals("io.github.markpollack.judge.verdict.Verdict")
+							? new io.github.markpollack.workflow.flows.compiler.WorkflowModel.ValueId(
+									output.placement(), "conclusion", output.phase())
+							: output.output().identity();
+				var value = (Enum<?>) ScopedValues.decode(r, s, routeFact, w, resolved);
+				require(value.name().equals(route.outcome()), "route differs from accepted enum result");
+				node = route.target();
+			}
+			else
+				node = w.graph().unconditionalSuccessor(node);
 		}
 		require(seen.equals(s.nodes.keySet()), "saved progress is not a graph prefix");
 	}

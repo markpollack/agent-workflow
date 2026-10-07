@@ -125,7 +125,13 @@ final class WorkflowExecutionBindings {
 				.collect(java.util.stream.Collectors.toSet());
 			if (!required.equals(callees.keySet()))
 				throw new WorkflowRefusal("STEP_CONTRACT", "composite coverage differs");
-			var descriptor = new DefinitionDescriptor(current.authoredIdentity(), leafNames, callees);
+			var descriptor = new DefinitionDescriptor(current.authoredIdentity(), leafNames, callees,
+					current.graph()
+						.nodes()
+						.stream()
+						.filter(n -> n instanceof WorkflowNode.ControlNode c && c.kind().equals("exclusive-join"))
+						.map(WorkflowNode::name)
+						.collect(java.util.stream.Collectors.toSet()));
 			String key = descriptor.identity();
 			var prior = descriptors.putIfAbsent(key, descriptor);
 			if (prior != null && !prior.equals(descriptor))
@@ -158,12 +164,13 @@ final class WorkflowExecutionBindings {
 			for (var association : workflow.suppliedSteps().entrySet()) {
 				String nodeId = association.getKey().graphName();
 				var node = workflow.graph().nodeByName(nodeId);
-				if (!(node instanceof WorkflowNode.StepNode requirement))
+				if (!(node instanceof WorkflowNode.StepNode) && !(node instanceof WorkflowNode.DecisionNode))
 					throw new WorkflowRefusal("STEP_CONTRACT", "selection does not address an operation: " + nodeId);
 				Step<?, ?> step = association.getValue();
 				String name = registry.nameOf(step);
 				StepTypes actual = StepTypes.of(step.getClass());
-				if (!actual.input().equals(requirement.input()) || !actual.output().equals(requirement.output()))
+				if (!actual.input().equals(workflow.graph().binding(nodeId).input().type())
+						|| !actual.output().equals(workflow.graph().binding(nodeId).output().type()))
 					throw new WorkflowRefusal("STEP_CONTRACT", "supplied Step contract differs: " + name);
 				objects.put(nodeId, step);
 				names.put(nodeId, name);
@@ -171,7 +178,7 @@ final class WorkflowExecutionBindings {
 			var required = workflow.graph()
 				.nodes()
 				.stream()
-				.filter(WorkflowNode.StepNode.class::isInstance)
+				.filter(n -> n instanceof WorkflowNode.StepNode || n instanceof WorkflowNode.DecisionNode)
 				.map(WorkflowNode::name)
 				.collect(java.util.stream.Collectors.toSet());
 			if (!required.equals(names.keySet()))

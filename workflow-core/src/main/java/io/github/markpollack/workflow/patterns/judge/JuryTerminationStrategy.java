@@ -19,7 +19,7 @@ import io.github.markpollack.workflow.core.TerminationReason;
 import io.github.markpollack.workflow.core.LoopState;
 import io.github.markpollack.workflow.strategy.TerminationStrategy;
 import io.github.markpollack.judge.jury.Jury;
-import io.github.markpollack.judge.jury.Verdict;
+import io.github.markpollack.judge.verdict.Verdict;
 
 import java.nio.file.Path;
 import java.util.Optional;
@@ -92,14 +92,14 @@ public class JuryTerminationStrategy implements TerminationStrategy {
         }
 
         // Check if jury verdict indicates success
-        boolean passed = verdict.aggregated().pass();
-        OptionalDouble score = verdict.aggregated().effectiveScore();
+        boolean passed = verdict.judgment().pass();
+        OptionalDouble score = verdict.judgment().effectiveScore();
 
         if (requirePass && passed) {
             return TerminationResult.terminate(
                     TerminationReason.SCORE_THRESHOLD_MET,
                     String.format("Jury passed with score %s: %s",
-                            ScoreText.describe(score), verdict.aggregated().reasoning())
+                            ScoreText.describe(score), verdict.judgment().reasoning())
             );
         }
 
@@ -109,7 +109,7 @@ public class JuryTerminationStrategy implements TerminationStrategy {
             return TerminationResult.terminate(
                     TerminationReason.SCORE_THRESHOLD_MET,
                     String.format("Score %.2f >= threshold %.2f: %s",
-                            score.getAsDouble(), scoreThreshold, verdict.aggregated().reasoning())
+                            score.getAsDouble(), scoreThreshold, verdict.judgment().reasoning())
             );
         }
 

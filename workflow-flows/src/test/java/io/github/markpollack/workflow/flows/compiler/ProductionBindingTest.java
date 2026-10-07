@@ -10,9 +10,8 @@ import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import io.github.markpollack.judge.jury.Verdict;
-import io.github.markpollack.judge.jury.interpretation.Interpretation;
-import io.github.markpollack.judge.jury.interpretation.VerdictReading;
+import io.github.markpollack.judge.verdict.Verdict;
+import io.github.markpollack.judge.verdict.Verdict.Conclusion;
 import io.github.markpollack.workflow.flows.workflow.WorkflowNode;
 
 import static io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
@@ -35,7 +34,7 @@ class ProductionBindingTest {
     public record Indistinguishable(Hits first, Hits second) {}
     public record Renamed(@JsonProperty("wire_items") List<Hits> items) {}
     public record Envelope<T>(T value) {}
-    public record NativeEnvelope(Request request, Verdict evidence, Interpretation reading) {}
+    public record NativeEnvelope(Request request, Verdict evidence, Conclusion reading) {}
     @JsonFormat(shape = JsonFormat.Shape.ARRAY)
     public record UnsupportedShape(String value) {}
     public enum Route { LEFT, RIGHT }
@@ -319,7 +318,7 @@ class ProductionBindingTest {
     }
 
     @Test void nativeEvidenceBindingsAppearInTheSameGraphWithTheirActualContracts() {
-        List<Arm> arms = java.util.Arrays.stream(VerdictReading.values())
+        List<Arm> arms = java.util.Arrays.stream(Conclusion.values())
                 .map(reading -> arm(reading, call(reading.name(), Request.class, Reply.class), success())).toList();
         Compilation<?,?> built = build(Request.class, Reply.class,
                 new Choice("quality", null, new Assessment<>("jury", Request.class), arms));
@@ -330,7 +329,8 @@ class ProductionBindingTest {
             assertThat(metadata.input()).isEqualTo(binding.input().type());
             assertThat(metadata.output()).isEqualTo(binding.output().type());
         }
-        assertThat(built.bindings()).extracting(b -> b.output().type()).contains(Verdict.class, Interpretation.class);
+        assertThat(built.bindings()).extracting(b -> b.output().type()).contains(Verdict.class);
+        assertThat(built.bindings().stream().filter(b -> b.input().components().stream().anyMatch(f -> f.type()==Conclusion.class))).isEmpty();
         for (WorkflowNode node : built.graph().nodes()) {
             if (node instanceof WorkflowNode.DecisionNode decision && decision.joinNodeName() != null) {
                 assertThat(names).contains(decision.joinNodeName());

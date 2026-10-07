@@ -21,7 +21,7 @@ import io.github.markpollack.workflow.core.LoopState;
 import io.github.markpollack.workflow.core.TerminationReason;
 import io.github.markpollack.workflow.patterns.judge.SpringAiJuryAdapter;
 import io.github.markpollack.judge.jury.Jury;
-import io.github.markpollack.judge.jury.Verdict;
+import io.github.markpollack.judge.verdict.Verdict;
 import org.springframework.ai.chat.client.ChatClientRequest;
 import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.client.advisor.ToolCallAdvisor;
@@ -187,7 +187,7 @@ public class AgentLoopAdvisor extends ToolCallAdvisor {
         if (shouldEvaluateJury(newState)) {
             ChatResponse chatResponse = response.chatResponse();
             Verdict verdict = juryAdapter.evaluate(newState, chatResponse, workingDirectory);
-            if (verdict.aggregated().pass()) {
+            if (verdict.judgment().pass()) {
                 log.info("Jury passed at turn {}", completedTurn + 1);
                 notifyTurnCompleted(state.runId(), completedTurn, TerminationReason.SCORE_THRESHOLD_MET);
                 notifyLoopCompleted(state.runId(), newState, TerminationReason.SCORE_THRESHOLD_MET);

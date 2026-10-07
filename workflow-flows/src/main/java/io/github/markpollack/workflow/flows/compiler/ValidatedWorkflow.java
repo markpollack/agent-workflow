@@ -15,10 +15,10 @@ import static io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
  */
 public final class ValidatedWorkflow {
 
-	public static final String COMPILER_CONTRACT = "structured-workflow-compiler-v3";
+	public static final String COMPILER_CONTRACT = "structured-workflow-compiler-v4";
 
-	private static final Set<Capability> SUPPORTED = Set.of(Capability.OPERATION, Capability.TERMINAL,
-			Capability.CHILD);
+	private static final Set<Capability> SUPPORTED = Set.of(Capability.OPERATION, Capability.TERMINAL, Capability.CHILD,
+			Capability.DECISION, Capability.VERDICT);
 
 	/**
 	 * Exact value contract and provenance prepared from an analyzed fact. Components
@@ -47,6 +47,8 @@ public final class ValidatedWorkflow {
 
 	private final Map<ValueId, ValueRecipe> values;
 
+	private final List<Capture> captures;
+
 	private final TypeContracts.Contract input, output;
 
 	private final String authoredIdentity;
@@ -73,6 +75,7 @@ public final class ValidatedWorkflow {
 		this.authoredDuration = authoredDuration;
 		this.deadlineOrigin = policy.origin(authoredDuration);
 		definition = compiled.definition();
+		captures = compiled.captures();
 		suppliedSteps = Map.copyOf(selections);
 		rootSummary = compiled.summaries().get(new SummaryKey(Coordinates.root(definition), "root"));
 		TypeContracts contracts = new TypeContracts();
@@ -111,7 +114,23 @@ public final class ValidatedWorkflow {
 		for (Binding binding : compiled.bindings()) {
 			recipe(binding.input(), recipes, contracts);
 			recipe(binding.output(), recipes, contracts);
+			if (binding.output().type().getTypeName().equals("io.github.markpollack.judge.verdict.Verdict")
+					&& compiled.graph()
+						.nodeByName(binding.placement().graphName()) instanceof WorkflowNode.DecisionNode)
+				recipe(new Fact(new ValueId(binding.placement(), "conclusion", binding.phase()),
+						binding.operation() + ".conclusion",
+						io.github.markpollack.judge.verdict.Verdict.Conclusion.class, List.of(),
+						List.of(binding.output())), recipes, contracts);
 		}
+		for (Capture capture : compiled.captures()) {
+			recipe(capture.result(), recipes, contracts);
+			capture.alternatives().forEach(f -> recipe(f, recipes, contracts));
+		}
+		compiled.summaries()
+			.values()
+			.stream()
+			.filter(s -> s.result() != null)
+			.forEach(s -> recipe(s.result(), recipes, contracts));
 		return recipes;
 	}
 
@@ -123,10 +142,13 @@ public final class ValidatedWorkflow {
 		List<WorkflowNode> nodes = new ArrayList<>();
 		for (WorkflowNode node : source.nodes()) {
 			if (node instanceof WorkflowNode.TerminalNode terminal && terminal.intent() == Terminal.SUCCEEDED) {
-				var predecessors = source.edges().stream().filter(e -> e.to().equals(terminal.name())).toList();
-				if (predecessors.size() != 1)
-					throw new IllegalArgumentException("sequential terminal requires one predecessor");
-				ValueId result = source.binding(predecessors.getFirst().from()).output().identity();
+				ValueId result = compiled.summaries()
+					.values()
+					.stream()
+					.filter(s -> s.placement().graphName().equals(terminal.name()) && s.result() != null)
+					.map(s -> s.result().identity())
+					.findFirst()
+					.orElseThrow();
 				node = new WorkflowNode.TerminalNode(terminal.name(), terminal.intent(), terminal.reason(), result);
 			}
 			nodes.add(node);
@@ -156,6 +178,10 @@ public final class ValidatedWorkflow {
 				Binding binding = graph.binding(node.name());
 				valueIdentity(authored, binding.input().identity());
 				valueIdentity(authored, binding.output().identity());
+			}
+			if (node instanceof WorkflowNode.DecisionNode decision) {
+				contractIdentity(authored, contracts.contract(decision.input()));
+				contractIdentity(authored, contracts.contract(decision.output()));
 			}
 			if (node instanceof WorkflowNode.CompositeNode composite) {
 				contractIdentity(authored, contracts.contract(composite.input()));
@@ -197,6 +223,15 @@ public final class ValidatedWorkflow {
 			value.consumed().forEach(id -> valueIdentity(authored, id));
 		}
 
+		for (Capture capture : captures) {
+			valueIdentity(authored, capture.result().identity());
+			IdentityEncoding.field(authored, Integer.toString(capture.alternatives().size()));
+			capture.alternatives().forEach(f -> valueIdentity(authored, f.identity()));
+			new TreeMap<>(capture.routes()).forEach((route, fact) -> {
+				IdentityEncoding.field(authored, route);
+				valueIdentity(authored, fact.identity());
+			});
+		}
 		return IdentityEncoding.digest(authored.toString());
 	}
 
@@ -245,25 +280,36 @@ public final class ValidatedWorkflow {
 	}
 
 	/**
-	 * Associate supplied Steps with local Calls in authored order, then use the shared
-	 * compiler.
+	 * Associate supplied Steps with local Calls and Choices in lexical authored order,
+	 * then use the shared compiler.
 	 */
 	public static ValidatedWorkflow compile(Definition<?, ?> source, List<? extends Step<?, ?>> steps,
 			DeadlinePolicy policy) {
 		Definition<?, ?> owned = DefinitionOwnership.acquire(source);
 		Map<Placement, Step<?, ?>> selected = new LinkedHashMap<>();
-		int index = 0;
-		for (int i = 0; i < owned.nodes().size(); i++) {
-			Node node = owned.nodes().get(i);
-			if (node instanceof Call) {
-				if (index == steps.size())
-					throw new IllegalArgumentException("missing operation selection");
-				selected.put(Coordinates.node(Coordinates.root(owned), node, i), steps.get(index++));
-			}
-		}
-		if (index != steps.size())
+		var remaining = steps.iterator();
+		collectSelections(owned.nodes(), Coordinates.root(owned), remaining, selected);
+		if (remaining.hasNext())
 			throw new IllegalArgumentException("extraneous operation selection");
 		return new CompilationSession().compileOwned(owned, selected, Map.of(), policy);
+	}
+
+	private static void collectSelections(List<Node> nodes, Placement parent, Iterator<? extends Step<?, ?>> remaining,
+			Map<Placement, Step<?, ?>> selected) {
+		for (int i = 0; i < nodes.size(); i++) {
+			Node node = nodes.get(i);
+			Placement at = Coordinates.node(parent, node, i);
+			if (node instanceof Call || node instanceof Choice) {
+				if (!remaining.hasNext())
+					throw new IllegalArgumentException("missing operation selection");
+				selected.put(at, remaining.next());
+			}
+			if (node instanceof Choice choice)
+				for (int arm = 0; arm < choice.arms().size(); arm++) {
+					var body = choice.arms().get(arm);
+					collectSelections(body.nodes(), at.child("arm", body.outcome().name(), arm), remaining, selected);
+				}
+		}
 	}
 
 	private static final class CompilationSession {
@@ -307,14 +353,37 @@ public final class ValidatedWorkflow {
 			var authored = owned.deadline();
 			Map<Placement, ValidatedWorkflow> references = new LinkedHashMap<>();
 			Set<Placement> required = new HashSet<>();
+			List<Node> nodes = normalize(owned.nodes(), Coordinates.root(owned), children, references, required);
+			if (!required.equals(children.keySet()))
+				throw new IllegalArgumentException("extraneous validated child selection");
+			if (nodes.stream().noneMatch(n -> n instanceof Call || n instanceof Child || n instanceof Choice))
+				throw new IllegalArgumentException("workflow requires at least one Step or composite");
+			owned = new Definition<>(owned.name(), owned.input(), owned.output(), List.copyOf(nodes),
+					policy.resolve(authored));
+			return new ValidatedWorkflow(StructuredWorkflowCompiler.compileOwned(owned), Map.copyOf(steps), references,
+					policy, authored);
+		}
+
+		private List<Node> normalize(List<Node> body, Placement parent, Map<Placement, ValidatedWorkflow> children,
+				Map<Placement, ValidatedWorkflow> references, Set<Placement> required) {
 			List<Node> nodes = new ArrayList<>();
-			for (int i = 0; i < owned.nodes().size(); i++) {
-				Node node = owned.nodes().get(i);
+			for (int i = 0; i < body.size(); i++) {
+				Node node = body.get(i);
 				if (!SUPPORTED.contains(Coordinates.capability(node)))
 					throw new IllegalArgumentException(
 							"unsupported production capability: " + Coordinates.capability(node));
-				if (node instanceof Child child) {
-					Placement placement = Coordinates.node(Coordinates.root(owned), node, i);
+				if (node instanceof Choice choice) {
+					Placement position = Coordinates.node(parent, node, i);
+					List<Arm> arms = new ArrayList<>();
+					for (int a = 0; a < choice.arms().size(); a++) {
+						Arm arm = choice.arms().get(a);
+						arms.add(new Arm(arm.outcome(), normalize(arm.nodes(),
+								position.child("arm", arm.outcome().name(), a), children, references, required)));
+					}
+					nodes.add(new Choice(choice.id(), choice.operation(), choice.assessment(), arms));
+				}
+				else if (node instanceof Child child) {
+					Placement placement = Coordinates.node(parent, node, i);
 					ValidatedWorkflow selected = child.reference();
 					if (selected == null) {
 						required.add(placement);
@@ -324,18 +393,8 @@ public final class ValidatedWorkflow {
 						var matches = checked.computeIfAbsent(child.definition(), d -> new IdentityHashMap<>());
 						if (!matches.containsKey(selected)) {
 							Map<Placement, ValidatedWorkflow> nested = new LinkedHashMap<>();
-							for (int j = 0; j < child.definition().nodes().size(); j++) {
-								Node nestedNode = child.definition().nodes().get(j);
-								if (nestedNode instanceof Child nestedChild && nestedChild.reference() == null) {
-									Placement position = Coordinates.node(Coordinates.root(child.definition()),
-											nestedNode, j);
-									ValidatedWorkflow target = selected.children.get(position);
-									if (target == null)
-										throw new IllegalArgumentException(
-												"missing validated child selection at " + position);
-									nested.put(position, target);
-								}
-							}
+							unresolved(child.definition().nodes(), Coordinates.root(child.definition()), selected,
+									nested);
 							ValidatedWorkflow expected = compileOwned(child.definition(), selected.suppliedSteps,
 									nested, selected.deadlinePolicy);
 							requireSameSelection(expected, selected, placement);
@@ -348,14 +407,26 @@ public final class ValidatedWorkflow {
 				else
 					nodes.add(node);
 			}
-			if (!required.equals(children.keySet()))
-				throw new IllegalArgumentException("extraneous validated child selection");
-			if (nodes.stream().noneMatch(n -> n instanceof Call || n instanceof Child))
-				throw new IllegalArgumentException("workflow requires at least one Step or composite");
-			owned = new Definition<>(owned.name(), owned.input(), owned.output(), List.copyOf(nodes),
-					policy.resolve(authored));
-			return new ValidatedWorkflow(StructuredWorkflowCompiler.compileOwned(owned), Map.copyOf(steps), references,
-					policy, authored);
+			return List.copyOf(nodes);
+		}
+
+		private void unresolved(List<Node> body, Placement parent, ValidatedWorkflow selected,
+				Map<Placement, ValidatedWorkflow> nested) {
+			for (int i = 0; i < body.size(); i++) {
+				Node node = body.get(i);
+				Placement at = Coordinates.node(parent, node, i);
+				if (node instanceof Child c && c.reference() == null) {
+					var target = selected.children.get(at);
+					if (target == null)
+						throw new IllegalArgumentException("missing validated child selection at " + at);
+					nested.put(at, target);
+				}
+				if (node instanceof Choice c)
+					for (int a = 0; a < c.arms().size(); a++) {
+						Arm arm = c.arms().get(a);
+						unresolved(arm.nodes(), at.child("arm", arm.outcome().name(), a), selected, nested);
+					}
+			}
 		}
 
 	}
@@ -401,7 +472,7 @@ public final class ValidatedWorkflow {
 	}
 
 	public Set<Capability> capabilities() {
-		return children.isEmpty() ? Set.of(Capability.OPERATION, Capability.TERMINAL) : SUPPORTED;
+		return rootSummary.capabilities();
 	}
 
 	public String coordinateScheme() {
@@ -438,14 +509,21 @@ public final class ValidatedWorkflow {
 		return children;
 	}
 
+	/** Immutable compiler-selected convergence alternatives. */
+	public List<Capture> captures() {
+		return captures;
+	}
+
 	/** Immutable exact-source/assembly recipes keyed by logical value identity. */
 	public Map<ValueId, ValueRecipe> values() {
 		return values;
 	}
 
 	/**
-	 * The explicit terminal of the sequential subset; never inferred from list
-	 * exhaustion.
+	 * Convenience accessor for a definition with exactly one explicit terminal. Choices
+	 * with multiple terminals use the terminal nodes on {@link #graph()}.
+	 * @return the single explicit terminal
+	 * @throws IllegalStateException if more than one terminal exists
 	 */
 	public WorkflowNode.TerminalNode terminal() {
 		return graph.nodes()

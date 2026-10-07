@@ -102,14 +102,7 @@ final class RegionTopology {
 			}
 			case Choice choice -> {
 				String route = id, join = p.child("join", "choice", 0).graphName();
-				if (choice.assessment() != null) {
-					String interpretation = p.child("evidence", "interpretation", 0).graphName();
-					route = p.child("routing", "native-reading", 0).graphName();
-					edge(id, interpretation);
-					edge(interpretation, route);
-					step(id);
-					step(interpretation);
-				}
+
 				WorkflowNode.DecisionNode routing = expect(route, WorkflowNode.DecisionNode.class);
 				require(Objects.equals(routing.joinNodeName(), summary.continues() ? join : null),
 						"decision join reference disagreement");

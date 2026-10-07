@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
 
-import io.github.markpollack.judge.jury.interpretation.VerdictReading;
+import io.github.markpollack.judge.verdict.Verdict.Conclusion;
 
 import static io.github.markpollack.workflow.flows.r1probe.integrated.IntegratedModel.*;
 
@@ -92,7 +92,7 @@ public final class FluentCandidate {
         public <N,E extends Enum<E>> FirstChoice<I,C,E> decision(String label, Op<N,E> op) {
             use(); return new FirstChoice<>(session, choice(session, session.root, label, op, null), current);
         }
-        public <N> FirstChoice<I,C,VerdictReading> verdict(String label, Assessment<N> assessment) {
+        public <N> FirstChoice<I,C,Conclusion> verdict(String label, Assessment<N> assessment) {
             use(); return new FirstChoice<>(session, choice(session, session.root, label, null, assessment), current);
         }
         public <N> LoopBound<I,C> repeatUntil(String label, Op<N,Boolean> test) {
@@ -299,7 +299,7 @@ public final class FluentCandidate {
         public <N,E extends Enum<E>> LoopChoice<I,C,E> decision(String label, Op<N,E> op) {
             use(); return new LoopChoice<>(session, loop, choice(session, loop.body, label, op, null), incoming);
         }
-        public <N> LoopChoice<I,C,VerdictReading> verdict(String label, Assessment<N> assessment) {
+        public <N> LoopChoice<I,C,Conclusion> verdict(String label, Assessment<N> assessment) {
             use(); return new LoopChoice<>(session, loop, choice(session, loop.body, label, null, assessment), incoming);
         }
     }
@@ -319,7 +319,7 @@ public final class FluentCandidate {
         public <N,E extends Enum<E>> LoopChoice<I,C,E> decision(String label, Op<N,E> op) {
             use(); return new LoopChoice<>(session, loop, choice(session, loop.body, label, op, null), current);
         }
-        public <N> LoopChoice<I,C,VerdictReading> verdict(String label, Assessment<N> assessment) {
+        public <N> LoopChoice<I,C,Conclusion> verdict(String label, Assessment<N> assessment) {
             use(); return new LoopChoice<>(session, loop, choice(session, loop.body, label, null, assessment), current);
         }
         public Seq<I,C> end() { use(); return new Seq<>(session, current); }
@@ -367,7 +367,7 @@ public final class FluentCandidate {
         public <N,E extends Enum<E>> FanChoice<I,C,E> decision(String label, Op<N,E> op) {
             use(); return new FanChoice<>(session, fan, choice(session, fan.body, label, op, null), current);
         }
-        public <N> FanChoice<I,C,VerdictReading> verdict(String label, Assessment<N> assessment) {
+        public <N> FanChoice<I,C,Conclusion> verdict(String label, Assessment<N> assessment) {
             use(); return new FanChoice<>(session, fan, choice(session, fan.body, label, null, assessment), current);
         }
         public Seq<I,List<C>> end() { use(); return new Seq<>(session, new ListType(current)); }
@@ -482,7 +482,7 @@ public final class FluentCandidate {
         public <N,E extends Enum<E>> LocalChoice<MemberBody<P>,E> decision(String label, Op<N,E> op) {
             use(); return new LocalChoice<>(session, choice(session, member.nodes, label, op, null), () -> new MemberBody<>(session, group, member, parent));
         }
-        public <N> LocalChoice<MemberBody<P>,VerdictReading> verdict(String label, Assessment<N> assessment) {
+        public <N> LocalChoice<MemberBody<P>,Conclusion> verdict(String label, Assessment<N> assessment) {
             use(); return new LocalChoice<>(session, choice(session, member.nodes, label, null, assessment), () -> new MemberBody<>(session, group, member, parent));
         }
         public MemberBody<P> branch(String name) { use(); return new MemberBody<>(session, group, group.member(name), parent); }

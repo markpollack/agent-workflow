@@ -8,9 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import io.github.markpollack.judge.jury.Verdict;
-import io.github.markpollack.judge.jury.interpretation.Interpretation;
-import io.github.markpollack.judge.jury.interpretation.VerdictReading;
+import io.github.markpollack.judge.verdict.Verdict;
 
 import io.github.markpollack.workflow.flows.workflow.EdgeCondition;
 import io.github.markpollack.workflow.flows.workflow.WorkflowEdge;
@@ -146,18 +144,7 @@ final class GraphLowering {
 					String join = p.child("join", "choice", 0).graphName();
 					String routing = id;
 					String declaredJoin = summary(p).continues() ? join : null;
-					if (c.assessment() != null) {
-						addTypedNode(id, info.input(), Verdict.class);
-						String interpretation = p.child("evidence", "interpretation", 0).graphName();
-						addTypedNode(interpretation, Verdict.class, Interpretation.class);
-						routing = p.child("routing", "native-reading", 0).graphName();
-						edges.add(WorkflowEdge.sequence(id, interpretation));
-						edges.add(WorkflowEdge.sequence(interpretation, routing));
-						nodes.add(new WorkflowNode.DecisionNode(routing, Interpretation.class, VerdictReading.class,
-								declaredJoin));
-					}
-					else
-						nodes.add(new WorkflowNode.DecisionNode(id, info.input(), info.output(), declaredJoin));
+                    nodes.add(new WorkflowNode.DecisionNode(id,info.input(),info.output(),declaredJoin));
 					for (int a = 0; a < c.arms().size(); a++) {
 						Arm arm = c.arms().get(a);
 						Fragment body = sequence(arm.nodes(), p.child("arm", arm.outcome().name(), a));

@@ -17,7 +17,7 @@ package io.github.markpollack.workflow.patterns.advisor;
 
 import io.github.markpollack.workflow.core.LoopState;
 import io.github.markpollack.workflow.core.TerminationReason;
-import io.github.markpollack.judge.jury.Verdict;
+import io.github.markpollack.judge.verdict.Verdict;
 import org.springframework.ai.chat.client.ChatClientResponse;
 
 import java.util.OptionalDouble;
@@ -65,14 +65,14 @@ public class JuryPassedException extends AgentLoopTerminatedException {
      * is ordinary, and this exception is only ever raised on a passing verdict.
      */
     public OptionalDouble getScore() {
-        return verdict == null ? OptionalDouble.empty() : verdict.aggregated().effectiveScore();
+        return verdict == null ? OptionalDouble.empty() : verdict.judgment().effectiveScore();
     }
 
     private static String formatMessage(Verdict verdict) {
         if (verdict == null) {
             return "Jury passed";
         }
-        OptionalDouble score = verdict.aggregated().effectiveScore();
+        OptionalDouble score = verdict.judgment().effectiveScore();
         return score.isPresent()
                 ? String.format("Jury passed with score %.2f", score.getAsDouble())
                 : "Jury passed";

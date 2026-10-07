@@ -18,9 +18,9 @@ The broader R1 DSL is intended to express decisions, verdict-based routing, para
 
 ## Current development status
 
-R1 is under development and unreleased. This checkout supports durable Steps, nested reusable workflows within one run, and explicit terminal outcomes. Decisions, verdict routing, parallelism, loops and waits remain planned work.
+R1 is under development and unreleased. This checkout supports durable Steps, nested reusable workflows within one run, exhaustive enum decisions, native Verdict routing, and explicit terminal outcomes. Parallelism, loops and waits remain planned work.
 
-The examples below describe supported execution. The current API selects supplied steps by registration name; it is a development API, not the final authoring surface.
+The examples below describe supported execution. The public DSL selects supplied Step objects; registration names give those objects stable deployment identities.
 
 ## Reuse earlier values
 
@@ -84,6 +84,38 @@ Spring qualifiers select a bean when injection by type is ambiguous. DSL labels 
 The immutable `WorkflowGraph` determines execution through its entry node and transitions. Stored node/binding order and registry order do not determine traversal. Explicit FAILED and CANCELLED terminals require a reason.
 
 `StepContext` identifies the run, logical step invocation and physical execution attempt. Business inputs are resolved from the validated workflow definition.
+
+## Exhaustive decisions and native assessments
+
+An ordinary decision returns a concrete Java enum. Every constant must have exactly one arm. `end()` closes that choice; continuing arms converge on compiler-derived captures. Terminal arms need no later continuation. Arms may contain further decisions and reusable workflows. Branch-local values remain isolated until a checked convergence makes a value available.
+
+```java
+var workflow = Workflows.define("render")
+        .decision("destination", choose)
+        .when(Destination.SHORT).then(shortForm)
+        .when(Destination.FULL).then(fullForm).end()
+        .then(publish).terminate(Terminal.SUCCEEDED).build();
+```
+
+For native assessments, supply a `Step<Subject,Verdict>` that configures and invokes the current Agent Judge `Jury` for the subject. The runtime validates the returned Verdict with `requireUsable()` and routes using its native `conclusion()`. Declare all four conclusions:
+
+```java
+var workflow = Workflows.define("explain-assessment")
+        .verdict("quality", assess)
+        .when(PASS).then(explain)
+        .when(FAIL).then(explain)
+        .when(INCONCLUSIVE).then(explain)
+        .when(NOT_APPLICABLE).then(explain).end()
+        .terminate(Terminal.SUCCEEDED).build();
+```
+
+The imports for these constants are `Verdict.Conclusion.*`. An arm can request a record such as `Explanation(Subject subject, Verdict assessment, Verdict.Conclusion conclusion)`; the compiler supplies the original subject, complete assessment and accepted conclusion. Native ERROR and ABSTAIN judgments can both conclude INCONCLUSIVE, while their distinct judgments, reasoning, errors, invocation facts and composition evidence remain in the assessment. Application reliance or score policy is separate from this routing contract. A thrown assessment call fails with `ASSESSMENT_FAILED`; an unusable returned Verdict fails with `ASSESSMENT_INVALID`. Neither failure manufactures an INCONCLUSIVE assessment.
+
+Workflow accepts the assessment, selected route and exact initial arm input in one store transaction before executing the arm. Convergence captures retain the selected source and exact payload when the arm completes. Recovery uses those saved facts without repeating the accepted assessment or deriving its route again. Unaccepted deliveries may repeat after a crash, so external effects still need application idempotency.
+
+See [DecisionRecoveryExample](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/DecisionRecoveryExample.java) for a complete compiling application using a current native jury, ordinary decisions, injected settings and durable execution. [DecisionRecoveryIT](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/durable/DecisionRecoveryIT.java) kills and replaces JVMs around assessment, arm and capture commits.
+
+Native routing uses Agent Judge `0.18.0-SNAPSHOT`, `agent-judge-core` and `agent-judge-json-jackson2`, with the producer's strict version-6 Verdict codec. These dependencies are optional for applications using only ordinary workflows; native applications must include the JSON artifact. The codec supports the producer's registered built-in requirement and voting-rule forms and refuses unsupported custom forms rather than discarding evidence. Native artifact fingerprints participate in compatibility, so changing snapshot bytes requires a new compatible deployment decision. Store format 7 deliberately refuses older databases; no automatic migration is supplied.
 
 ## Reuse a workflow within one run
 

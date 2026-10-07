@@ -38,6 +38,13 @@ class AdmissionConsumerTest {
         assertThat(compiles(method+".then(step).terminate(Terminal.SUCCEEDED).then(step).build(); }")).isFalse();
     }
 
+    @Test void consumersCloseChoiceArmsThroughThePublicDsl() throws Exception {
+        String prefix="enum Route { LEFT, RIGHT } Object build(Step<?,?> choose,Step<?,?> arm) { return Workflows.define(\"choice\").decision(\"route\",choose)";
+        assertThat(compiles(prefix+".when(Route.LEFT).then(arm).terminate(Terminal.SUCCEEDED).when(Route.RIGHT).then(arm).terminate(Terminal.SUCCEEDED).end().build(); }")).isTrue();
+        assertThat(compiles(prefix+".when(Route.LEFT).then(arm).build(); }")).isFalse();
+        assertThat(compiles(prefix+".build(); }")).isFalse();
+    }
+
     public static class WithoutJudge {
         public static class Echo implements io.github.markpollack.workflow.flows.Step<String,String> {
             public String execute(io.github.markpollack.workflow.flows.StepContext context,String input) { return input; }

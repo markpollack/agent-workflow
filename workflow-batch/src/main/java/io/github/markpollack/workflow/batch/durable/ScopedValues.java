@@ -57,6 +57,12 @@ final class ScopedValues {
 		if (id.role().equals("root") && !scope.parent.isEmpty()) {
 			source = WorkflowProgress.invocation(run, scope.opening).input;
 		}
+		else if (id.role().startsWith("capture:")) {
+			var accepted = run.decisions.get(producer);
+			if (accepted == null || !accepted.captures().containsKey(value.id))
+				throw new WorkflowRefusal("VALUE_CHANGED", "capture acceptance missing");
+			source = accepted.captures().get(value.id);
+		}
 		else if (!id.role().equals("root")) {
 			var call = WorkflowProgress.find(run, scope.id, id.placement().graphName());
 			if (call != null && call.kind.equals("COMPOSITE") && call.output.equals(value.id)

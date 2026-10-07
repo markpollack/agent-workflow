@@ -16,9 +16,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import io.github.markpollack.judge.jury.Verdict;
-import io.github.markpollack.judge.jury.interpretation.Interpretation;
-import io.github.markpollack.judge.jury.interpretation.VerdictReading;
+import io.github.markpollack.judge.verdict.Verdict;
+
+import io.github.markpollack.judge.verdict.Verdict.Conclusion;
 
 import io.github.markpollack.workflow.flows.workflow.EdgeCondition;
 import io.github.markpollack.workflow.flows.workflow.WorkflowEdge;
@@ -123,9 +123,10 @@ final class RegionAnalyzer {
                         domain=(Class<?>)choice.operation().output();
                         call(scope,placement,choice.id(),choice.operation().input(),domain,true);
                     } else {
-                        domain=VerdictReading.class;
+                        domain=Conclusion.class;
                         call(scope,placement,choice.id(),choice.assessment().input(),Verdict.class,true);
-                        call(scope,placement.child("evidence","interpretation",0),choice.id()+"Reading",Verdict.class,Interpretation.class,true);
+                        Fact verdict=bindings.getLast().output();
+                        scope.facts.add(fact(placement,"conclusion",scope.phase,choice.id()+".conclusion",Conclusion.class,List.of(),List.of(verdict)));
                     }
                     require(choice.arms()!=null,"choice arms required");
                     Set<Enum<?>> expected=new LinkedHashSet<>();
@@ -145,8 +146,7 @@ final class RegionAnalyzer {
                     scope.merge(placement,choice.id(),arms);
                     if(!scope.terminated) meta(scope.phase,placement.child("join","choice",0),"exclusive-join",typeOf(scope.carrier),typeOf(scope.carrier),Map.of());
                     meta(scope.phase,placement,choice.assessment()==null?"decision":"verdict",choice.operation()!=null?choice.operation().input():choice.assessment().input(),choice.assessment()==null?domain:Verdict.class,
-                            choice.assessment()==null?Map.of():Map.of("support","SUPPORTED","reading","non-null"));
-                    if(choice.assessment()!=null) meta(scope.phase,placement.child("routing","native-reading",0),"native-route",Interpretation.class,VerdictReading.class,Map.of("support","SUPPORTED","reading","non-null"));
+                            choice.assessment()==null?Map.of():Map.of("native","requireUsable/conclusion"));
                 }
                 case Parallel parallel -> {
                     if(parallel.output()!=null) applicationType(parallel.output());
@@ -210,7 +210,7 @@ final class RegionAnalyzer {
             }
             normalExits=scope.terminated?List.of():List.of(Coordinates.normalExit(node,placement));
             RegionSummary nodeSummary=new RegionSummary(placement,scope.phase,!scope.terminated,
-                    scope.terminated?null:scope.carrier,normalExits,effects,
+                    node instanceof End ? scope.carrier : scope.terminated?null:scope.carrier,normalExits,effects,
                     captures.subList(nodeCaptures,captures.size()),products.subList(nodeProducts,products.size()),
                     required,phaseMetadata.get(new SummaryKey(placement,scope.phase)).configuration());
             summaries.put(new SummaryKey(placement,scope.phase),nodeSummary);
@@ -345,7 +345,9 @@ final class RegionAnalyzer {
                 Fact capture=fact(placement,"capture:"+type.getTypeName(),phase,label+".capture<"+shortName(type)+">",type,List.of(),List.of());
                 supersede(type,selected);
                 facts.add(capture); missing.remove(type); unproven.remove(type);
-                captures.add(new Capture(placement,capture,selected)); continuation=capture;
+                Map<String,Fact> routes=new LinkedHashMap<>();
+                for(int i=0;i<live.size();i++) routes.put(live.get(i).path.segments().getLast().label(),selected.get(i));
+                captures.add(new Capture(placement,capture,selected,routes)); continuation=capture;
             }
             if(continuation!=null) carrier=continuation;
             else {

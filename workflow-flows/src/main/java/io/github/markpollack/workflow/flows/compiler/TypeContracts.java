@@ -42,7 +42,7 @@ public final class TypeContracts {
         IdentityEncoding.field(out,type.toCanonical());
         if(!seen.add(type)) return;
         Class<?> raw=type.getRawClass();
-        if(nativeEvidence(raw)) { IdentityEncoding.field(out,"native-judge-0.17.0-portable-values"); return; }
+        if(nativeEvidence(raw)) { IdentityEncoding.field(out,"native-judge-0.18-result-json-v6"); IdentityEncoding.field(out,NativeVerdictCodec.identity()); return; }
         if(raw==List.class) { describe(type.containedType(0),seen,out); return; }
         if(raw.isEnum()) {
             for(Object value:raw.getEnumConstants()) IdentityEncoding.field(out,mapper.valueToTree(value).toString());
@@ -85,14 +85,23 @@ public final class TypeContracts {
 
 	static final String CODEC = "jackson-record";
 	static final String VERSION = "2.22.2/r1-1";
-	static final String CONFIGURATION = "strict-record-and-native-judge-0.17.0";
+	static final String CONFIGURATION = "strict-record-and-native-judge-0.18-result-json-v6";
 
 	private final ObjectMapper mapper = JsonMapper.builder()
 		.disable(MapperFeature.ALLOW_COERCION_OF_SCALARS)
 		.disable(DeserializationFeature.ACCEPT_FLOAT_AS_INT)
 		.enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
 		.enable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
-		.enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).build();
+		.enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).addModule(nativeModule()).build();
+
+    private static com.fasterxml.jackson.databind.Module nativeModule() {
+        try {
+            Class.forName("io.github.markpollack.judge.verdict.Verdict",false,TypeContracts.class.getClassLoader());
+            Class.forName("io.github.markpollack.judge.serialization.VerdictCodec",false,TypeContracts.class.getClassLoader());
+        }
+        catch(ClassNotFoundException absent) { return new com.fasterxml.jackson.databind.module.SimpleModule(); }
+        return NativeVerdictCodec.module();
+    }
 
 	/** Checks known type and wire-shape requirements without constructing or encoding values. */
 	public void requireType(Type declaration) {
@@ -444,8 +453,7 @@ public final class TypeContracts {
 
 	private static boolean nativeEvidence(Class<?> raw) {
 		String name=raw.getName();
-        if(!name.equals("io.github.markpollack.judge.jury.Verdict")
-                && !name.equals("io.github.markpollack.judge.jury.interpretation.Interpretation")) return false;
+        if(!name.equals("io.github.markpollack.judge.verdict.Verdict")) return false;
         try { return raw==Class.forName(name,false,TypeContracts.class.getClassLoader()); }
         catch(ClassNotFoundException missing) { throw new IllegalArgumentException("native evidence codec dependency unavailable",missing); }
 	}

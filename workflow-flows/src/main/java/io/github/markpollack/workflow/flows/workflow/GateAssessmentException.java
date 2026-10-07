@@ -1,6 +1,6 @@
 package io.github.markpollack.workflow.flows.workflow;
 
-import io.github.markpollack.judge.jury.Verdict;
+import io.github.markpollack.judge.verdict.Verdict;
 
 /**
  * Ends a run whose gate reached no finding, after the engine has recorded the evidence.

@@ -24,8 +24,8 @@ import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 
-import io.github.markpollack.judge.jury.Verdict;
-import io.github.markpollack.judge.jury.interpretation.Interpretation;
+import io.github.markpollack.judge.verdict.Verdict;
+import io.github.markpollack.judge.verdict.Verdict.Conclusion;
 
 /** Test-only codec contract shared by definition validation and value checks. */
 public final class PinnedRecordCodec {
@@ -39,7 +39,18 @@ public final class PinnedRecordCodec {
 		.disable(DeserializationFeature.ACCEPT_FLOAT_AS_INT)
 		.enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
 		.enable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
-		.enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).build();
+		.enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).addModule(nativeModule()).build();
+
+    private static com.fasterxml.jackson.databind.Module nativeModule() {
+        var codec=new io.github.markpollack.judge.serialization.VerdictCodec();
+        var module=new com.fasterxml.jackson.databind.module.SimpleModule();
+        module.addSerializer(Verdict.class,new com.fasterxml.jackson.databind.JsonSerializer<>() {
+            public void serialize(Verdict v,com.fasterxml.jackson.core.JsonGenerator g,com.fasterxml.jackson.databind.SerializerProvider p) throws java.io.IOException {g.writeRawValue(codec.write(v));}
+        });
+        module.addDeserializer(Verdict.class,new com.fasterxml.jackson.databind.JsonDeserializer<>() {
+            public Verdict deserialize(com.fasterxml.jackson.core.JsonParser p,com.fasterxml.jackson.databind.DeserializationContext c) throws java.io.IOException {return codec.read(c.readTree(p).toString());}
+        });return module;
+    }
 
 	/** Checks known type and wire-shape requirements without constructing or encoding values. */
 	public void requireType(Type declaration) {
@@ -384,7 +395,7 @@ public final class PinnedRecordCodec {
 	}
 
 	private static boolean nativeEvidence(Class<?> raw) {
-		return raw == Verdict.class || raw == Interpretation.class;
+		return raw == Verdict.class;
 	}
 
 	private static boolean scalar(Class<?> raw) {

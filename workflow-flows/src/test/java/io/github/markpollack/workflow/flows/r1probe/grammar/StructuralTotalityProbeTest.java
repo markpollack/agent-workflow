@@ -5,7 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
-import io.github.markpollack.judge.jury.interpretation.VerdictReading;
+import io.github.markpollack.judge.verdict.Verdict.Conclusion;
 import org.junit.jupiter.api.Test;
 
 import static io.github.markpollack.workflow.flows.r1probe.grammar.GrammarFixtures.*;
@@ -46,17 +46,17 @@ class StructuralTotalityProbeTest {
     }
 
     @Test void eachMissingNativeReadingAndEveryDuplicateRefusesAtBuild() {
-        for (VerdictReading omitted : VerdictReading.values()) {
+        for (Conclusion omitted : Conclusion.values()) {
             var choice = define("missing-" + omitted).then(outline).verdict("quality", jury);
-            for (VerdictReading reading : VerdictReading.values()) {
+            for (Conclusion reading : Conclusion.values()) {
                 if (reading != omitted) choice = choice.when(reading).then(story).terminate(SUCCEEDED);
             }
             var finalChoice = choice;
             refusal("missing or foreign outcomes", () -> finalChoice.end().build());
         }
-        for (VerdictReading duplicated : VerdictReading.values()) {
+        for (Conclusion duplicated : Conclusion.values()) {
             var choice = define("duplicate-" + duplicated).then(outline).verdict("quality", jury);
-            for (VerdictReading reading : VerdictReading.values()) {
+            for (Conclusion reading : Conclusion.values()) {
                 choice = choice.when(reading).then(story).terminate(SUCCEEDED);
             }
             var finalChoice = choice.when(duplicated).then(story).terminate(SUCCEEDED);

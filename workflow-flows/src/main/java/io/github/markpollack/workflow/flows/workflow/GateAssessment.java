@@ -1,7 +1,7 @@
 package io.github.markpollack.workflow.flows.workflow;
 
-import io.github.markpollack.judge.jury.Verdict;
-import io.github.markpollack.judge.result.JudgmentStatus;
+import io.github.markpollack.judge.verdict.Verdict;
+import io.github.markpollack.judge.judgment.JudgmentStatus;
 import org.jspecify.annotations.Nullable;
 
 import java.util.Objects;
@@ -22,7 +22,7 @@ import java.util.Objects;
  * from a returned verdict is lossless by construction: nothing is extracted, projected or
  * summarised out of the framework's result, so no verdict fact is dropped on the way in. Neutral,
  * language-independent result records belong at the wire boundary. Reading the status of an
- * {@link Inconclusive} assessment means reading {@code verdict().aggregated().status()}, which is
+ * {@link Inconclusive} assessment means reading {@code verdict().judgment().status()}, which is
  * where that fact already lives.
  *
  * <h2>It holds no policy</h2>
@@ -71,7 +71,7 @@ public sealed interface GateAssessment permits GateAssessment.Decided, GateAsses
         public Inconclusive {
             Objects.requireNonNull(verdict, "verdict");
             Objects.requireNonNull(reason, "reason");
-            JudgmentStatus status = verdict.aggregated().status();
+            JudgmentStatus status = verdict.judgment().status();
             switch (status) {
                 case ABSTAIN, NOT_APPLICABLE, ERROR -> {
                     // These statuses carry no pass/fail finding and therefore no routing decision.

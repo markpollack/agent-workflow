@@ -17,7 +17,7 @@ package io.github.markpollack.workflow.strategy;
 
 import io.github.markpollack.workflow.core.TerminationReason;
 import io.github.markpollack.workflow.core.LoopState;
-import io.github.markpollack.judge.jury.Verdict;
+import io.github.markpollack.judge.verdict.Verdict;
 
 import java.util.List;
 import java.util.OptionalDouble;
@@ -137,14 +137,14 @@ public interface TerminationStrategy {
             if (verdict == null) {
                 return TerminationResult.continueLoop();
             }
-            if (verdict.aggregated().pass()) {
+            if (verdict.judgment().pass()) {
                 return TerminationResult.terminate(TerminationReason.SCORE_THRESHOLD_MET,
                         "Jury passed");
             }
             // Check score threshold. A verdict that reached no finding — an abstention or an
             // evaluation error — carries no score to compare, and the loop continues rather
             // than reading that absence as a score below the threshold.
-            OptionalDouble score = verdict.aggregated().effectiveScore();
+            OptionalDouble score = verdict.judgment().effectiveScore();
             if (score.isPresent() && score.getAsDouble() >= threshold) {
                 return TerminationResult.terminate(TerminationReason.SCORE_THRESHOLD_MET,
                         String.format("Score %.2f >= threshold %.2f", score.getAsDouble(), threshold));

@@ -334,7 +334,7 @@ public final class DurableWorkflows implements AutoCloseable {
 		var node = local.graph().nodeByName(progress.node);
 		if (node instanceof WorkflowNode.CompositeNode)
 			return enterComposite(tx, run, scope, progress, local, resolved);
-		if (!(node instanceof WorkflowNode.StepNode))
+		if (!(node instanceof WorkflowNode.StepNode) && !(node instanceof WorkflowNode.DecisionNode))
 			throw new WorkflowRefusal("PROGRESS_INVALID", "eligible node is not a supported call");
 		var recipe = local.graph().binding(node.name());
 		var invocation = WorkflowProgress.find(run, scope.id, node.name());
@@ -363,6 +363,7 @@ public final class DurableWorkflows implements AutoCloseable {
 		invocation.scope = scope.id;
 		invocation.placement = recipe.placement().graphName();
 		invocation.kind = kind;
+		invocation.status = "PREPARED";
 		invocation.input = ScopeIds.value(run.id, scope, recipe.input().identity());
 		invocation.output = ScopeIds.value(run.id, scope, recipe.output().identity());
 		ScopedValues.materialize(run, scope, recipe.input().identity(), local, resolved, invocation.id);
@@ -383,7 +384,9 @@ public final class DurableWorkflows implements AutoCloseable {
 		var binding = workflow.graph().binding(progress.node);
 		RunState.Invocation call;
 		try {
-			call = newInvocation(run, parent, binding, "COMPOSITE", workflow, resolved);
+			call = WorkflowProgress.find(run, parent.id, progress.node);
+			if (call == null)
+				call = newInvocation(run, parent, binding, "COMPOSITE", workflow, resolved);
 		}
 		catch (WorkflowRefusal ex) {
 			if (!ex.code().equals("INPUT_FAILED") && !ex.code().equals("ENCODE_FAILED"))
@@ -411,6 +414,7 @@ public final class DurableWorkflows implements AutoCloseable {
 		if (run.scopes.putIfAbsent(child.id, child) != null)
 			throw new WorkflowRefusal("PROGRESS_INVALID", "duplicate scope");
 		call.child = child.id;
+		call.status = "UNRESOLVED";
 		progress.phase = "WAITING_CHILD";
 		run.event("COMPOSITE_ENTERED", tx.now, call.id + ":" + child.id);
 		tx.save(run);
@@ -435,7 +439,8 @@ public final class DurableWorkflows implements AutoCloseable {
 		String output = "";
 		if (outcome.status().equals("SUCCEEDED")) {
 			var callee = resolved.definition(child.definition);
-			var value = ScopedValues.verify(run, child, callee.terminal().successValue(), callee);
+			var value = ScopedValues.verify(run, child, localIdentity(callee, outcome.successValue(), run, child),
+					callee);
 			ScopedValues.put(run, parent, workflow.values().get(binding.output().identity()), value.payload, call.id,
 					value.id);
 			output = call.output;
@@ -450,7 +455,7 @@ public final class DurableWorkflows implements AutoCloseable {
 		progress.settlement = receipt.id();
 		run.event("COMPOSITE_RETURNED", tx.now, receipt.id());
 		if (outcome.status().equals("SUCCEEDED"))
-			continueAfter(tx, run, parent, workflow, call.placement);
+			continueAfter(tx, run, parent, workflow, call.placement, resolved);
 		else
 			run.complete(parent, "FAILED", outcome.code(), outcome.message(), "composite", outcome.id(), "", tx.now);
 		tx.save(run);
@@ -476,6 +481,7 @@ public final class DurableWorkflows implements AutoCloseable {
 		attempt.charged = tx.now;
 		Object input = ScopedValues.decode(run, scope, recipe.input().identity(), workflow, resolved);
 		invocation.attempts.add(attempt);
+		invocation.status = "UNRESOLVED";
 		scope.nodes.get(invocation.placement).phase = "ENTERED";
 		run.event("DISPATCHED", tx.now, invocation.id + ":" + attempt.id);
 		tx.save(run);
@@ -508,6 +514,14 @@ public final class DurableWorkflows implements AutoCloseable {
 		if (!mayEnter)
 			return inspectSaved(runId);
 		byte[] output;
+		String route = null;
+		boolean nativeDecision = dispatch.recipe.output()
+			.type()
+			.getTypeName()
+			.equals("io.github.markpollack.judge.verdict.Verdict")
+				&& resolved.definition(dispatch.definition)
+					.graph()
+					.nodeByName(dispatch.recipe.placement().graphName()) instanceof WorkflowNode.DecisionNode;
 		try {
 			Object value;
 			try {
@@ -515,7 +529,16 @@ public final class DurableWorkflows implements AutoCloseable {
 						dispatch.context);
 			}
 			catch (Exception | LinkageError failure) {
-				return failAttempt(runId, workflow, resolved, dispatch, activity, "STEP_FAILED", failure);
+				return failAttempt(runId, workflow, resolved, dispatch, activity,
+						nativeDecision ? "ASSESSMENT_FAILED" : "STEP_FAILED", failure);
+			}
+			if (nativeDecision) {
+				try {
+					route = ((io.github.markpollack.judge.verdict.Verdict) value).requireUsable().conclusion().name();
+				}
+				catch (Exception | LinkageError invalid) {
+					return failAttempt(runId, workflow, resolved, dispatch, activity, "ASSESSMENT_INVALID", invalid);
+				}
 			}
 			try {
 				output = resolved.encode(value,
@@ -534,8 +557,9 @@ public final class DurableWorkflows implements AutoCloseable {
 		}
 		hooks.at("AFTER_HANDLER_RETURN", runId);
 		byte[] committedOutput = output;
+		String acceptedRoute = route;
 		RunSnapshot result = store
-			.transaction(tx -> commitResult(tx, runId, workflow, resolved, dispatch, committedOutput));
+			.transaction(tx -> commitResult(tx, runId, workflow, resolved, dispatch, committedOutput, acceptedRoute));
 		hooks.at("AFTER_RESULT_COMMIT", runId);
 		return result;
 	}
@@ -547,7 +571,7 @@ public final class DurableWorkflows implements AutoCloseable {
 	 * together. A graph terminal successor supplies its explicit completion outcome.
 	 */
 	private RunSnapshot commitResult(JdbcRunStore.Tx tx, String runId, ValidatedWorkflow workflow,
-			WorkflowExecutionBindings resolved, Dispatch dispatch, byte[] output) throws Exception {
+			WorkflowExecutionBindings resolved, Dispatch dispatch, byte[] output, String nativeRoute) throws Exception {
 		RunState run = tx.get(runId);
 		compatible(run, workflow, resolved);
 		tx.observe(run);
@@ -565,7 +589,46 @@ public final class DurableWorkflows implements AutoCloseable {
 		node.phase = "SETTLED";
 		node.settlement = invocation.id;
 		run.event("RESULT_COMMITTED", tx.now, invocation.id + ":" + invocation.output);
-		continueAfter(tx, run, scope, local, invocation.placement);
+		if (local.graph().nodeByName(invocation.placement) instanceof WorkflowNode.DecisionNode) {
+			String selected;
+			if (nativeRoute != null) {
+				selected = nativeRoute;
+				var conclusion = new ValueId(dispatch.recipe.placement(), "conclusion", dispatch.recipe.phase());
+				ScopedValues.put(run, scope, local.values().get(conclusion),
+						resolved.encode(io.github.markpollack.judge.verdict.Verdict.Conclusion.valueOf(selected),
+								io.github.markpollack.judge.verdict.Verdict.Conclusion.class),
+						invocation.id, "");
+			}
+			else
+				selected = ((Enum<?>) resolved.decode(output, dispatch.recipe.output().type())).name();
+			String target = DecisionProgress.target(local, invocation.placement, selected);
+			run.decisions.put(invocation.id,
+					new RunState.Decision(invocation.id, selected, target, tx.now, "", "", Map.of()));
+			continueAt(tx, run, scope, local, target, resolved);
+			var frontier = scope.open() ? WorkflowProgress.frontier(scope) : null;
+			if (scope.open() && frontier != null && frontier.phase.equals("READY")) {
+				var armNode = local.graph().nodeByName(frontier.node);
+				if (armNode instanceof WorkflowNode.StepNode || armNode instanceof WorkflowNode.DecisionNode
+						|| armNode instanceof WorkflowNode.CompositeNode) {
+					try {
+						var preparedArm = newInvocation(run, scope, local.graph().binding(frontier.node),
+								armNode instanceof WorkflowNode.CompositeNode ? "COMPOSITE" : "LEAF", local, resolved);
+						var receipt = run.decisions.get(invocation.id);
+						run.decisions.put(invocation.id,
+								new RunState.Decision(invocation.id, receipt.outcome(), receipt.target(),
+										receipt.acceptedAt(), preparedArm.id, preparedArm.input, receipt.captures()));
+					}
+					catch (WorkflowRefusal failure) {
+						if (!Set.of("INPUT_FAILED", "ENCODE_FAILED").contains(failure.code()))
+							throw failure;
+						run.complete(scope, "FAILED", "INPUT_ENCODING_FAILED", failure.getMessage(), "runtime",
+								"runtime", "", tx.now);
+					}
+				}
+			}
+		}
+		else
+			continueAfter(tx, run, scope, local, invocation.placement, resolved);
 		tx.save(run);
 		hooks.at("BEFORE_RESULT_COMMIT", run.id);
 		return run.snapshot();
@@ -573,8 +636,20 @@ public final class DurableWorkflows implements AutoCloseable {
 
 	/** Graph successor and directly reached terminal commit with the result/return. */
 	private void continueAfter(JdbcRunStore.Tx tx, RunState run, RunState.Scope scope, ValidatedWorkflow workflow,
-			String predecessor) {
-		String next = workflow.graph().unconditionalSuccessor(predecessor);
+			String predecessor, WorkflowExecutionBindings resolved) {
+		continueAt(tx, run, scope, workflow, workflow.graph().unconditionalSuccessor(predecessor), resolved);
+	}
+
+	private void continueAt(JdbcRunStore.Tx tx, RunState run, RunState.Scope scope, ValidatedWorkflow workflow,
+			String next, WorkflowExecutionBindings resolved) {
+		while (workflow.graph().nodeByName(next) instanceof WorkflowNode.ControlNode control
+				&& control.kind().equals("exclusive-join")) {
+			DecisionProgress.join(run, scope, workflow, next);
+			var join = scope.ready(next);
+			join.phase = "SETTLED";
+			join.settlement = next;
+			next = workflow.graph().unconditionalSuccessor(next);
+		}
 		var progress = scope.ready(next);
 		if (workflow.graph().nodeByName(next) instanceof WorkflowNode.TerminalNode terminal) {
 			String output = terminal.successValue() == null ? ""
@@ -604,7 +679,7 @@ public final class DurableWorkflows implements AutoCloseable {
 				if (!run.status.equals("SUCCEEDED"))
 					throw new WorkflowRefusal("NO_SUCCESS_RESULT", "run has no successful terminal result");
 				RunState.Value value = ScopedValues.verify(run, run.scopes.get(run.rootScope),
-						workflow.terminal().successValue(), workflow);
+						localIdentity(workflow, run.output, run, run.scopes.get(run.rootScope)), workflow);
 				if (!run.output.equals(value.id))
 					throw new WorkflowRefusal("VALUE_CHANGED", "terminal output identity differs");
 				return value.payload.clone();
@@ -667,7 +742,9 @@ public final class DurableWorkflows implements AutoCloseable {
 
 	private static void requireSupported(ValidatedWorkflow workflow) {
 		Objects.requireNonNull(workflow);
-		if (!Set.of(Capability.OPERATION, Capability.TERMINAL, Capability.CHILD).containsAll(workflow.capabilities()))
+		if (!Set
+			.of(Capability.OPERATION, Capability.TERMINAL, Capability.CHILD, Capability.DECISION, Capability.VERDICT)
+			.containsAll(workflow.capabilities()))
 			throw new WorkflowRefusal("UNSUPPORTED_CAPABILITY", "unsupported execution construct");
 	}
 
@@ -688,7 +765,7 @@ public final class DurableWorkflows implements AutoCloseable {
 		// The exact closure is compared separately too; a digest never validates
 		// duplicated fields.
 		List<String> fields = new ArrayList<>();
-		fields.add("durable-run-v6");
+		fields.add("durable-run-v7");
 		fields.add(resolved.root());
 		fields.add(Integer.toString(resolved.descriptors().size()));
 		new TreeMap<>(resolved.descriptors()).forEach((key, d) -> {
@@ -713,6 +790,15 @@ public final class DurableWorkflows implements AutoCloseable {
 			throw new WorkflowRefusal("COMPATIBILITY",
 					"authored behavior, definition selection or execution policy differs");
 		WorkflowProgress.validate(run, resolved);
+	}
+
+	private static ValueId localIdentity(ValidatedWorkflow workflow, String saved, RunState run, RunState.Scope scope) {
+		return workflow.values()
+			.keySet()
+			.stream()
+			.filter(id -> ScopeIds.value(run.id, scope, id).equals(saved))
+			.findFirst()
+			.orElseThrow(() -> new WorkflowRefusal("VALUE_CHANGED", "foreign successful result"));
 	}
 
 	private static void requireText(String text, String field) {

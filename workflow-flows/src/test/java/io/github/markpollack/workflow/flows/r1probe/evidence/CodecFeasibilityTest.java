@@ -14,9 +14,8 @@ import com.fasterxml.jackson.annotation.JsonValue;
 import com.fasterxml.jackson.core.type.TypeReference;
 import org.junit.jupiter.api.Test;
 
-import io.github.markpollack.judge.jury.Verdict;
-import io.github.markpollack.judge.jury.interpretation.Interpretation;
-import io.github.markpollack.judge.jury.interpretation.VerdictReading;
+import io.github.markpollack.judge.verdict.Verdict;
+import io.github.markpollack.judge.verdict.Verdict.Conclusion;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -46,7 +45,7 @@ class CodecFeasibilityTest {
 	record Item(@JsonProperty("wire_name") String name) { }
 	record Generic<T>(@JsonProperty("wire_items") List<T> items) { }
 	record Nested(Generic<Item> generic, List<List<Item>> batches) { }
-	record NativeInput(Item subject, Verdict verdict, Interpretation interpretation) { }
+	record NativeInput(Item subject, Verdict verdict, Conclusion interpretation) { }
 	record Callback(Runnable action) { }
 	record Ignored(@JsonIgnore String name) { }
 	record ReadOnly(@JsonProperty(access = JsonProperty.Access.READ_ONLY) String name) { }
@@ -94,9 +93,9 @@ class CodecFeasibilityTest {
 	@Test
 	void feasibilityHonorsNativeEvidenceDomainWithoutRecursingIntoItsPortableObjectMetadata() {
 		assertThatCode(() -> codec.requireType(Verdict.class)).doesNotThrowAnyException();
-		assertThatCode(() -> codec.requireType(Interpretation.class)).doesNotThrowAnyException();
+		assertThatCode(() -> codec.requireType(Conclusion.class)).doesNotThrowAnyException();
 		assertThatCode(() -> codec.requireType(NativeInput.class)).doesNotThrowAnyException();
-		assertThatCode(() -> codec.requireType(VerdictReading.class)).doesNotThrowAnyException();
+		assertThatCode(() -> codec.requireType(Conclusion.class)).doesNotThrowAnyException();
 		assertThatThrownBy(() -> codec.requireType(Object.class)).hasMessageContaining("unsupported declared type");
 		assertThatThrownBy(() -> codec.requireType(Callback.class)).hasMessageContaining("java.lang.Runnable");
 	}

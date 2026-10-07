@@ -23,7 +23,7 @@ final class RunIntegrity {
 	}
 
 	private static void check(RunState r) {
-		require(r.format == 6 && r.id != null && r.deployment != null, "run envelope");
+		require(r.format == 7 && r.id != null && r.deployment != null, "run envelope");
 		require(Set.of("ACTIVE", "SUCCEEDED", "FAILED", "CANCELLED").contains(r.status), "run status");
 		var policy = new ExecutionPolicy(r.maximumAttempts, r.maximumDepth, r.maximumInvocations);
 		require(closureBounds(r, policy).equals(r.bounds), "admitted structural bounds");
@@ -45,7 +45,7 @@ final class RunIntegrity {
 					"invocation identity/scope");
 			var node = scope.nodes.get(call.placement);
 			require(node != null && node.invocation.equals(call.id), "invocation node link");
-			require(Set.of("UNRESOLVED", "SETTLED", "REVOKED").contains(call.status), "invocation state");
+			require(Set.of("PREPARED", "UNRESOLVED", "SETTLED", "REVOKED").contains(call.status), "invocation state");
 			if (!r.values.containsKey(call.input))
 				throw new WorkflowRefusal("VALUE_MISSING", "invocation exact input missing");
 			require(call.attempts.size() <= r.maximumAttempts, "attempt allowance");
@@ -60,6 +60,16 @@ final class RunIntegrity {
 					require("REATTEMPTED".equals(attempt.disposition), "earlier attempt disposition");
 			}
 			var descriptor = r.definitions.get(scope.definition);
+			if (call.status.equals("PREPARED")
+					|| call.status.equals("REVOKED") && call.attempts.isEmpty() && call.child.isEmpty()) {
+				require(Set.of("LEAF", "COMPOSITE").contains(call.kind), "prepared invocation kind");
+				require(call.attempts.isEmpty() && call.child.isEmpty() && call.outcome.isEmpty(),
+						"prepared invocation facts");
+				require((call.kind.equals("LEAF") ? descriptor.leaves() : descriptor.callees())
+					.containsKey(call.placement), "prepared selection");
+				require(node.phase.equals(call.status.equals("PREPARED") ? "READY" : "REVOKED"), "prepared phase");
+				continue;
+			}
 			if (call.kind.equals("LEAF")) {
 				require(descriptor.leaves().containsKey(call.placement) && call.child.isEmpty()
 						&& !call.attempts.isEmpty(), "leaf selection/attempt");
@@ -73,8 +83,10 @@ final class RunIntegrity {
 				if (call.status.equals("UNRESOLVED"))
 					require(call.outcome.isEmpty(), "unresolved leaf outcome");
 				if (call.status.equals("SETTLED")) {
-					require(Set.of("COMMITTED", "STEP_FAILED", "OUTPUT_ENCODING_FAILED").contains(call.outcome)
-							&& call.outcome.equals(disposition), "leaf settlement disposition");
+					require(Set
+						.of("COMMITTED", "STEP_FAILED", "ASSESSMENT_FAILED", "ASSESSMENT_INVALID",
+								"OUTPUT_ENCODING_FAILED")
+						.contains(call.outcome) && call.outcome.equals(disposition), "leaf settlement disposition");
 					require(node.phase.equals("SETTLED") && node.settlement.equals(call.id), "leaf node settlement");
 					require(!call.outcome.equals("COMMITTED") || r.values.containsKey(call.output),
 							"accepted leaf output");
@@ -119,8 +131,7 @@ final class RunIntegrity {
 						"unresolved invocation authority");
 		}
 		require(attempts.size() <= r.bounds.attempts(), "physical attempt bound");
-		require(r.scopes.size() == 1 + r.invocations.stream().filter(c -> c.kind.equals("COMPOSITE")).count(),
-				"scope counter");
+		require(r.scopes.size() == 1 + r.invocations.stream().filter(c -> !c.child.isEmpty()).count(), "scope counter");
 		require(r.returns.size() == r.invocations.stream()
 			.filter(c -> c.kind.equals("COMPOSITE") && c.status.equals("SETTLED"))
 			.count(), "extra return receipt");
@@ -142,7 +153,12 @@ final class RunIntegrity {
 				require(r.values.containsKey(source), "consumed value missing");
 			if (!v.producer.isEmpty() && scope.id.equals(calls.get(v.producer).scope)) {
 				var producer = calls.get(v.producer);
-				require(v.id.equals(producer.input) || v.id.equals(producer.output), "value is not an invocation fact");
+				require(v.id.equals(producer.input) || v.id.equals(producer.output)
+						|| r.decisions.containsKey(producer.id)
+								&& (r.decisions.get(producer.id).captures().containsKey(v.id)
+										|| v.type.equals("io.github.markpollack.judge.verdict.Verdict$Conclusion")
+												&& v.consumed.equals(List.of(producer.output))),
+						"value is not an invocation fact");
 				if (v.id.equals(producer.output))
 					require(producer.status.equals("SETTLED") && (producer.kind.equals("COMPOSITE")
 							? r.scopes.get(producer.child).localOutcome.status().equals("SUCCEEDED")
@@ -161,6 +177,13 @@ final class RunIntegrity {
 			require(o != null && root.lifecycle.equals("LOCAL_TERMINAL") && o.status().equals(r.status)
 					&& o.code().equals(r.reasonCode) && o.message().equals(r.reasonMessage) && o.actor().equals(r.actor)
 					&& o.acceptedAt() == r.terminalAt && o.successValue().equals(r.output), "root terminal facts");
+		}
+		for (var entry : r.decisions.entrySet()) {
+			var receipt = entry.getValue();
+			var call = calls.get(entry.getKey());
+			require(call != null && call.kind.equals("LEAF") && call.status.equals("SETTLED")
+					&& call.outcome.equals("COMMITTED") && receipt.invocation().equals(call.id)
+					&& !receipt.outcome().isBlank() && !receipt.target().isBlank(), "decision receipt authority");
 		}
 		checkEvents(r, calls);
 	}
@@ -215,7 +238,7 @@ final class RunIntegrity {
 			var n = entry.getValue();
 			var descriptor = r.definitions.get(s.definition);
 			boolean callNode = descriptor.leaves().containsKey(n.node) || descriptor.callees().containsKey(n.node);
-			require(callNode
+			require(callNode || descriptor.controls().contains(n.node)
 					|| (s.localOutcome != null && authored(s.localOutcome) && s.localOutcome.source().equals(n.node)),
 					"node outside selected definition");
 			if (callNode && n.phase.equals("SETTLED"))
@@ -228,7 +251,9 @@ final class RunIntegrity {
 				require(s.open(), "frontier in closed scope");
 			}
 			if (n.phase.equals("READY"))
-				require(n.invocation.isEmpty() && n.settlement.isEmpty(), "READY has prior facts");
+				require(n.settlement.isEmpty()
+						&& (n.invocation.isEmpty() || calls.get(n.invocation).status.equals("PREPARED")),
+						"READY has prior facts");
 			if (n.phase.equals("ENTERED") || n.phase.equals("WAITING_CHILD")) {
 				var call = calls.get(n.invocation);
 				require(call != null && call.status.equals("UNRESOLVED") && n.settlement.isEmpty(),
@@ -278,7 +303,7 @@ final class RunIntegrity {
 			var scope = r.scopes.get(call.scope);
 			for (var attempt : call.attempts)
 				check.accept(new EventKey("DISPATCHED", call.id + ":" + attempt.id), attempt.charged);
-			if (call.kind.equals("COMPOSITE")) {
+			if (call.kind.equals("COMPOSITE") && !call.child.isEmpty()) {
 				check.accept(new EventKey("COMPOSITE_ENTERED", call.id + ":" + call.child),
 						r.scopes.get(call.child).opened);
 				var receipt = r.returns.get(call.id);
@@ -289,6 +314,8 @@ final class RunIntegrity {
 				Long accepted = remaining.remove(new EventKey("RESULT_COMMITTED", call.id + ":" + call.output));
 				require(accepted != null && accepted >= call.attempts.getLast().charged && accepted < scope.deadline
 						&& accepted <= closedAt(scope), "accepted result time");
+				if (r.decisions.containsKey(call.id))
+					require(r.decisions.get(call.id).acceptedAt() == accepted, "decision acceptance time");
 			}
 		}
 		require(remaining.isEmpty(), "event without transition facts");
@@ -348,7 +375,8 @@ final class RunIntegrity {
 						"attempt exhaustion facts");
 			else
 				require(leaf.status.equals("SETTLED")
-						&& Set.of("STEP_FAILED", "OUTPUT_ENCODING_FAILED").contains(o.code())
+						&& Set.of("STEP_FAILED", "ASSESSMENT_FAILED", "ASSESSMENT_INVALID", "OUTPUT_ENCODING_FAILED")
+							.contains(o.code())
 						&& leaf.outcome.equals(o.code()), "application failure facts");
 			return;
 		}

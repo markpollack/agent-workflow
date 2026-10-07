@@ -15,10 +15,10 @@
  */
 package io.github.markpollack.workflow.patterns.evaluator;
 
-import io.github.markpollack.judge.jury.Decision;
+
 import io.github.markpollack.judge.jury.Jury;
-import io.github.markpollack.judge.jury.Verdict;
-import io.github.markpollack.judge.result.Judgment;
+import io.github.markpollack.judge.verdict.Verdict;
+import io.github.markpollack.judge.judgment.Judgment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -152,8 +152,8 @@ class EvaluatorOptimizerLoopTest {
 
     private static Jury juryReturning(Judgment aggregate) {
         Jury jury = mock(Jury.class);
-        when(jury.vote(any())).thenReturn(
-                Verdict.builder().aggregated(aggregate).individual(List.of()).decision(Decision.own()).build());
+        when(jury.vote()).thenReturn(
+                Verdict.single("test",aggregate));
         return jury;
     }
 

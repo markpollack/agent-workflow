@@ -64,7 +64,7 @@
         <logback.version>1.6.3</logback.version>
         <micrometer.version>1.17.1</micrometer.version>
         <spring-ai.version>2.0.1</spring-ai.version>
-        <agent-judge.version>0.17.0</agent-judge.version>
+        <agent-judge.version>0.18.0-SNAPSHOT</agent-judge.version>
         <spring-ai-agent-utils.version>0.10.0</spring-ai-agent-utils.version>
         <journal-core.version>1.10.0</journal-core.version>
         <jacoco.version>0.8.15</jacoco.version>
