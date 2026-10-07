@@ -18,7 +18,18 @@ public record RunSnapshot(String runId, String displayName, Status status, Insta
 		java.util.Map<String, String> selectedSteps, Reason reason, List<Invocation> invocations, List<Value> values,
 		List<Event> events, String rootScope, String rootDefinition, long logicalInvocations, List<Scope> scopes,
 		List<ReturnReceipt> returns, java.util.Map<String, DefinitionSelection> definitions, Resources resources,
-		List<Decision> decisions) {
+		List<Decision> decisions, List<Group> groups) {
+	/** Immutable declaration-ordered settlement, including revoked unresolved members. */
+	public record Group(String groupId, String scope, String fork, String join, String phase, Instant openedAt,
+			Instant settledAt, List<Member> members) {
+		public Group {
+			members = List.copyOf(members);
+		}
+	}
+
+	public record Member(String scope, String status, String code, String outputValue) {
+	}
+
 	public enum Status {
 
 		ACTIVE, SUCCEEDED, FAILED, CANCELLED
@@ -122,7 +133,8 @@ public record RunSnapshot(String runId, String displayName, Status status, Insta
 	 * Admitted policy and conservative structural bounds; counts do not promise capacity.
 	 */
 	public record Resources(int maximumAttempts, int maximumDepth, long maximumInvocations, long leafBound,
-			long compositeBound, int depthBound, long logicalBound, long scopeBound, long attemptBound) {
+			long compositeBound, int depthBound, long logicalBound, long scopeBound, long attemptBound,
+			int maximumConcurrency) {
 	}
 
 	/**
@@ -159,6 +171,7 @@ public record RunSnapshot(String runId, String displayName, Status status, Insta
 		returns = List.copyOf(returns);
 		definitions = java.util.Map.copyOf(definitions);
 		decisions = List.copyOf(decisions);
+		groups = List.copyOf(groups);
 	}
 
 	public boolean terminal() {

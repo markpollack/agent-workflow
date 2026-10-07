@@ -4,14 +4,14 @@ import java.time.Instant;
 import java.util.*;
 
 /**
- * Format-7 aggregate owned by one JdbcRunStore.Tx. Scopes hold graph progress;
+ * Format-8 aggregate owned by one JdbcRunStore.Tx. Scopes hold graph progress;
  * invocation, attempt, value, outcome and return records retain facts. No field is a Java
  * call stack. Public fields serve the store codec only. Never retain this mutable object
  * across TXs.
  */
 final class RunState {
 
-	public int format = 7;
+	public int format = 8;
 
 	public String id, key, admission, compatibility, display, authored, deadlineOrigin;
 
@@ -27,11 +27,23 @@ final class RunState {
 
 	public Map<String, DefinitionDescriptor> definitions = new LinkedHashMap<>();
 
-	public int maximumAttempts, maximumDepth;
+	public int maximumAttempts, maximumDepth, maximumConcurrency;
 
 	public long maximumInvocations, logicalCount;
 
 	public CompositionBounds bounds;
+
+	public Map<String, Group> groups = new LinkedHashMap<>();
+
+	public static final class Group {
+
+		public String id, scope, fork, join, phase = "OPEN";
+
+		public long opened, settled;
+
+		public List<String> members = new ArrayList<>();
+
+	}
 
 	public Map<String, Scope> scopes = new LinkedHashMap<>();
 
@@ -57,6 +69,8 @@ final class RunState {
 		public String id, definition, parent = "", opening = "", returnNode = "", input;
 
 		public int depth;
+
+		public String group = "", memberPath = "", entry = "", stop = "";
 
 		public long opened, deadline;
 
@@ -179,9 +193,18 @@ final class RunState {
 		for (Scope descendant : scopes.values()) {
 			if (!descendant.id.equals(scope.id) && descendantOf(descendant, scope.id)
 					&& !"RETURNED".equals(descendant.lifecycle) && !"REVOKED".equals(descendant.lifecycle)) {
+				if (!descendant.group.isEmpty() && descendant.localOutcome != null)
+					continue;
 				descendant.lifecycle = "REVOKED";
 				descendant.revocation = new Revocation(code, scope.id, now);
 				revokePending(descendant, code);
+			}
+		}
+		for (Group group : groups.values()) {
+			if (group.phase.equals("OPEN")
+					&& (group.scope.equals(scope.id) || descendantOf(scopes.get(group.scope), scope.id))) {
+				group.phase = "REVOKED";
+				group.settled = now;
 			}
 		}
 		event("LOCAL_OUTCOME", now, scope.id + ":" + status + ":" + code);
@@ -303,11 +326,25 @@ final class RunState {
 							e -> new RunSnapshot.DefinitionSelection(e.getValue().authored(), e.getValue().leaves(),
 									e.getValue().callees()))),
 				new RunSnapshot.Resources(maximumAttempts, maximumDepth, maximumInvocations, bounds.leaves(),
-						bounds.composites(), bounds.depth(), bounds.logical(), bounds.scopes(), bounds.attempts()),
+						bounds.composites(), bounds.depth(), bounds.logical(), bounds.scopes(), bounds.attempts(),
+						maximumConcurrency),
 				decisions.values()
 					.stream()
 					.map(d -> new RunSnapshot.Decision(d.invocation(), d.outcome(), d.target(),
 							Instant.ofEpochMilli(d.acceptedAt()), d.armInvocation(), d.armInput(), d.captures()))
+					.toList(),
+				groups.values()
+					.stream()
+					.map(g -> new RunSnapshot.Group(g.id, g.scope, g.fork, g.join, g.phase,
+							Instant.ofEpochMilli(g.opened), g.settled == 0 ? null : Instant.ofEpochMilli(g.settled),
+							g.members.stream().map(id -> {
+								var member = scopes.get(id);
+								var outcome = member.localOutcome;
+								return new RunSnapshot.Member(id, outcome == null ? member.lifecycle : outcome.status(),
+										outcome == null ? member.revocation == null ? "" : member.revocation.code()
+												: outcome.code(),
+										outcome == null ? "" : outcome.successValue());
+							}).toList()))
 					.toList());
 	}
 

@@ -117,7 +117,27 @@ See [DecisionRecoveryExample](workflow-batch/src/test/java/io/github/markpollack
 
 [PrReviewDecisionExample](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/PrReviewDecisionExample.java) is a complete PR-review-style application: fetch a diff, retain the native assessment alongside the original PR and revision, route all four conclusions, choose a report format, and reopen after assessment acceptance without repeating the jury. It uses deterministic PR data and judge observations with the real native jury and durable store; it makes no provider or GitHub call. Run its `main` on the workflow-batch test classpath with a fresh store directory as the first argument.
 
-Native routing uses Agent Judge `0.18.0-SNAPSHOT`, `agent-judge-core` and `agent-judge-json-jackson2`, with the producer's strict version-6 Verdict codec. These dependencies are optional for applications using only ordinary workflows; native applications must include the JSON artifact. The codec supports the producer's registered built-in requirement and voting-rule forms and refuses unsupported custom forms rather than discarding evidence. Native artifact fingerprints participate in compatibility, so changing snapshot bytes requires a new compatible deployment decision. Store format 7 deliberately refuses older databases; no automatic migration is supplied.
+Native routing uses Agent Judge `0.18.0-SNAPSHOT`, `agent-judge-core` and `agent-judge-json-jackson2`, with the producer's strict version-6 Verdict codec. These dependencies are optional for applications using only ordinary workflows; native applications must include the JSON artifact. The codec supports the producer's registered built-in requirement and voting-rule forms and refuses unsupported custom forms rather than discarding evidence. Native artifact fingerprints participate in compatibility, so changing snapshot bytes requires a new compatible deployment decision. Store format 8 deliberately refuses older databases; no automatic migration is supplied.
+
+## Execute independent typed assessments in parallel
+
+```java
+var workflow = Workflows.define("parallel-assessments")
+        .then(fetch)
+        .parallel("assessments").allSuccessful()
+            .branch("quality").then(quality)
+            .branch("backport").then(backport)
+        .end()
+        .then(report)
+        .terminate(Terminal.SUCCEEDED)
+        .build();
+```
+
+The compiling [ParallelAssessmentExample](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/ParallelAssessmentExample.java) declares `quality: Revision → QualityAssessment`, `backport: BackportInput(PullRequest, Revision) → BackportAssessment`, and `report: ReportInput(PullRequest, QualityAssessment, BackportAssessment) → Report`. Quality and backport receive the shared earlier facts and run concurrently when capacity permits. The compiler assembles the report's typed record after both succeed. A negative quality assessment is a business value, so it still reaches the report. A thrown Step failure stops that member; all admitted siblings settle before the group fails.
+
+Each branch can contain multiple Steps, decisions, composites and nested static groups. Branches cannot read sibling-private facts. Homogeneous results form a declaration-ordered `List<T>`; heterogeneous results retain distinct typed roles for record binding. Structural products retain durable member references without an opaque product payload. Group/member evidence appears in `RunSnapshot.groups()`. Fan-out, loops and timers still refuse execution.
+
+[ParallelRecoveryIT](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/durable/ParallelRecoveryIT.java) kills a JVM with quality already committed and backport unresolved. A compatible replacement reuses quality and repeats only unresolved backport work with the same invocation identity and exact saved input.
 
 ## Reuse a workflow within one run
 
@@ -149,7 +169,9 @@ shows explicit bean qualifiers and fresh-context reuse through two levels of com
 
 ## Execution and recovery
 
-`resume` executes steps directly on the calling Java thread until the run finishes or an application interrupt stops continuation. `advance` executes at most one Step, composite entry or composite return. Neither hands work to an executor. Different caller threads can execute different runs concurrently; competing execution of the same run refuses. One local runtime owns the database.
+For a definition containing parallel work, `resume` coordinates graph progress on its caller and runs Step bodies on runtime-owned JDK workers. The caller waits for full settlement; graph transitions and composite returns do not occupy worker slots. `ExecutionPolicy.maximumConcurrency()` bounds occupied Step slots across the runtime (default 4), including ordinary caller-thread execution. Nested groups and composites progress with capacity one because workers never await descendants. Sequential definitions retain caller-thread execution; `advance` performs one Step or engine boundary on its caller. Competing execution of the same run refuses before another attempt is charged.
+
+The runtime drains admitted callers and workers before shutting down its executor, store and local database ownership. Cancellation/deadline fence late acceptance without promising to interrupt Step bodies. Dependencies remain application-owned; Steps must support their authored concurrent use. Steps express nested execution through the DSL rather than recursively calling this runtime's execution methods.
 
 Progress and outcomes commit atomically, with `Step.execute` outside persistence transactions. After process death, a compatible application can reopen and resume unfinished work using committed results. An attempt whose outcome was not committed may execute again within its finite allowance, so external effects need application-level idempotency.
 

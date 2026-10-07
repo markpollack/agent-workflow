@@ -15,17 +15,19 @@ import static io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
  */
 public final class ValidatedWorkflow {
 
-	public static final String COMPILER_CONTRACT = "structured-workflow-compiler-v4";
+	public static final String COMPILER_CONTRACT = "structured-workflow-compiler-v5";
 
 	private static final Set<Capability> SUPPORTED = Set.of(Capability.OPERATION, Capability.TERMINAL, Capability.CHILD,
-			Capability.DECISION, Capability.VERDICT);
+			Capability.DECISION, Capability.VERDICT, Capability.PARALLEL);
 
 	/**
 	 * Exact value contract and provenance prepared from an analyzed fact. Components
 	 * retain declaration order for a newly assembled record; an alias retains the source
 	 * identity instead. Runtime recovery reads and verifies saved bytes at these IDs; it
-	 * must not reconstruct a missing historical effective input from newer values. No
-	 * business payload or supplied application object is retained here.
+	 * must not reconstruct a missing historical effective input from newer values. A
+	 * structural ProductType has no application codec contract or payload; its immutable
+	 * component references retain the typed member results. No business payload or
+	 * supplied application object is retained here.
 	 */
 	public record ValueRecipe(ValueId identity, Type declaration, TypeContracts.Contract contract,
 			List<ValueId> components, List<ValueId> consumed) {
@@ -48,6 +50,8 @@ public final class ValidatedWorkflow {
 	private final Map<ValueId, ValueRecipe> values;
 
 	private final List<Capture> captures;
+
+	private final List<Product> products;
 
 	private final TypeContracts.Contract input, output;
 
@@ -76,6 +80,7 @@ public final class ValidatedWorkflow {
 		this.deadlineOrigin = policy.origin(authoredDuration);
 		definition = compiled.definition();
 		captures = compiled.captures();
+		products = compiled.products();
 		suppliedSteps = Map.copyOf(selections);
 		rootSummary = compiled.summaries().get(new SummaryKey(Coordinates.root(definition), "root"));
 		TypeContracts contracts = new TypeContracts();
@@ -191,6 +196,10 @@ public final class ValidatedWorkflow {
 				valueIdentity(authored, binding.input().identity());
 				valueIdentity(authored, binding.output().identity());
 			}
+			if (node instanceof WorkflowNode.ForkNode fork)
+				IdentityEncoding.field(authored, fork.joinNodeName());
+			if (node instanceof WorkflowNode.ControlNode control)
+				IdentityEncoding.field(authored, control.kind());
 			if (node instanceof WorkflowNode.TerminalNode terminal) {
 				IdentityEncoding.field(authored, terminal.intent().name());
 				IdentityEncoding.field(authored, terminal.reason());
@@ -216,7 +225,10 @@ public final class ValidatedWorkflow {
 			.sorted(Comparator.comparing(v -> v.identity().toString()))
 			.toList()) {
 			valueIdentity(authored, value.identity());
-			contractIdentity(authored, value.contract());
+			if (value.contract() == null)
+				IdentityEncoding.field(authored, value.declaration().getTypeName());
+			else
+				contractIdentity(authored, value.contract());
 			IdentityEncoding.field(authored, Integer.toString(value.components().size()));
 			value.components().forEach(id -> valueIdentity(authored, id));
 			IdentityEncoding.field(authored, Integer.toString(value.consumed().size()));
@@ -304,6 +316,11 @@ public final class ValidatedWorkflow {
 					throw new IllegalArgumentException("missing operation selection");
 				selected.put(at, remaining.next());
 			}
+			if (node instanceof Parallel group)
+				for (int m = 0; m < group.members().size(); m++) {
+					var member = group.members().get(m);
+					collectSelections(member.nodes(), at.child("member", member.name(), m), remaining, selected);
+				}
 			if (node instanceof Choice choice)
 				for (int arm = 0; arm < choice.arms().size(); arm++) {
 					var body = choice.arms().get(arm);
@@ -356,7 +373,9 @@ public final class ValidatedWorkflow {
 			List<Node> nodes = normalize(owned.nodes(), Coordinates.root(owned), children, references, required);
 			if (!required.equals(children.keySet()))
 				throw new IllegalArgumentException("extraneous validated child selection");
-			if (nodes.stream().noneMatch(n -> n instanceof Call || n instanceof Child || n instanceof Choice))
+			if (nodes.stream()
+				.noneMatch(
+						n -> n instanceof Call || n instanceof Child || n instanceof Choice || n instanceof Parallel))
 				throw new IllegalArgumentException("workflow requires at least one Step or composite");
 			owned = new Definition<>(owned.name(), owned.input(), owned.output(), List.copyOf(nodes),
 					policy.resolve(authored));
@@ -372,7 +391,17 @@ public final class ValidatedWorkflow {
 				if (!SUPPORTED.contains(Coordinates.capability(node)))
 					throw new IllegalArgumentException(
 							"unsupported production capability: " + Coordinates.capability(node));
-				if (node instanceof Choice choice) {
+				if (node instanceof Parallel group) {
+					Placement position = Coordinates.node(parent, node, i);
+					List<Member> members = new ArrayList<>();
+					for (int m = 0; m < group.members().size(); m++) {
+						var member = group.members().get(m);
+						members.add(new Member(member.name(), normalize(member.nodes(),
+								position.child("member", member.name(), m), children, references, required)));
+					}
+					nodes.add(new Parallel(group.id(), group.output(), group.allSuccessful(), members));
+				}
+				else if (node instanceof Choice choice) {
 					Placement position = Coordinates.node(parent, node, i);
 					List<Arm> arms = new ArrayList<>();
 					for (int a = 0; a < choice.arms().size(); a++) {
@@ -421,6 +450,11 @@ public final class ValidatedWorkflow {
 						throw new IllegalArgumentException("missing validated child selection at " + at);
 					nested.put(at, target);
 				}
+				if (node instanceof Parallel g)
+					for (int m = 0; m < g.members().size(); m++) {
+						var member = g.members().get(m);
+						unresolved(member.nodes(), at.child("member", member.name(), m), selected, nested);
+					}
 				if (node instanceof Choice c)
 					for (int a = 0; a < c.arms().size(); a++) {
 						Arm arm = c.arms().get(a);
@@ -438,7 +472,8 @@ public final class ValidatedWorkflow {
 		fact.components().forEach(f -> recipe(f, values, contracts));
 		fact.consumed().forEach(f -> recipe(f, values, contracts));
 		values.put(fact.identity(),
-				new ValueRecipe(fact.identity(), fact.type(), contracts.contract(fact.type()),
+				new ValueRecipe(fact.identity(), fact.type(),
+						fact.type() instanceof ProductType ? null : contracts.contract(fact.type()),
 						fact.components().stream().map(Fact::identity).toList(),
 						fact.consumed().stream().map(Fact::identity).toList()));
 	}
@@ -507,6 +542,10 @@ public final class ValidatedWorkflow {
 	/** Validated children, isolated from the parent's value namespace. */
 	public Map<Placement, ValidatedWorkflow> children() {
 		return children;
+	}
+
+	public List<Product> products() {
+		return products;
 	}
 
 	/** Immutable compiler-selected convergence alternatives. */

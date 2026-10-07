@@ -30,23 +30,39 @@ final class WorkflowProgress {
 
 	/** The deepest open frontier or unreturned outcome is the next single transition. */
 	static RunState.Scope eligible(RunState r) {
-		return r.scopes.values()
-			.stream()
-			.filter(s -> s.open() || s.lifecycle.equals("LOCAL_TERMINAL"))
-			.max(Comparator.comparingInt(s -> s.depth))
-			.orElseThrow(() -> new WorkflowRefusal("STRANDED_PROGRESS", "active run has no work/return: " + r.id));
+		return eligible(r, Set.of());
+	}
+
+	static RunState.Scope eligible(RunState r, Set<String> executingScopes) {
+		for (var scope : r.scopes.values()) {
+			if (executingScopes.contains(scope.id))
+				continue;
+			if (scope.lifecycle.equals("LOCAL_TERMINAL") && scope.group.isEmpty() && !scope.parent.isEmpty())
+				return scope;
+			if (!scope.open())
+				continue;
+			var node = frontier(scope);
+			if (node.phase.equals("WAITING_CHILD"))
+				continue;
+			if (node.phase.equals("WAITING_GROUP")
+					&& !ParallelProgress.ready(r, r.groups.get(ParallelProgress.identity(scope, node.node))))
+				continue;
+			return scope;
+		}
+		return null;
 	}
 
 	static RunState.Node frontier(RunState.Scope s) {
 		return s.nodes.values()
 			.stream()
-			.filter(n -> Set.of("READY", "ENTERED", "WAITING_CHILD").contains(n.phase))
+			.filter(n -> Set.of("READY", "ENTERED", "WAITING_CHILD", "WAITING_GROUP").contains(n.phase))
 			.findFirst()
 			.orElseThrow(() -> new WorkflowRefusal("STRANDED_PROGRESS", "scope has no frontier: " + s.id));
 	}
 
 	static void validate(RunState r, WorkflowExecutionBindings resolved) {
 		RunIntegrity.validate(r);
+		ParallelProgress.validate(r, resolved);
 		for (var receipt : r.decisions.values()) {
 			var call = invocation(r, receipt.invocation());
 			var scope = r.scopes.get(call.scope);
@@ -56,7 +72,7 @@ final class WorkflowProgress {
 		}
 		for (var scope : r.scopes.values()) {
 			var workflow = resolved.definition(scope.definition);
-			require(scope.input.equals(ScopeIds.value(r.id, scope, ScopedValues.root(workflow).identity())),
+			require(scope.input.equals(ScopedValues.id(r, scope, ScopedValues.root(workflow).identity())),
 					"scope root input identity");
 			long localDeadline;
 			try {
@@ -66,7 +82,7 @@ final class WorkflowProgress {
 				throw new WorkflowRefusal("PROGRESS_INVALID", "scope deadline overflow", ex);
 			}
 			String origin = workflow.deadlineOrigin();
-			if (!scope.parent.isEmpty()) {
+			if (!scope.parent.isEmpty() && scope.group.isEmpty()) {
 				localDeadline = Math.min(localDeadline, r.scopes.get(scope.parent).deadline);
 				origin = "INHERITED:" + origin;
 				var call = invocation(r, scope.opening);
@@ -74,6 +90,10 @@ final class WorkflowProgress {
 				require(scope.returnNode
 					.equals(resolved.definition(parent.definition).graph().unconditionalSuccessor(call.placement)),
 						"return continuation");
+			}
+			if (!scope.group.isEmpty()) {
+				localDeadline = r.scopes.get(scope.parent).deadline;
+				origin = r.scopes.get(scope.parent).deadlineOrigin;
 			}
 			require(scope.deadline == localDeadline && scope.deadlineOrigin.equals(origin),
 					"absolute scope deadline/origin");
@@ -91,13 +111,36 @@ final class WorkflowProgress {
 
 	private static void validatePrefix(RunState r, RunState.Scope s, ValidatedWorkflow w,
 			WorkflowExecutionBindings resolved) {
-		String node = w.graph().startNode();
+		String node = s.group.isEmpty() ? w.graph().startNode() : s.entry;
 		Set<String> seen = new HashSet<>();
 		while (true) {
+			if (!s.group.isEmpty() && node.equals(s.stop)) {
+				require(s.localOutcome != null && s.localOutcome.status().equals("SUCCEEDED"),
+						"member join lacks local result");
+				break;
+			}
 			var progress = s.nodes.get(node);
 			require(progress != null, "missing graph prefix node: " + node);
 			require(seen.add(node), "cyclic graph prefix");
 			var graphNode = w.graph().nodeByName(node);
+			if (graphNode instanceof WorkflowNode.ForkNode fork) {
+				var group = r.groups.get(ParallelProgress.identity(s, node));
+				if (!progress.phase.equals("SETTLED")) {
+					require(group != null || progress.phase.equals("READY") || progress.phase.equals("REVOKED"),
+							"fork progress without group");
+					break;
+				}
+				require(group != null && group.phase.equals("SETTLED"), "settled fork without group");
+				if (!s.nodes.containsKey(fork.joinNodeName()))
+					break;
+				node = fork.joinNodeName();
+				continue;
+			}
+			if (graphNode instanceof WorkflowNode.ControlNode control && control.kind().equals("typed-join")) {
+				require(progress.phase.equals("SETTLED"), "unsettled parallel join");
+				node = w.graph().unconditionalSuccessor(node);
+				continue;
+			}
 			if (graphNode instanceof WorkflowNode.TerminalNode terminal) {
 				require(progress.phase.equals("SETTLED") && s.localOutcome != null, "missing folded terminal outcome");
 				var o = s.localOutcome;
@@ -106,7 +149,7 @@ final class WorkflowProgress {
 						&& o.message().equals(terminal.reason()) && o.actor().equals("workflow"),
 						"authored terminal outcome");
 				if (terminal.successValue() != null)
-					require(o.successValue().equals(ScopeIds.value(r.id, s, terminal.successValue())),
+					require(o.successValue().equals(ScopedValues.id(r, s, terminal.successValue())),
 							"terminal value identity");
 				break;
 			}
@@ -122,8 +165,8 @@ final class WorkflowProgress {
 			var call = find(r, s.id, node);
 			if (call != null) {
 				var binding = w.graph().binding(node);
-				require(call.input.equals(ScopeIds.value(r.id, s, binding.input().identity()))
-						&& call.output.equals(ScopeIds.value(r.id, s, binding.output().identity())),
+				require(call.input.equals(ScopedValues.id(r, s, binding.input().identity()))
+						&& call.output.equals(ScopedValues.id(r, s, binding.output().identity())),
 						"invocation binding identity");
 				ScopedValues.verify(r, s, binding.input().identity(), w);
 			}

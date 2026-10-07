@@ -6,9 +6,14 @@ import java.util.*;
  * Exact registered selections for one authored definition; never hashes object internals.
  */
 record DefinitionDescriptor(String authored, Map<String, String> leaves, Map<String, String> callees,
-		Set<String> controls) {
+		Set<String> controls, long members) {
 	DefinitionDescriptor(String authored, Map<String, String> leaves, Map<String, String> callees) {
-		this(authored, leaves, callees, Set.of());
+		this(authored, leaves, callees, Set.of(), 0);
+	}
+
+	DefinitionDescriptor(String authored, Map<String, String> leaves, Map<String, String> callees,
+			Set<String> controls) {
+		this(authored, leaves, callees, controls, 0);
 	}
 
 	DefinitionDescriptor {
@@ -19,8 +24,9 @@ record DefinitionDescriptor(String authored, Map<String, String> leaves, Map<Str
 
 	String identity() {
 		List<String> fields = new ArrayList<>();
-		fields.add("prepared-definition-v1");
+		fields.add("prepared-definition-v2");
 		fields.add(authored);
+		fields.add(Long.toString(members));
 		append(fields, leaves);
 		append(fields, callees);
 		fields.add(Integer.toString(controls.size()));

@@ -220,9 +220,9 @@ class DeploymentCompatibilityTest {
                 ObjectNode object=(ObjectNode)state;
                 switch(header) {
                     case "old" -> object.put("format",3);
-                    case "previous" -> object.put("format",6);
+                    case "previous" -> object.put("format",7);
                     case "absent" -> object.remove("format");
-                    case "unknown" -> object.put("format",8);
+                    case "unknown" -> object.put("format",9);
                     case "fraction" -> object.put("format",4.5);
                     case "overflow" -> object.put("format",4294967300L);
                     case "string" -> object.put("format","4");

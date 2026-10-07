@@ -7,23 +7,28 @@ package io.github.markpollack.workflow.batch.durable;
  * @param maximumAttempts physical attempts per leaf invocation
  * @param maximumDepth maximum nested composite depth
  * @param maximumInvocations maximum leaf plus composite occurrences
+ * @param maximumConcurrency maximum concurrently occupied Step slots across this runtime
  */
-public record ExecutionPolicy(int maximumAttempts, int maximumDepth, long maximumInvocations) {
+public record ExecutionPolicy(int maximumAttempts, int maximumDepth, long maximumInvocations, int maximumConcurrency) {
 
-	public static final ExecutionPolicy DEFAULT = new ExecutionPolicy(3, 32, 10_000);
+	public static final ExecutionPolicy DEFAULT = new ExecutionPolicy(3, 32, 10_000, 4);
 
 	/** Use default composition limits with an explicit physical attempt allowance. */
 	public ExecutionPolicy(int maximumAttempts) {
-		this(maximumAttempts, 32, 10_000);
+		this(maximumAttempts, 32, 10_000, 4);
+	}
+
+	public ExecutionPolicy(int maximumAttempts, int maximumDepth, long maximumInvocations) {
+		this(maximumAttempts, maximumDepth, maximumInvocations, 4);
 	}
 
 	public ExecutionPolicy {
-		if (maximumAttempts < 1 || maximumDepth < 1 || maximumInvocations < 1)
+		if (maximumAttempts < 1 || maximumDepth < 1 || maximumInvocations < 1 || maximumConcurrency < 1)
 			throw new IllegalArgumentException("positive finite execution limits required");
 	}
 
 	String identity() {
-		return Digests.fields("execution-policy-v4", Integer.toString(maximumAttempts), Integer.toString(maximumDepth),
-				Long.toString(maximumInvocations));
+		return Digests.fields("execution-policy-v5", Integer.toString(maximumAttempts), Integer.toString(maximumDepth),
+				Long.toString(maximumInvocations), Integer.toString(maximumConcurrency));
 	}
 }

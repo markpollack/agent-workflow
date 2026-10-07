@@ -13,7 +13,9 @@ import io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
  * requires one arm per enum constant; a native verdict requires one arm per
  * {@link Verdict.Conclusion}. {@code end()} closes a lexical choice, while explicit
  * terminals close execution paths. Continuing arms expose only compiler-checked captures.
- * No application code executes during build.
+ * Parallel branches are isolated sequences requiring explicit allSuccessful settlement;
+ * end closes a group and returns to its enclosing sequence. No application code executes
+ * during build.
  */
 public final class Workflows {
 
@@ -47,6 +49,8 @@ public final class Workflows {
 		 */
 		Decision<AfterChoice> verdict(String label, Step<?, Verdict> assessment);
 
+		ParallelPolicy<Sequence> parallel(String label);
+
 		Start maxDuration(Duration duration);
 
 	}
@@ -68,6 +72,8 @@ public final class Workflows {
 		 * assessment.
 		 */
 		Decision<AfterChoice> verdict(String label, Step<?, Verdict> assessment);
+
+		ParallelPolicy<Sequence> parallel(String label);
 
 		Sequence maxDuration(Duration duration);
 
@@ -127,11 +133,48 @@ public final class Workflows {
 		 */
 		Decision<Arm<P>> verdict(String label, Step<?, Verdict> assessment);
 
+		ParallelPolicy<Arm<P>> parallel(String label);
+
 		Arm<P> terminate(Terminal terminal);
 
 		Arm<P> terminate(Terminal terminal, String reason);
 
 		Arm<P> when(Enum<?> outcome);
+
+		P end();
+
+	}
+
+	/** A static group requires its explicit settlement policy before branches. */
+	public interface ParallelPolicy<P> {
+
+		ParallelBranches<P> allSuccessful();
+
+	}
+
+	/** Declaration order defines member identity and aggregate order. */
+	public interface ParallelBranches<P> {
+
+		Branch<P> branch(String name);
+
+	}
+
+	/** Isolated member sequence; end closes the group, never the workflow. */
+	public interface Branch<P> {
+
+		Branch<P> then(Step<?, ?> step);
+
+		Branch<P> then(String label, Step<?, ?> step);
+
+		Branch<P> subWorkflow(String label, ValidatedWorkflow workflow);
+
+		Decision<Branch<P>> decision(String label, Step<?, ?> step);
+
+		Decision<Branch<P>> verdict(String label, Step<?, Verdict> step);
+
+		ParallelPolicy<Branch<P>> parallel(String label);
+
+		Branch<P> branch(String name);
 
 		P end();
 
@@ -147,7 +190,7 @@ public final class Workflows {
 
 		Type first, current;
 
-		boolean closed, blocked;
+		boolean closed, blocked, inMember;
 
 		Body(Map<Node, Step<?, ?>> supplied, List<Type> results, Type incoming) {
 			this.supplied = supplied;
@@ -181,10 +224,18 @@ public final class Workflows {
 
 		void terminal(Terminal terminal, String reason) {
 			open();
+			if (inMember)
+				throw new IllegalStateException("a parallel member must reach its join");
 			nodes.add(new End(terminal, reason));
 			closed = true;
 			if (terminal == Terminal.SUCCEEDED)
 				results.add(current);
+		}
+
+		<P> ParallelBuilder<P> parallelBlock(String label, P parent) {
+			open();
+			blocked = true;
+			return new ParallelBuilder<>(this, parent, label);
 		}
 
 		<P> ChoiceBuilder<P> nativeChoice(String label, Step<?, Verdict> step, P parent) {
@@ -194,6 +245,8 @@ public final class Workflows {
 				throw new IllegalArgumentException("native Verdict output required");
 			if (first == null)
 				first = types.input();
+			if (current == null && nodes.isEmpty())
+				current = types.input();
 			blocked = true;
 			return new ChoiceBuilder<>(this, parent, label, step, types, true);
 		}
@@ -203,6 +256,8 @@ public final class Workflows {
 			var types = StepTypes.of(Objects.requireNonNull(step).getClass());
 			if (first == null)
 				first = types.input();
+			if (current == null && nodes.isEmpty())
+				current = types.input();
 			blocked = true;
 			return new ChoiceBuilder<>(this, parent, label, step, types, false);
 		}
@@ -242,6 +297,10 @@ public final class Workflows {
 			return nativeChoice(label, step, (AfterChoice) this);
 		}
 
+		public ParallelPolicy<Sequence> parallel(String label) {
+			return parallelBlock(label, (Sequence) this);
+		}
+
 		public Builder maxDuration(Duration duration) {
 			open();
 			if (this.duration != null)
@@ -274,11 +333,16 @@ public final class Workflows {
 		void collect(List<Node> body, Placement parent, Map<Placement, Step<?, ?>> selected) {
 			for (int i = 0; i < body.size(); i++) {
 				Node node = body.get(i);
-				String label = node instanceof Call c ? c.id()
-						: node instanceof Choice c ? c.id() : node instanceof Child c ? c.id() : "terminate";
+				String label = node instanceof Call c ? c.id() : node instanceof Choice c ? c.id()
+						: node instanceof Parallel g ? g.id() : node instanceof Child c ? c.id() : "terminate";
 				Placement at = parent.child("node", label, i);
 				if (supplied.containsKey(node))
 					selected.put(at, supplied.get(node));
+				if (node instanceof Parallel g)
+					for (int m = 0; m < g.members().size(); m++) {
+						var member = g.members().get(m);
+						collect(member.nodes(), at.child("member", member.name(), m), selected);
+					}
 				if (node instanceof Choice c)
 					for (int a = 0; a < c.arms().size(); a++) {
 						var arm = c.arms().get(a);
@@ -361,6 +425,7 @@ public final class Workflows {
 			super(choice.body.supplied, choice.body.results, choice.body.current);
 			this.choice = choice;
 			this.outcome = outcome;
+			inMember = choice.body.inMember;
 		}
 
 		@Override
@@ -392,6 +457,10 @@ public final class Workflows {
 			return nativeChoice(label, step, (Arm<P>) this);
 		}
 
+		public ParallelPolicy<Arm<P>> parallel(String label) {
+			return parallelBlock(label, (Arm<P>) this);
+		}
+
 		public Arm<P> terminate(Terminal terminal) {
 			return terminate(terminal, "");
 		}
@@ -411,6 +480,127 @@ public final class Workflows {
 			if (sealed)
 				throw new IllegalStateException("stale arm");
 			return choice.end();
+		}
+
+	}
+
+	private static final class ParallelBuilder<P> implements ParallelPolicy<P>, ParallelBranches<P> {
+
+		final Body body;
+
+		final P parent;
+
+		final String label;
+
+		final List<BranchBuilder<P>> branches = new ArrayList<>();
+
+		boolean policy, ended;
+
+		ParallelBuilder(Body body, P parent, String label) {
+			this.body = body;
+			this.parent = parent;
+			this.label = Objects.requireNonNull(label);
+		}
+
+		public ParallelBranches<P> allSuccessful() {
+			if (policy || ended)
+				throw new IllegalStateException("group policy already set");
+			policy = true;
+			return this;
+		}
+
+		public Branch<P> branch(String name) {
+			if (!policy || ended || !branches.isEmpty() && branches.getLast().blocked)
+				throw new IllegalStateException("closed or unfinished parallel group");
+			if (!branches.isEmpty()) {
+				branches.getLast().sealed = true;
+				if (body.first == null)
+					body.first = branches.getFirst().first;
+			}
+			var branch = new BranchBuilder<>(this, Objects.requireNonNull(name));
+			branches.add(branch);
+			return branch;
+		}
+
+		P end() {
+			if (ended || branches.isEmpty() || branches.getLast().blocked)
+				throw new IllegalStateException("empty, closed or unfinished parallel group");
+			if (branches.stream().anyMatch(b -> b.nodes.isEmpty()))
+				throw new IllegalArgumentException("empty branch");
+			ended = true;
+			branches.forEach(b -> b.sealed = true);
+			body.nodes.add(new Parallel(label, null, true,
+					branches.stream().map(b -> new Member(b.name, List.copyOf(b.nodes))).toList()));
+			if (body.first == null)
+				body.first = branches.getFirst().first;
+			List<Type> roles = branches.stream().map(b -> b.current).toList();
+			body.current = roles.stream().distinct().count() == 1 ? new ListType(roles.getFirst())
+					: new ProductType(roles);
+			body.blocked = false;
+			return parent;
+		}
+
+	}
+
+	private static final class BranchBuilder<P> extends Body implements Branch<P> {
+
+		final ParallelBuilder<P> group;
+
+		final String name;
+
+		boolean sealed;
+
+		BranchBuilder(ParallelBuilder<P> group, String name) {
+			super(group.body.supplied, group.body.results,
+					group.body.current == null ? group.body.first : group.body.current);
+			this.group = group;
+			this.name = name;
+			inMember = true;
+		}
+
+		@Override
+		void open() {
+			if (sealed)
+				throw new IllegalStateException("stale parallel branch");
+			super.open();
+		}
+
+		public Branch<P> then(Step<?, ?> step) {
+			return then("step-" + (nodes.size() + 1), step);
+		}
+
+		public Branch<P> then(String label, Step<?, ?> step) {
+			call(label, step);
+			return this;
+		}
+
+		public Branch<P> subWorkflow(String label, ValidatedWorkflow workflow) {
+			child(label, workflow);
+			return this;
+		}
+
+		public Decision<Branch<P>> decision(String label, Step<?, ?> step) {
+			return choice(label, step, (Branch<P>) this);
+		}
+
+		public Decision<Branch<P>> verdict(String label, Step<?, Verdict> step) {
+			return nativeChoice(label, step, (Branch<P>) this);
+		}
+
+		public ParallelPolicy<Branch<P>> parallel(String label) {
+			return parallelBlock(label, (Branch<P>) this);
+		}
+
+		public Branch<P> branch(String name) {
+			if (sealed)
+				throw new IllegalStateException("stale parallel branch");
+			return group.branch(name);
+		}
+
+		public P end() {
+			if (sealed)
+				throw new IllegalStateException("stale parallel branch");
+			return group.end();
 		}
 
 	}

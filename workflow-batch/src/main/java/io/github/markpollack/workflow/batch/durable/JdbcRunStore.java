@@ -16,16 +16,16 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * writable initialization. The keeper connection retains store lifetime; each transaction
  * uses its own connection. RuntimeLifecycle drains callers before close().
  * <p>
- * The shared transition lock row serializes transactions across runs and is released
- * at commit or rollback. Attempt preparation and the separate execution-eligibility
- * check finish before Step.execute; result encoding also finishes before the result
- * transaction starts. A blocked Step therefore does not retain this store's database
- * lock and another caller can make durable progress on another run. This boundary says
- * nothing about transactions that the application opens for its own work.
+ * The shared transition lock row serializes transactions across runs and is released at
+ * commit or rollback. Attempt preparation and the separate execution-eligibility check
+ * finish before Step.execute; result encoding also finishes before the result transaction
+ * starts. A blocked Step therefore does not retain this store's database lock and another
+ * caller can make durable progress on another run. This boundary says nothing about
+ * transactions that the application opens for its own work.
  */
 final class JdbcRunStore implements AutoCloseable {
 
-	private static final int FORMAT = 7;
+	private static final int FORMAT = 8;
 
 	private final String url;
 
@@ -243,7 +243,7 @@ final class JdbcRunStore implements AutoCloseable {
 					|| state.deadline != rows.getLong("deadline"))
 				throw new WorkflowRefusal("STORE_CORRUPT", "state and transition columns disagree");
 			RunIntegrity.validate(state);
-            loaded.put(id, state.revision);
+			loaded.put(id, state.revision);
 			states.put(id, state);
 			return state;
 		}
@@ -253,7 +253,7 @@ final class JdbcRunStore implements AutoCloseable {
 		 * transaction owns commit.
 		 */
 		void insert(RunState state) throws Exception {
-            RunIntegrity.validate(state);
+			RunIntegrity.validate(state);
 			try (PreparedStatement s = c.prepareStatement(
 					"INSERT INTO aw_run(id,idempotency,revision,status,deadline,state) VALUES(?,?,?,?,?,?)")) {
 				s.setString(1, state.id);
@@ -273,7 +273,8 @@ final class JdbcRunStore implements AutoCloseable {
 		 * may save a terminal outcome.
 		 */
 		void observe(RunState run) throws Exception {
-			if (run.observe(now)) save(run);
+			if (run.observe(now))
+				save(run);
 		}
 
 		/**
@@ -294,7 +295,7 @@ final class JdbcRunStore implements AutoCloseable {
 		 * callback commits.
 		 */
 		void save(RunState state) throws Exception {
-            RunIntegrity.validate(state);
+			RunIntegrity.validate(state);
 			long previous = Objects.requireNonNull(loaded.get(state.id), "read required before update");
 			state.revision = Math.incrementExact(previous);
 			try (PreparedStatement s = c.prepareStatement(

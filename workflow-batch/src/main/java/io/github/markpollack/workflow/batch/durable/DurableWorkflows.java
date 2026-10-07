@@ -5,36 +5,37 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.*;
 import io.github.markpollack.workflow.flows.StepContext;
 import io.github.markpollack.workflow.flows.compiler.*;
 import io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
 
 /**
- * One local database owner for validated workflows with nested same-run composites.
- * Application-supplied steps execute synchronously on the caller, outside transactions.
- * No executor, lease or scheduler. Process death releases ownership; compatible
- * applications can recover unfinished progress.
+ * One local JDBC owner executing the validated WorkflowGraph. The application supplies
+ * constructor-injected Steps and owns their dependencies. Admission executes no Step.
+ * Ordinary sequential resume/advance invokes Steps on its caller; parallel resume uses
+ * runtime-owned JDK workers with {@link ExecutionPolicy#maximumConcurrency()} slots.
+ * Every Step body shares that finite capacity. Graph transitions consume no worker slots.
+ * No worker waits for nested graph work. No Reactor or renewable execution lease.
  * <p>
- * StepRegistry retains supplied objects; ExecutionCompatibility records declared facts.
- * ValidatedWorkflow owns the checked definition and binding recipes. This front door
- * coordinates their use with RuntimeLifecycle (whole-call drainage and same-run
- * exclusion), StoreOwnership (exclusive process-held database lock) and JdbcRunStore
- * (atomic saved facts).
+ * A parallel resume caller coordinates eligible scopes and waits for its admitted workers
+ * and full branch settlement. A failed member stops its own sequence; siblings still
+ * settle before group failure propagates. Committed member results survive process death.
+ * Recovery is application-driven; unresolved external effects may repeat within the saved
+ * attempt allowance. Advance performs one boundary and creates no background work.
  * <p>
- * start() admits without execution; advance() performs at most one boundary; resume()
- * repeats advancement on its caller. A call first resolves contracts, commits exact input
- * and attempt charge in a transaction, then rechecks eligibility in a separate short
- * transaction. Both transactions commit and release the store lock before Step.execute.
- * Preparation can decode values and construct input records inside its transaction.
- * Result encoding occurs outside transactions; a final transaction accepts output and
- * advances the graph atomically, including terminal success when reached.
+ * Short transactions save exact inputs/attempts, recheck entry and accept results plus
+ * graph continuation. Step bodies and output encoding run outside those transactions.
+ * RuntimeLifecycle excludes duplicate same-run callers and drains callers/workers before
+ * executor/store/ownership closure. Cancel/deadline revoke durable authority and fence
+ * late results, without promising physical interruption. Shutdown retains resources on
+ * timeout.
  * <p>
- * A slow application call holds no workflow-store database lock. Distinct callers may
- * advance different runs concurrently; same-run duplicate execution refuses. The shared
- * store lock row serializes transitions, not Step calls. Transactions opened by
- * application code itself are outside this guarantee. Inspection returns immutable
- * snapshots but may persist deadline expiry. Known application failures are terminal;
- * unfinished crash recovery is not automatic retry or operator restart of a terminal run.
+ * Supplied objects must be safe for their authored concurrent use. A Step cannot call
+ * this runtime's resume/advance recursively; express nested work through graph
+ * composition. Inspection exposes ordered group/member settlement. Known application
+ * failure, store failure and compatibility refusal remain distinct. Resume never reopens
+ * terminal runs.
  */
 public final class DurableWorkflows implements AutoCloseable {
 
@@ -51,6 +52,8 @@ public final class DurableWorkflows implements AutoCloseable {
 	private final ExecutionPolicy policy;
 
 	private final BoundaryHooks hooks;
+
+	private final LeafExecutor leaves;
 
 	/**
 	 * Open exclusive management access without loading executable application objects.
@@ -95,6 +98,7 @@ public final class DurableWorkflows implements AutoCloseable {
 		ownership = StoreOwnership.acquire(database);
 		try {
 			store = new JdbcRunStore(ownership.database());
+			leaves = new LeafExecutor(policy.maximumConcurrency());
 		}
 		catch (RuntimeException | Error ex) {
 			try {
@@ -164,6 +168,7 @@ public final class DurableWorkflows implements AutoCloseable {
 			run.deadline = Math.addExact(tx.now, workflow.definition().deadline().toMillis());
 			run.deadlineOrigin = workflow.deadlineOrigin();
 			run.maximumAttempts = policy.maximumAttempts();
+			run.maximumConcurrency = policy.maximumConcurrency();
 			run.maximumDepth = policy.maximumDepth();
 			run.maximumInvocations = policy.maximumInvocations();
 			run.rootDefinition = resolved.root();
@@ -179,7 +184,7 @@ public final class DurableWorkflows implements AutoCloseable {
 			run.rootScope = scope.id;
 			run.scopes.put(scope.id, scope);
 			var rootRecipe = ScopedValues.root(workflow);
-			scope.input = ScopeIds.value(run.id, scope, rootRecipe.identity());
+			scope.input = ScopedValues.id(run, scope, rootRecipe.identity());
 			ScopedValues.put(run, scope, rootRecipe, root, "", "");
 			run.event("ADMITTED", tx.now, run.admission);
 			tx.insert(run);
@@ -249,14 +254,14 @@ public final class DurableWorkflows implements AutoCloseable {
 	}
 
 	/**
-	 * Continue synchronously to terminal using saved progress. A concurrent same-run call
-	 * refuses with RUN_BUSY before charging an attempt; different runs may execute
-	 * concurrently. An application interrupt returns saved progress after the current
-	 * outcome, restoring the flag. A compatible terminal run is returned unchanged. This
-	 * does not restart terminal failures. A snapshot may still be ACTIVE if a normally
-	 * returning step interrupted its caller. Cancellation/expiry can win while
-	 * application code runs; they fence acceptance, not the Java call itself. Each
-	 * application result is provisional until its commit.
+	 * Continue to terminal using saved progress; parallel callers coordinate bounded
+	 * workers. A concurrent same-run call refuses with RUN_BUSY before charging an
+	 * attempt; different runs may execute concurrently. An application interrupt returns
+	 * saved progress after the current outcome, restoring the flag. A compatible terminal
+	 * run is returned unchanged. This does not restart terminal failures. A snapshot may
+	 * still be ACTIVE if a normally returning step interrupted its caller.
+	 * Cancellation/expiry can win while application code runs; they fence acceptance, not
+	 * the Java call itself. Each application result is provisional until its commit.
 	 * @param runId admitted run identity
 	 * @param workflow compatible validated definition used for its exact recipes
 	 * @return final or interrupted progress snapshot
@@ -266,7 +271,10 @@ public final class DurableWorkflows implements AutoCloseable {
 	public RunSnapshot resume(String runId, ValidatedWorkflow workflow) {
 		requireText(runId, "run ID");
 		try (var activity = lifecycle.enter(runId)) {
+			leaves.requireCoordinator();
 			WorkflowExecutionBindings resolved = resolve(runId, workflow);
+			if (workflow.capabilities().contains(Capability.PARALLEL))
+				return resumeParallel(runId, workflow, resolved, activity);
 			RunSnapshot result;
 			do {
 				result = advanceOwned(runId, workflow, resolved, activity);
@@ -277,10 +285,10 @@ public final class DurableWorkflows implements AutoCloseable {
 	}
 
 	/**
-	 * Advance one eligible Step, composite entry or return boundary synchronously,
-	 * returning the saved snapshot. Holds the same-run guard through preparation,
-	 * application entry and commit. It does not create a worker thread or continue
-	 * automatically after returning ACTIVE.
+	 * Advance one eligible Step, composite/group entry, settlement or return
+	 * synchronously, returning the saved snapshot. Holds the same-run guard through
+	 * preparation, application entry and commit. It does not create a worker thread or
+	 * continue automatically after returning ACTIVE.
 	 * @param runId admitted run identity
 	 * @param workflow compatible checked definition
 	 * @return progress after at most one step, or an already terminal snapshot
@@ -290,6 +298,7 @@ public final class DurableWorkflows implements AutoCloseable {
 	public RunSnapshot advance(String runId, ValidatedWorkflow workflow) {
 		requireText(runId, "run ID");
 		try (var activity = lifecycle.enter(runId)) {
+			leaves.requireCoordinator();
 			return advanceOwned(runId, workflow, resolve(runId, workflow), activity);
 		}
 	}
@@ -304,12 +313,171 @@ public final class DurableWorkflows implements AutoCloseable {
 			RuntimeLifecycle.Activity activity) {
 		// Preparation commits exact input and a charged attempt; it never calls
 		// Step.execute.
-		Advancement prepared = store.transaction(tx -> prepareAdvance(tx, runId, workflow, resolved));
+		Advancement prepared = store.transaction(tx -> prepareAdvance(tx, runId, workflow, resolved, Set.of()));
 		if (prepared instanceof Progress progress) {
 			hooks.at("AFTER_PROGRESS_COMMIT", runId);
 			return progress.snapshot;
 		}
-		return executeAttempt(runId, workflow, resolved, (Dispatch) prepared, activity);
+		try {
+			leaves.acquire();
+		}
+		catch (InterruptedException interrupted) {
+			activity.captureInterrupt(interrupted);
+			return inspectSaved(runId);
+		}
+		try {
+			return executeAttempt(runId, workflow, resolved, (Dispatch) prepared, activity);
+		}
+		finally {
+			leaves.release();
+		}
+	}
+
+	/**
+	 * Caller coordinates graph readiness; workers invoke leaves and commit their results.
+	 */
+	private RunSnapshot resumeParallel(String runId, ValidatedWorkflow workflow, WorkflowExecutionBindings resolved,
+			RuntimeLifecycle.Activity activity) {
+		var completions = new ExecutorCompletionService<WorkerResult>(leaves.executor());
+		Map<Future<WorkerResult>, String> live = new HashMap<>();
+		var paused = new java.util.concurrent.atomic.AtomicBoolean();
+		RuntimeException problem = null;
+		Error fatal = null;
+		try {
+			while (true) {
+				if (paused.get())
+					activity.captureInterrupt(new InterruptedException("Step worker interrupted"));
+				boolean interrupted = activity.interrupted();
+				if (!interrupted && leaves.tryAcquire()) {
+					boolean submitted = false;
+					try {
+						if (paused.get()) {
+							activity.captureInterrupt(new InterruptedException("Step worker interrupted"));
+							continue;
+						}
+						Set<String> occupied = Set.copyOf(live.values());
+						Advancement prepared = store
+							.transaction(tx -> prepareAdvance(tx, runId, workflow, resolved, occupied));
+						if (prepared instanceof Dispatch dispatch) {
+							var future = completions.submit(() -> {
+								try (var worker = lifecycle.worker()) {
+									var snapshot = executeAttempt(runId, workflow, resolved, dispatch, worker);
+									if (worker.interrupted())
+										paused.set(true);
+									return new WorkerResult(snapshot, worker.interrupted());
+								}
+								finally {
+									leaves.release();
+								}
+							});
+							live.put(future, dispatch.scope);
+							submitted = true;
+							continue;
+						}
+						hooks.at("AFTER_PROGRESS_COMMIT", runId);
+						var progress = ((Progress) prepared).snapshot;
+						if (progress.terminal())
+							break;
+						// Structural progress is visible in the revision; ready work
+						// needs no worker wait.
+						boolean ready = store
+							.transaction(tx -> WorkflowProgress.eligible(tx.get(runId), occupied) != null);
+						if (ready)
+							continue;
+						if (live.isEmpty())
+							throw new WorkflowRefusal("STRANDED_PROGRESS", "active run has no eligible boundary");
+					}
+					finally {
+						if (!submitted)
+							leaves.release();
+					}
+				}
+				if (live.isEmpty()) {
+					if (interrupted)
+						break;
+					// Other runs may occupy all slots. Wait outside JDBC, then reconsider
+					// readiness.
+					try {
+						leaves.acquire();
+						leaves.release();
+					}
+					catch (InterruptedException ex) {
+						activity.captureInterrupt(ex);
+						break;
+					}
+					continue;
+				}
+				Future<WorkerResult> finished;
+				try {
+					finished = completions.take();
+				}
+				catch (InterruptedException ex) {
+					activity.captureInterrupt(ex);
+					continue;
+				}
+				live.remove(finished);
+				getWorker(finished, activity);
+			}
+		}
+		catch (RuntimeException ex) {
+			problem = ex;
+		}
+		catch (Error ex) {
+			fatal = ex;
+		}
+		finally {
+			// Never release same-run ownership or JDBC resources while accepted work is
+			// alive.
+			for (var future : live.keySet()) {
+				try {
+					getWorker(future, activity);
+				}
+				catch (RuntimeException ex) {
+					if (problem == null)
+						problem = ex;
+					else
+						problem.addSuppressed(ex);
+				}
+				catch (Error ex) {
+					if (fatal == null)
+						fatal = ex;
+					else
+						fatal.addSuppressed(ex);
+				}
+			}
+		}
+		if (fatal != null) {
+			if (problem != null)
+				fatal.addSuppressed(problem);
+			throw fatal;
+		}
+		if (problem != null)
+			throw problem;
+		return inspectSaved(runId);
+	}
+
+	private record WorkerResult(RunSnapshot snapshot, boolean interrupted) {
+	}
+
+	private static RunSnapshot getWorker(Future<WorkerResult> future, RuntimeLifecycle.Activity activity) {
+		while (true) {
+			try {
+				var result = future.get();
+				if (result.interrupted)
+					activity.captureInterrupt(new InterruptedException("Step worker interrupted"));
+				return result.snapshot;
+			}
+			catch (InterruptedException ex) {
+				activity.captureInterrupt(ex);
+			}
+			catch (ExecutionException ex) {
+				if (ex.getCause() instanceof Error error)
+					throw error;
+				if (ex.getCause() instanceof RuntimeException failure)
+					throw failure;
+				throw new WorkflowRefusal("WORKER_FAILED", "leaf execution failed", ex.getCause());
+			}
+		}
 	}
 
 	/**
@@ -320,18 +488,29 @@ public final class DurableWorkflows implements AutoCloseable {
 	 * yesterday's values.
 	 */
 	private Advancement prepareAdvance(JdbcRunStore.Tx tx, String runId, ValidatedWorkflow workflow,
-			WorkflowExecutionBindings resolved) throws Exception {
+			WorkflowExecutionBindings resolved, Set<String> executingScopes) throws Exception {
 		RunState run = tx.get(runId);
 		compatible(run, workflow, resolved);
 		tx.observe(run);
 		if (!run.active())
 			return new Progress(run.snapshot());
-		var scope = WorkflowProgress.eligible(run);
+		var scope = WorkflowProgress.eligible(run, executingScopes);
+		if (scope == null)
+			return new Progress(run.snapshot());
 		if (scope.lifecycle.equals("LOCAL_TERMINAL"))
 			return returnComposite(tx, run, scope, resolved);
 		var progress = WorkflowProgress.frontier(scope);
 		var local = resolved.definition(scope.definition);
 		var node = local.graph().nodeByName(progress.node);
+		if (node instanceof WorkflowNode.ForkNode) {
+			if (progress.phase.equals("READY"))
+				ParallelProgress.open(run, scope, progress, local, tx.now);
+			else if (ParallelProgress.settle(run, scope, progress, local, resolved, tx.now))
+				continueAt(tx, run, scope, local,
+						local.graph().unconditionalSuccessor(((WorkflowNode.ForkNode) node).joinNodeName()), resolved);
+			tx.save(run);
+			return new Progress(run.snapshot());
+		}
 		if (node instanceof WorkflowNode.CompositeNode)
 			return enterComposite(tx, run, scope, progress, local, resolved);
 		if (!(node instanceof WorkflowNode.StepNode) && !(node instanceof WorkflowNode.DecisionNode))
@@ -364,8 +543,8 @@ public final class DurableWorkflows implements AutoCloseable {
 		invocation.placement = recipe.placement().graphName();
 		invocation.kind = kind;
 		invocation.status = "PREPARED";
-		invocation.input = ScopeIds.value(run.id, scope, recipe.input().identity());
-		invocation.output = ScopeIds.value(run.id, scope, recipe.output().identity());
+		invocation.input = ScopedValues.id(run, scope, recipe.input().identity());
+		invocation.output = ScopedValues.id(run, scope, recipe.output().identity());
 		ScopedValues.materialize(run, scope, recipe.input().identity(), local, resolved, invocation.id);
 		run.invocations.add(invocation);
 		run.logicalCount++;
@@ -525,8 +704,14 @@ public final class DurableWorkflows implements AutoCloseable {
 		try {
 			Object value;
 			try {
-				value = resolved.execute(dispatch.definition, dispatch.recipe.placement().graphName(), dispatch.input,
-						dispatch.context);
+				leaves.enteringBody();
+				try {
+					value = resolved.execute(dispatch.definition, dispatch.recipe.placement().graphName(),
+							dispatch.input, dispatch.context);
+				}
+				finally {
+					leaves.leavingBody();
+				}
 			}
 			catch (Exception | LinkageError failure) {
 				return failAttempt(runId, workflow, resolved, dispatch, activity,
@@ -642,6 +827,10 @@ public final class DurableWorkflows implements AutoCloseable {
 
 	private void continueAt(JdbcRunStore.Tx tx, RunState run, RunState.Scope scope, ValidatedWorkflow workflow,
 			String next, WorkflowExecutionBindings resolved) {
+		if (!scope.group.isEmpty() && next.equals(scope.stop)) {
+			ParallelProgress.completeMember(run, scope, workflow, tx.now);
+			return;
+		}
 		while (workflow.graph().nodeByName(next) instanceof WorkflowNode.ControlNode control
 				&& control.kind().equals("exclusive-join")) {
 			DecisionProgress.join(run, scope, workflow, next);
@@ -649,6 +838,10 @@ public final class DurableWorkflows implements AutoCloseable {
 			join.phase = "SETTLED";
 			join.settlement = next;
 			next = workflow.graph().unconditionalSuccessor(next);
+			if (!scope.group.isEmpty() && next.equals(scope.stop)) {
+				ParallelProgress.completeMember(run, scope, workflow, tx.now);
+				return;
+			}
 		}
 		var progress = scope.ready(next);
 		if (workflow.graph().nodeByName(next) instanceof WorkflowNode.TerminalNode terminal) {
@@ -743,7 +936,8 @@ public final class DurableWorkflows implements AutoCloseable {
 	private static void requireSupported(ValidatedWorkflow workflow) {
 		Objects.requireNonNull(workflow);
 		if (!Set
-			.of(Capability.OPERATION, Capability.TERMINAL, Capability.CHILD, Capability.DECISION, Capability.VERDICT)
+			.of(Capability.OPERATION, Capability.TERMINAL, Capability.CHILD, Capability.DECISION, Capability.VERDICT,
+					Capability.PARALLEL)
 			.containsAll(workflow.capabilities()))
 			throw new WorkflowRefusal("UNSUPPORTED_CAPABILITY", "unsupported execution construct");
 	}
@@ -765,7 +959,7 @@ public final class DurableWorkflows implements AutoCloseable {
 		// The exact closure is compared separately too; a digest never validates
 		// duplicated fields.
 		List<String> fields = new ArrayList<>();
-		fields.add("durable-run-v7");
+		fields.add("durable-run-v8");
 		fields.add(resolved.root());
 		fields.add(Integer.toString(resolved.descriptors().size()));
 		new TreeMap<>(resolved.descriptors()).forEach((key, d) -> {
@@ -782,9 +976,9 @@ public final class DurableWorkflows implements AutoCloseable {
 		if (!supplied.equals(run.deployment))
 			throw new WorkflowRefusal("COMPATIBILITY",
 					"supplied deployment/configuration/codec/runtime differs from admitted manifest");
-		if (run.maximumAttempts != policy.maximumAttempts() || run.maximumDepth != policy.maximumDepth()
-				|| run.maximumInvocations != policy.maximumInvocations() || !run.bounds.equals(resolved.bounds())
-				|| !Objects.equals(run.authored, workflow.authoredIdentity())
+		if (run.maximumConcurrency != policy.maximumConcurrency() || run.maximumAttempts != policy.maximumAttempts()
+				|| run.maximumDepth != policy.maximumDepth() || run.maximumInvocations != policy.maximumInvocations()
+				|| !run.bounds.equals(resolved.bounds()) || !Objects.equals(run.authored, workflow.authoredIdentity())
 				|| !run.rootDefinition.equals(resolved.root()) || !run.definitions.equals(resolved.descriptors())
 				|| !run.compatibility.equals(compatibility(resolved, supplied, policy)))
 			throw new WorkflowRefusal("COMPATIBILITY",
@@ -796,7 +990,7 @@ public final class DurableWorkflows implements AutoCloseable {
 		return workflow.values()
 			.keySet()
 			.stream()
-			.filter(id -> ScopeIds.value(run.id, scope, id).equals(saved))
+			.filter(id -> ScopedValues.id(run, scope, id).equals(saved))
 			.findFirst()
 			.orElseThrow(() -> new WorkflowRefusal("VALUE_CHANGED", "foreign successful result"));
 	}
@@ -829,6 +1023,7 @@ public final class DurableWorkflows implements AutoCloseable {
 	 */
 	public boolean shutdown(Duration timeout) {
 		return lifecycle.shutdown(timeout, () -> {
+			leaves.close();
 			store.close();
 			ownership.close();
 		});

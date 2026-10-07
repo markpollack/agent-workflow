@@ -48,6 +48,8 @@ final class DecisionProgress {
 			require(route.armInput().isEmpty(), "arm input without invocation");
 			if (verifyInput)
 				require(workflow.graph().nodeByName(first) instanceof WorkflowNode.TerminalNode
+						|| workflow.graph().nodeByName(first) instanceof WorkflowNode.ForkNode
+						|| first.equals(scope.stop)
 						|| (scope.localOutcome != null && scope.localOutcome.code().equals("INPUT_ENCODING_FAILED")),
 						"accepted decision without exact arm input");
 		}
@@ -75,11 +77,14 @@ final class DecisionProgress {
 			if (capture.placement().graphName().equals(choice)) {
 				var selected = capture.routes().get(route.outcome());
 				require(selected != null, "capture without selected arm source");
-				var original = ScopedValues.verify(run, scope, selected.identity(), workflow);
+				String originalId = ScopedValues.result(run, scope, selected.identity(), workflow);
 				var recipe = workflow.values().get(capture.result().identity());
-				String id = ScopeIds.value(run.id, scope, recipe.identity());
-				require(sources.putIfAbsent(id, original.id) == null, "duplicate capture acceptance");
-				ScopedValues.put(run, scope, recipe, original.payload, route.invocation(), original.id);
+				String id = ScopedValues.id(run, scope, recipe.identity());
+				require(sources.putIfAbsent(id, originalId) == null, "duplicate capture acceptance");
+				if (recipe.contract() != null) {
+					var original = ScopedValues.verify(run, scope, selected.identity(), workflow);
+					ScopedValues.put(run, scope, recipe, original.payload, route.invocation(), originalId);
+				}
 			}
 		run.decisions.put(route.invocation(), new RunState.Decision(route.invocation(), route.outcome(), route.target(),
 				route.acceptedAt(), route.armInvocation(), route.armInput(), sources));
@@ -93,9 +98,9 @@ final class DecisionProgress {
 			if (capture.placement().graphName().equals(choice)) {
 				var selected = capture.routes().get(route.outcome());
 				require(selected != null, "capture source not in selected route");
-				String id = ScopeIds.value(run.id, scope, capture.result().identity());
-				expected.put(id, ScopeIds.value(run.id, scope, selected.identity()));
-				ScopedValues.verify(run, scope, capture.result().identity(), workflow);
+				String id = ScopedValues.id(run, scope, capture.result().identity());
+				expected.put(id, ScopedValues.id(run, scope, selected.identity()));
+				ScopedValues.result(run, scope, capture.result().identity(), workflow);
 			}
 		require(expected.equals(route.captures()), "capture acceptance differs from selected arm");
 	}

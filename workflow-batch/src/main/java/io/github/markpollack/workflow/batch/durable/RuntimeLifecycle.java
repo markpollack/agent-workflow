@@ -47,6 +47,13 @@ final class RuntimeLifecycle {
 		return new Activity(runId);
 	}
 
+	/** A worker belongs to an already admitted owner call, including during drainage. */
+	synchronized Activity worker() {
+		active++;
+		callers.merge(Thread.currentThread(), 1, Integer::sum);
+		return new Activity(null);
+	}
+
 	/**
 	 * Refuse new calls, then wait for whole entered calls without interrupting them. A
 	 * zero/expired timeout leaves CLOSING and resources held. Release resources exactly

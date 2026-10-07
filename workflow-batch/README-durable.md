@@ -2,7 +2,7 @@
 
 This developer guide describes the current local runtime. Start with the [project README](../README.md) for workflow authoring and the runnable recovery example.
 
-[`DurableWorkflows`](src/main/java/io/github/markpollack/workflow/batch/durable/DurableWorkflows.java) accepts immutable `ValidatedWorkflow` definitions containing Steps, nested same-run composites and explicit terminal outcomes. Decisions, verdict routing, parallel groups, fan-out, loops and timers are not executable on this path yet. Submitting a definition with unsupported constructs refuses admission.
+[`DurableWorkflows`](src/main/java/io/github/markpollack/workflow/batch/durable/DurableWorkflows.java) accepts immutable `ValidatedWorkflow` definitions containing Steps, nested same-run composites, exhaustive decisions/native verdict routing, static parallel groups and explicit terminal outcomes. Fan-out, loops and timers are not executable on this path yet. Submitting a definition with unsupported constructs refuses admission.
 
 ## Application-supplied steps
 
@@ -16,7 +16,7 @@ Implement `Step<I,O>` with concrete input/output types and register supplied obj
 
 Java erases generic method dispatch, but a concrete class declaration such as `implements Step<Request, List<Reply>>` retains a generic signature. [`StepTypes`](../workflow-flows/src/main/java/io/github/markpollack/workflow/flows/compiler/StepTypes.java) reads those signatures, including concrete inherited declarations. `new GenericStep<Request>()` alone does not retain the argument in its runtime class. Raw/unresolved declarations, conflicting proxy contracts and erased lambda classes refuse validation. All inherited Step declarations must agree; proxy interface order cannot select a contract. There are no public `inputType()`/`outputType()` hints to maintain.
 
-`then` selects those full types; `build` validates control structure, input bindings and durable value shapes. The existing [RegionAnalyzer](../workflow-flows/src/main/java/io/github/markpollack/workflow/flows/compiler/RegionAnalyzer.java) resolves record components in declaration order and derives captures from typed facts across continuing paths. Captures are analysis of where a value comes from, not reflective invocation or object-field guessing. They do not require type-hint methods. Broader path analysis exists in the validator; this runtime still refuses later routing, group, loop and timer constructs.
+`then` selects those full types; `build` validates control structure, input bindings and durable value shapes. The existing [RegionAnalyzer](../workflow-flows/src/main/java/io/github/markpollack/workflow/flows/compiler/RegionAnalyzer.java) resolves record components in declaration order and derives captures from typed facts across continuing paths. Captures are analysis of where a value comes from, not reflective invocation or object-field guessing. They do not require type-hint methods. Broader path analysis exists in the validator; this runtime still refuses fan-out, loop and timer constructs.
 
 Admission checks the supplied objects and root value against the validated definition. Execution checks the saved definition/deployment and exact input identity, type, codec and provenance before decoding it. [`WorkflowExecutionBindings`](src/main/java/io/github/markpollack/workflow/batch/durable/WorkflowExecutionBindings.java) compares the actual Step signature with the selected full input/output types. Only then does its direct invocation bridge cast to `Step<Object,Object>` for erased Java dispatch. That cast does not resolve bindings or weaken the preceding checks.
 
@@ -34,13 +34,15 @@ For an assembled record input, the recipe retains component order and source ide
 | `cancel` | Permanently records cancellation if the run is still active; sends no Java interrupt. |
 | `result` | Decodes the accepted successful result using the compatible supplied deployment and definition. |
 
-`resume` and `advance` execute `Step.execute` on the calling Java thread with **no executor handoff**. The runtime creates no scheduling or lease-renewal threads. H2 owns its internal storage-maintenance threads. Ordinary application code that blocks inside a step continues to occupy its caller.
+Sequential `resume` and `advance` execute `Step.execute` on the caller. A parallel-capable `resume` coordinates saved graph frontiers on its caller and dispatches leaf Steps onto its runtime-owned bounded JDK executor. The caller waits for admitted workers and full settlement. `ExecutionPolicy.maximumConcurrency()` bounds occupied Step slots across the handle, default 4; the executor's finite queue is bounded by that capacity. Graph/group/composite transitions use no worker slot, so nested work progresses at capacity one. H2 owns its internal maintenance threads. A blocked Step occupies its execution slot until it returns/throws; cancellation does not reclaim physical capacity.
 
-[`RuntimeLifecycle`](src/main/java/io/github/markpollack/workflow/batch/durable/RuntimeLifecycle.java) prevents overlapping execution calls for the same run for the duration of the whole call. A competing caller receives `RUN_BUSY` before another attempt is charged. Different runs can execute application code concurrently on different caller threads; supplied steps and dependencies must support that concurrency. Inspection and cancellation can occur while a step is running.
+A Step cannot recursively call resume/advance on this runtime: use graph composition for nested execution. This prevents an application call from blocking its own finite execution capacity. Supplied Steps/dependencies must support the concurrent uses declared by the workflow.
 
-No workflow timers, waiting joins or background resume facility exist here. After a process restart, the application opens the runtime and calls `resume` with the compatible definition. Discovery alone does not continue execution.
+[`RuntimeLifecycle`](src/main/java/io/github/markpollack/workflow/batch/durable/RuntimeLifecycle.java) prevents overlapping execution calls for the same run for the duration of the whole call. A competing caller receives `RUN_BUSY` before another attempt is charged. Different runs can execute application code concurrently within the shared finite capacity; supplied steps and dependencies must support that concurrency. Inspection and cancellation can occur while a step is running.
 
-## Caller thread and transaction boundaries
+Parallel joins persist member readiness and settlement. No workflow timers or background resume facility exist here. After a process restart, the application opens the runtime and calls `resume` with the compatible definition. Discovery alone does not continue execution.
+
+## Execution and transaction boundaries
 
 ```mermaid
 sequenceDiagram
@@ -49,12 +51,12 @@ sequenceDiagram
     participant Store as JdbcRunStore
     participant Step as Supplied Step
     Caller->>Runtime: advance / resume
-    Note over Caller,Runtime: Same caller thread; one guard per run
+    Note over Caller,Runtime: Caller coordinates; one guard per run
     Runtime->>Store: TX: verify compatibility + graph prefix
     Runtime->>Store: TX: save exact input + charge attempt
     Runtime->>Store: TX: recheck cancellation / deadline
     Runtime->>Step: execute(context, decoded input)
-    Note over Runtime,Step: Outside persistence TX; no executor handoff
+    Note over Runtime,Step: Outside TX; bounded worker for parallel resume, otherwise caller
     Step-->>Runtime: provisional output
     Runtime->>Runtime: encode and check full value contract
     Runtime->>Store: TX: recheck eligibility; output + successor + terminal + events
@@ -96,7 +98,7 @@ Preparation distinguishes authored behavior from implementation selection. A pre
 | `returns()` | Unique accepted return receipt linking a caller invocation to its child's outcome |
 | `resources()` | Admitted depth/work/attempt policy and conservative structural bounds |
 
-A scope is `OPEN`, `LOCAL_TERMINAL`, `RETURNED` or `REVOKED`. An open scope has one frontier node in this sequential composition subset: `READY`, `ENTERED` or `WAITING_CHILD`. Settled nodes retain their invocation or terminal reference. A waiting caller must have exactly one checked child that can execute, recover or return. Unexplained missing progress refuses with `PROGRESS_INVALID` or `STRANDED_PROGRESS`; it is never an ordinary durable wait.
+A scope is `OPEN`, `LOCAL_TERMINAL`, `RETURNED` or `REVOKED`. An open scope has one frontier node: `READY`, `ENTERED`, `WAITING_CHILD` or `WAITING_GROUP`. A group has an isolated scope for each member, each with its own checked frontier. Settled nodes retain their invocation or terminal reference. A waiting caller must have exactly one checked child that can execute, recover or return. Unexplained missing progress refuses with `PROGRESS_INVALID` or `STRANDED_PROGRESS`; it is never an ordinary durable wait.
 
 Composite entry saves the caller's exact input, private child input, deadline and return continuation in one transaction, without charging a Step attempt. When a final inner Step succeeds, its result and directly reached terminal outcome commit together. Returning that outcome to the caller uses a separate transaction, which saves the boundary value, unique return receipt and caller successor. If that successor is terminal, its outcome joins the return transaction; propagation to its own caller still waits for another transition.
 
@@ -106,11 +108,19 @@ For example, an inner completion accepted at time 90 with deadline 100 can retur
 
 The [standalone composite example](src/test/java/io/github/markpollack/workflow/batch/examples/CompositeRecoveryExample.java) and [Spring test](src/test/java/io/github/markpollack/workflow/batch/examples/CompositeWorkflowTest.java) show two calls to a two-Step polling definition. The Spring test recreates the application context after the second fetch commits. [CompositeRecoveryIT](src/test/java/io/github/markpollack/workflow/batch/durable/CompositeRecoveryIT.java) separately proves recovery after actual JVM death, including nested scopes and the local-completion/return gap.
 
+## Static groups and settlement
+
+Use `parallel(label).allSuccessful().branch(name)` with ordinary member sequences, then `end()` and a real continuation or terminal. All branches see the immutable outer facts available when the group opens; sibling-private facts are inaccessible. Declaration order determines member identity and homogeneous result order, regardless of completion order. Heterogeneous products expose distinct typed roles to the normal record binding model. Nested structural products retain their member result references rather than require an application codec for an internal product type.
+
+Group opening atomically saves ordered membership and per-member entry/join coordinates. Step acceptance commits each branch's exact result and continuation; completed branches never rerun after recovery. One thrown branch failure stops its sequence while queued siblings still execute. The join continues only after every member succeeds with its required result. Otherwise the fully settled group fails its enclosing scope with `PARALLEL_FAILED`. Global cancellation/expiry atomically records unresolved revocations and fences late results while preserving already committed member outcomes.
+
+`RunSnapshot.groups()` exposes group identity, phase, opening/settlement time and declaration-ordered member scope/status/cause/result references. An internal structural result reference resolves through its nested group's committed member records; it has no separate application payload. `scopes()` exposes individual graph progress. Inspection is durable evidence, not a live task handle. The [parallel fixture](src/test/java/io/github/markpollack/workflow/batch/examples/ParallelAssessmentExample.java) and [process recovery test](src/test/java/io/github/markpollack/workflow/batch/durable/ParallelRecoveryIT.java) demonstrate typed results and committed-branch reuse.
+
 ## Crash recovery, failure and time
 
 A compatible application can reopen after process death and continue unfinished runs. Committed results are reused. A charged attempt without a committed outcome may execute again with its saved input. `ExecutionPolicy.DEFAULT` permits three total physical attempts per logical invocation; exhausting the allowance fails the run. A changed allowance is a compatibility change.
 
-This is not exactly-once external execution. If a process dies after an external effect but before its result commits, recovery can repeat that effect. Use the stable invocation ID for external idempotency where supported. Known step exceptions fail the run immediately; there is no engine retry/backoff facility. `resume` returns a terminal run unchanged and does not provide saved-progress restart after terminal failure. That restart policy remains an open product decision.
+This is not exactly-once external execution. If a process dies after an external effect but before its result commits, recovery can repeat that effect. Use the stable invocation ID for external idempotency where supported. Known step exceptions stop their scope; parallel groups fully settle admitted siblings before propagating failure; there is no engine retry/backoff facility. `resume` returns a terminal run unchanged and does not provide saved-progress restart after terminal failure. That restart policy remains an open product decision.
 
 The default maximum duration is one hour (`DeadlinePolicy.DEFAULT`, profile `local-v1`). An authored shorter duration tightens it; a longer duration is capped. The lower-level validation API accepts another positive finite `DeadlinePolicy`. Admission saves an absolute deadline and its origin, which recovery never extends.
 
@@ -126,7 +136,7 @@ Cancellation and expiry reject later result acceptance; neither stops already ru
 
 Pass the database base path, without H2's `.mv.db` suffix. Parent directories and an existing database symlink are resolved to their real paths before locking. The sidecar is `<base>.workflow-owner.lock`; the held OS lock, not the mere presence of that file, establishes ownership. Semicolons in supplied or resolved paths refuse to prevent JDBC URL options from changing the database target.
 
-`shutdown(Duration)` stops admission of all new calls, including inspection and cancellation, then drains entered calls. It does not stop an entered `resume` after its current step: that call retains its normal continuation rules. Once calls drain, shutdown closes the store and releases ownership. A timeout returns `false`, leaves the runtime closing and retains ownership/resources; call shutdown again after application work returns. Supplied dependencies remain application-owned.
+`shutdown(Duration)` stops admission of all new calls, including inspection and cancellation, then drains entered calls. It does not stop an entered `resume` after its current step: that call retains its normal continuation rules. Once callers and workers drain, shutdown closes the executor/store and releases ownership. A timeout returns `false`, leaves the runtime closing and retains ownership/resources; call shutdown again after application work returns. Supplied dependencies remain application-owned.
 
 `close()` uses a thirty-second drainage timeout and throws `SHUTDOWN_INCOMPLETE` if calls remain. Shutdown never forcibly interrupts steps or cancels runs. Attempting shutdown from inside an active call on the same thread refuses rather than waiting on itself.
 
@@ -144,7 +154,7 @@ Steps use the ordinary application class loader. Workflow does not archive execu
 
 ## Store and verification limits
 
-The store uses H2 embedded file mode with `WRITE_DELAY=0` and format-6 run aggregates. Older (including format 5), incomplete, malformed or unknown store formats refuse before writable initialization; there is no checkpoint migration or automatic conversion. Remote workers and simultaneous embedded owners are unsupported. Values and events are retained indefinitely; no pruning API is provided. Filesystem/hardware durability remains within H2's guarantees; JVM-kill tests are not power-loss tests.
+The store uses H2 embedded file mode with `WRITE_DELAY=0` and format-8 run aggregates. Older (including format 7), incomplete, malformed or unknown store formats refuse before writable initialization; there is no checkpoint migration or automatic conversion. Remote workers and simultaneous embedded owners are unsupported. Values and events are retained indefinitely; no pruning API is provided. Filesystem/hardware durability remains within H2's guarantees; JVM-kill tests are not power-loss tests.
 
 Run `./mvnw -pl workflow-batch -am verify` from the project root for unit, consumer and separate-JVM recovery checks. The process harness records PIDs, kill boundaries, recovered facts and external invocation counts under `workflow-batch/target/durable-evidence/`. The full project gate is `./mvnw verify`.
 

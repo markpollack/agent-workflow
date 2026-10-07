@@ -23,9 +23,9 @@ final class RunIntegrity {
 	}
 
 	private static void check(RunState r) {
-		require(r.format == 7 && r.id != null && r.deployment != null, "run envelope");
+		require(r.format == 8 && r.id != null && r.deployment != null, "run envelope");
 		require(Set.of("ACTIVE", "SUCCEEDED", "FAILED", "CANCELLED").contains(r.status), "run status");
-		var policy = new ExecutionPolicy(r.maximumAttempts, r.maximumDepth, r.maximumInvocations);
+		var policy = new ExecutionPolicy(r.maximumAttempts, r.maximumDepth, r.maximumInvocations, r.maximumConcurrency);
 		require(closureBounds(r, policy).equals(r.bounds), "admitted structural bounds");
 		require(r.logicalCount == r.invocations.size() && r.logicalCount <= r.bounds.logical(), "logical counter");
 		require(r.scopes.size() <= r.bounds.scopes(), "scope bound");
@@ -131,7 +131,8 @@ final class RunIntegrity {
 						"unresolved invocation authority");
 		}
 		require(attempts.size() <= r.bounds.attempts(), "physical attempt bound");
-		require(r.scopes.size() == 1 + r.invocations.stream().filter(c -> !c.child.isEmpty()).count(), "scope counter");
+		require(r.scopes.size() == 1 + r.invocations.stream().filter(c -> !c.child.isEmpty()).count()
+				+ r.scopes.values().stream().filter(s -> !s.group.isEmpty()).count(), "scope counter");
 		require(r.returns.size() == r.invocations.stream()
 			.filter(c -> c.kind.equals("COMPOSITE") && c.status.equals("SETTLED"))
 			.count(), "extra return receipt");
@@ -145,13 +146,14 @@ final class RunIntegrity {
 			if (!v.digest.equals(Digests.of(v.payload)))
 				throw new WorkflowRefusal("VALUE_CHANGED", "saved payload digest differs");
 			if (!(v.producer.isEmpty() ? scope.id.equals(r.rootScope) && v.id.equals(scope.input)
-					: calls.containsKey(v.producer)))
+					: calls.containsKey(v.producer) || r.groups.containsKey(v.producer)))
 				throw new WorkflowRefusal("VALUE_CHANGED", "value producer differs");
 			for (String source : v.components)
 				require(r.values.containsKey(source), "value component missing");
 			for (String source : v.consumed)
 				require(r.values.containsKey(source), "consumed value missing");
-			if (!v.producer.isEmpty() && scope.id.equals(calls.get(v.producer).scope)) {
+			if (!v.producer.isEmpty() && calls.containsKey(v.producer)
+					&& scope.id.equals(calls.get(v.producer).scope)) {
 				var producer = calls.get(v.producer);
 				require(v.id.equals(producer.input) || v.id.equals(producer.output)
 						|| r.decisions.containsKey(producer.id)
@@ -164,6 +166,8 @@ final class RunIntegrity {
 							? r.scopes.get(producer.child).localOutcome.status().equals("SUCCEEDED")
 							: producer.outcome.equals("COMMITTED")), "output has no accepted successful producer");
 			}
+			if (r.groups.containsKey(v.producer))
+				require(r.groups.get(v.producer).phase.equals("SETTLED"), "aggregate without settled group");
 			if (!v.source.isEmpty()) {
 				var source = r.values.get(v.source);
 				require(source != null && Arrays.equals(source.payload, v.payload) && source.type.equals(v.type)
@@ -193,7 +197,7 @@ final class RunIntegrity {
 				"scope identity/input");
 		require(s.deadline > s.opened && s.depth <= r.maximumDepth, "scope deadline/depth");
 		require(Set.of("OPEN", "LOCAL_TERMINAL", "RETURNED", "REVOKED").contains(s.lifecycle), "scope lifecycle");
-		if (!s.id.equals(r.rootScope)) {
+		if (!s.id.equals(r.rootScope) && s.group.isEmpty()) {
 			var parent = r.scopes.get(s.parent);
 			var call = calls.get(s.opening);
 			require(parent != null && parent.depth + 1 == s.depth && s.deadline <= parent.deadline
@@ -223,8 +227,8 @@ final class RunIntegrity {
 			require(o.id().equals(ScopeIds.outcome(s.id))
 					&& Set.of("SUCCEEDED", "FAILED", "CANCELLED").contains(o.status()) && o.acceptedAt() >= s.opened,
 					"local outcome identity/status/time");
-			require(o.status().equals("SUCCEEDED")
-					? r.values.containsKey(o.successValue()) && r.values.get(o.successValue()).scope.equals(s.id)
+			require(o.status().equals("SUCCEEDED") ? !s.group.isEmpty() && !o.successValue().isEmpty()
+					|| r.values.containsKey(o.successValue()) && r.values.get(o.successValue()).scope.equals(s.id)
 					: o.successValue().isEmpty(), "local result");
 			validateOutcomeCause(r, s, calls);
 			if (authored(o)) {
@@ -244,9 +248,10 @@ final class RunIntegrity {
 			if (callNode && n.phase.equals("SETTLED"))
 				require(!n.invocation.isEmpty(), "settled call without invocation");
 			require(n.node.equals(entry.getKey())
-					&& Set.of("READY", "ENTERED", "WAITING_CHILD", "SETTLED", "REVOKED").contains(n.phase),
+					&& Set.of("READY", "ENTERED", "WAITING_CHILD", "WAITING_GROUP", "SETTLED", "REVOKED")
+						.contains(n.phase),
 					"node identity/phase");
-			if (Set.of("READY", "ENTERED", "WAITING_CHILD").contains(n.phase)) {
+			if (Set.of("READY", "ENTERED", "WAITING_CHILD", "WAITING_GROUP").contains(n.phase)) {
 				frontiers++;
 				require(s.open(), "frontier in closed scope");
 			}
@@ -254,6 +259,8 @@ final class RunIntegrity {
 				require(n.settlement.isEmpty()
 						&& (n.invocation.isEmpty() || calls.get(n.invocation).status.equals("PREPARED")),
 						"READY has prior facts");
+			if (n.phase.equals("WAITING_GROUP"))
+				require(r.groups.containsKey(ParallelProgress.identity(s, n.node)), "waiting group missing");
 			if (n.phase.equals("ENTERED") || n.phase.equals("WAITING_CHILD")) {
 				var call = calls.get(n.invocation);
 				require(call != null && call.status.equals("UNRESOLVED") && n.settlement.isEmpty(),
@@ -318,6 +325,11 @@ final class RunIntegrity {
 					require(r.decisions.get(call.id).acceptedAt() == accepted, "decision acceptance time");
 			}
 		}
+		for (var group : r.groups.values()) {
+			check.accept(new EventKey("GROUP_OPENED", group.id), group.opened);
+			if (group.phase.equals("SETTLED"))
+				check.accept(new EventKey("GROUP_SETTLED", group.id), group.settled);
+		}
 		require(remaining.isEmpty(), "event without transition facts");
 	}
 
@@ -344,6 +356,18 @@ final class RunIntegrity {
 	/** Every accepted outcome must name the transition facts that could produce it. */
 	private static void validateOutcomeCause(RunState r, RunState.Scope s, Map<String, RunState.Invocation> calls) {
 		var o = s.localOutcome;
+		if (o.code().equals("MEMBER_SUCCEEDED")) {
+			require(!s.group.isEmpty() && o.status().equals("SUCCEEDED") && o.actor().equals("parallel")
+					&& o.acceptedAt() < s.deadline, "member local success");
+			return;
+		}
+		if (o.code().equals("PARALLEL_FAILED")) {
+			var group = r.groups.get(o.source());
+			require(group != null && group.scope.equals(s.id) && group.phase.equals("SETTLED")
+					&& o.status().equals("FAILED") && o.actor().equals("parallel") && o.acceptedAt() == group.settled,
+					"parallel failure source");
+			return;
+		}
 		if (authored(o))
 			return; // The terminal node and graph validate this case separately.
 		require(o.status().equals("FAILED") || o.status().equals("CANCELLED"), "non-authored success");
@@ -421,7 +445,7 @@ final class RunIntegrity {
 				require(Collections.disjoint(d.leaves().keySet(), d.callees().keySet()),
 						"overlapping leaf/composite selection");
 				done.put(v.key(), CompositionBounds.combine(d.leaves().size(),
-						d.callees().values().stream().map(done::get).toList(), policy));
+						d.callees().values().stream().map(done::get).toList(), policy, d.members()));
 				active.remove(v.key());
 			}
 		}

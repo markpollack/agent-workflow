@@ -129,14 +129,16 @@ final class WorkflowExecutionBindings {
 					current.graph()
 						.nodes()
 						.stream()
-						.filter(n -> n instanceof WorkflowNode.ControlNode c && c.kind().equals("exclusive-join"))
+						.filter(n -> n instanceof WorkflowNode.ControlNode || n instanceof WorkflowNode.ForkNode)
 						.map(WorkflowNode::name)
-						.collect(java.util.stream.Collectors.toSet()));
+						.collect(java.util.stream.Collectors.toSet()),
+					current.products().stream().mapToLong(p -> p.members().size()).sum());
 			String key = descriptor.identity();
 			var prior = descriptors.putIfAbsent(key, descriptor);
 			if (prior != null && !prior.equals(descriptor))
 				throw new WorkflowRefusal("DEFINITION_COLLISION", "conflicting prepared descriptors");
-			var summary = CompositionBounds.combine(leafNames.size(), children, policy);
+			var summary = CompositionBounds.combine(leafNames.size(), children, policy,
+					current.products().stream().mapToLong(p -> p.members().size()).sum());
 			if (bounds.containsKey(key) && !bounds.get(key).equals(summary))
 				throw new WorkflowRefusal("DEFINITION_COLLISION", "conflicting definition bounds");
 			bounds.put(key, summary);
@@ -158,7 +160,7 @@ final class WorkflowExecutionBindings {
 			throw new WorkflowRefusal("CODEC_CHANGED", "definition codec differs");
 		try {
 			for (var value : workflow.values().values()) {
-				if (!codec.contract(value.declaration()).equals(value.contract()))
+				if (value.contract() != null && !codec.contract(value.declaration()).equals(value.contract()))
 					throw new WorkflowRefusal("TYPE_CHANGED", "declared type/shape/codec differs: " + value.identity());
 			}
 			for (var association : workflow.suppliedSteps().entrySet()) {
@@ -244,6 +246,8 @@ final class WorkflowExecutionBindings {
 	Object assemble(Type declaration, List<Object> components) {
 		Class<?> raw = declaration instanceof Class<?> c ? c
 				: (Class<?>) ((ParameterizedType) declaration).getRawType();
+		if (raw == List.class)
+			return List.copyOf(components);
 		if (!raw.isRecord())
 			throw new WorkflowRefusal("BINDING_INVALID", "assembly requires a declared record");
 		try {
