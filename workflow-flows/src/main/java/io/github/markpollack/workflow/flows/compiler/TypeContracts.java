@@ -15,6 +15,7 @@ import com.fasterxml.jackson.annotation.JacksonAnnotationsInside;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
+import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.BeanDescription;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -85,9 +86,10 @@ public final class TypeContracts {
 
 	static final String CODEC = "jackson-record";
 	static final String VERSION = "2.22.2/r1-1";
-	static final String CONFIGURATION = "strict-record-and-native-judge-0.18-result-json-v6";
+	static final String CONFIGURATION = "strict-record-and-native-judge-0.18-result-json-v6-duplicate-refusal";
 
 	private final ObjectMapper mapper = JsonMapper.builder()
+		.enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
 		.disable(MapperFeature.ALLOW_COERCION_OF_SCALARS)
 		.disable(DeserializationFeature.ACCEPT_FLOAT_AS_INT)
 		.enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
