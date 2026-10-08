@@ -41,6 +41,7 @@ def required_floors(artifact_id: str) -> dict[tuple[str, str], str]:
     if artifact_id in JACKSON_AND_NETWORKNT_MODULES:
         floors.update(JACKSON2)
         floors.update(NETWORKNT)
+        floors[("tools.jackson.dataformat", "jackson-dataformat-yaml")] = "3.2.3"
     if artifact_id == "workflow-journal":
         floors.update(JACKSON2_DATETIME)
     return floors
