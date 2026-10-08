@@ -16,7 +16,7 @@
 package io.github.markpollack.workflow.flows.workflow;
 
 /**
- * Thrown by a step to abort the workflow and return a result.
+ * Legacy exception carrying an abort result.
  *
  * <p>
  * Unlike {@link WorkflowTerminatedException} which returns {@code null},
@@ -25,8 +25,8 @@ package io.github.markpollack.workflow.flows.workflow;
  * meaningful failure result (e.g., a typed error response rather than an exception).
  *
  * <p>
- * The {@code WorkflowExecutor} catches this before the parent
- * {@code WorkflowTerminatedException} and returns the carried result.
+ * Durable Steps return typed business values instead. Throwing this exception from
+ * a durable Step is an execution failure; its carried result is not accepted.
  *
  * @see WorkflowTerminatedException
  */

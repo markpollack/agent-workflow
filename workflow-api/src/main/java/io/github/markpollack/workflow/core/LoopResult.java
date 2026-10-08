@@ -24,9 +24,7 @@ import java.time.Duration;
  * This is a regular interface (not sealed) to allow user-defined
  * loop implementations with custom result types.
  *
- * @see TurnLimitedResult
- * @see EvaluatorOptimizerResult
- * @see StateMachineResult
+ * This legacy agent-loop contract is separate from durable Workflows composition.
  */
 public interface LoopResult {
 

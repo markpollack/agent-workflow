@@ -11,14 +11,14 @@ from pathlib import Path
 
 
 JACKSON2 = {
-    ("com.fasterxml.jackson.core", "jackson-databind"): "2.21.6",
+    ("com.fasterxml.jackson.core", "jackson-databind"): "2.22.3",
 }
 JACKSON2_DATETIME = {
-    ("com.fasterxml.jackson.datatype", "jackson-datatype-jsr310"): "2.21.6",
+    ("com.fasterxml.jackson.datatype", "jackson-datatype-jsr310"): "2.22.3",
 }
 JACKSON3 = {
-    ("tools.jackson.core", "jackson-core"): "3.1.6",
-    ("tools.jackson.core", "jackson-databind"): "3.1.6",
+    ("tools.jackson.core", "jackson-core"): "3.2.3",
+    ("tools.jackson.core", "jackson-databind"): "3.2.3",
 }
 NETWORKNT = {
     ("com.networknt", "json-schema-validator"): "3.0.7",

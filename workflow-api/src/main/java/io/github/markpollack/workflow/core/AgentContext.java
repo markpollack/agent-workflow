@@ -9,14 +9,15 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * The ambient metadata carrier threaded through every step execution.
+ * Legacy context carrier for agent strategies and tracing. Durable Steps use typed
+ * inputs/results and metadata-only StepContext.
  * <p>
  * Carries framework well-known keys (run identity, iteration count, accumulated cost)
  * plus arbitrary user-defined keys — all type-safe via {@link ContextKey}.
  * <p>
  * Immutable: mutations produce a new instance via {@link #mutate()}.
- * The {@code WorkflowExecutor} merges parallel branch results at join time;
- * steps never write to a shared mutable context.
+ * Legacy callers can merge derived contexts explicitly; this object is not durable
+ * Workflows binding or saved item state.
  * <p>
  * Create with {@link #create()} for a new run, or {@link #withRunId(String)} when
  * a specific identifier is needed (e.g., for traceability with an external job ID).

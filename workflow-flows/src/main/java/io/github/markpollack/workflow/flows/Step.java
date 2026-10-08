@@ -18,8 +18,8 @@ package io.github.markpollack.workflow.flows;
 /**
  * An application-supplied unit of work with explicit business input and output. The
  * durable runtime selects its input from the validated workflow, saves progress and
- * invokes the registered object directly on the caller's Java thread, outside store
- * transactions. Dependencies belong in constructors; business results belong in the
+ * invokes the registered object outside store transactions, on the caller for
+ * sequential execution or a bounded JDK worker for concurrent execution. Dependencies belong in constructors; business results belong in the
  * returned value, not in {@link StepContext}.
  * <p>
  * For durable registration, a concrete class must declare resolvable types, for example

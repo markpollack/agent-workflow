@@ -7,12 +7,12 @@
     <parent>
         <groupId>io.github.markpollack</groupId>
         <artifactId>agent-workflow-parent</artifactId>
-        <version>0.13.0-SNAPSHOT</version>
+        <version>0.13.0</version>
     </parent>
 
     <artifactId>workflow-core</artifactId>
     <name>Workflow Core</name>
-    <description>Implementation of all 8 agent loop patterns</description>
+    <description>Legacy agent strategies and graph composition; durable Workflows uses workflow-batch</description>
 
     <dependencies>
         <!-- Consumer-visible floors for runtime families otherwise governed only by the parent. -->

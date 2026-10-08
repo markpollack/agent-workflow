@@ -7,12 +7,12 @@
     <parent>
         <groupId>io.github.markpollack</groupId>
         <artifactId>agent-workflow-parent</artifactId>
-        <version>0.13.0-SNAPSHOT</version>
+        <version>0.13.0</version>
     </parent>
 
     <artifactId>workflow-flows</artifactId>
     <name>Workflow Flows</name>
-    <description>Composable step-based flow combinators for agent workflows (sequential, parallel, loop)</description>
+    <description>Typed workflow DSL and validation; also retains legacy in-memory combinators</description>
 
     <dependencies>
         <dependency>

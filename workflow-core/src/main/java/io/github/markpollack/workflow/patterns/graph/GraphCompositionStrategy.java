@@ -28,7 +28,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Graph-defined composition strategy for orchestrating work units.
+ * Legacy in-memory graph composition strategy for orchestrating work units.
+ * This strategy does not provide DurableWorkflows saved-progress or recovery semantics.
  * <p>
  * This is a composition layer that hosts GraphNodes (which can wrap AgentLoops)
  * and executes them via graph traversal. GraphCompositionStrategy does NOT implement

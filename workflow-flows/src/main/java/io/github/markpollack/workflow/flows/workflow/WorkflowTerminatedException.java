@@ -16,10 +16,10 @@
 package io.github.markpollack.workflow.flows.workflow;
 
 /**
- * Thrown by {@code Steps.terminate()} to signal intentional workflow termination.
+ * Legacy exception carrying an intentional termination status.
  * <p>
- * The {@code WorkflowExecutor} catches this and converts it to a terminal result
- * with the specified {@link WorkflowStatus}.
+ * The durable DSL uses authored terminal nodes instead. Throwing this exception from
+ * a durable Step is an execution failure, not a terminal control-flow instruction.
  */
 public class WorkflowTerminatedException extends RuntimeException {
 

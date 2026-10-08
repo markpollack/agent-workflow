@@ -6,11 +6,11 @@
 
     <groupId>io.github.markpollack</groupId>
     <artifactId>agent-workflow-parent</artifactId>
-    <version>0.13.0-SNAPSHOT</version>
+    <version>0.13.0</version>
     <packaging>pom</packaging>
 
     <name>Agent Workflow</name>
-    <description>Foundation library implementing agentic loop patterns with judge-based evaluation</description>
+    <description>Typed Java workflow composition with bounded concurrency and local JDBC recovery</description>
 
     <url>https://github.com/markpollack/agent-workflow</url>
 
@@ -55,8 +55,8 @@
 
         <!-- Versions -->
         <reactor.version>3.8.7</reactor.version>
-        <jackson.version>2.22.2</jackson.version>
-        <jackson3.version>3.2.2</jackson3.version>
+        <jackson.version>2.22.3</jackson.version>
+        <jackson3.version>3.2.3</jackson3.version>
         <json-schema-validator.version>3.0.7</json-schema-validator.version>
         <junit.version>5.14.4</junit.version>
         <assertj.version>3.27.7</assertj.version>
@@ -64,7 +64,7 @@
         <logback.version>1.6.3</logback.version>
         <micrometer.version>1.17.1</micrometer.version>
         <spring-ai.version>2.0.1</spring-ai.version>
-        <agent-judge.version>0.18.0-SNAPSHOT</agent-judge.version>
+        <agent-judge.version>0.18.0</agent-judge.version>
         <spring-ai-agent-utils.version>0.10.0</spring-ai-agent-utils.version>
         <journal-core.version>1.10.0</journal-core.version>
         <jacoco.version>0.8.15</jacoco.version>
@@ -341,8 +341,13 @@
                         <artifactId>maven-javadoc-plugin</artifactId>
                         <version>${maven-javadoc-plugin.version}</version>
                         <configuration>
-                            <failOnError>false</failOnError>
+                            <failOnError>true</failOnError>
                             <quiet>true</quiet>
+                            <additionalOptions><additionalOption>-Xdoclint:all,-missing</additionalOption></additionalOptions>
+                            <includeDependencySources>false</includeDependencySources>
+                            <additionalJOption>-J-Xmx512m</additionalJOption>
+                            <javadocDirectory>${project.build.directory}/javadoc-resources</javadocDirectory>
+                            <docfilessubdirs>true</docfilessubdirs>
                         </configuration>
                         <executions>
                             <execution>
@@ -359,6 +364,14 @@
     </profiles>
 
     <build>
+        <resources>
+            <resource><directory>src/main/resources</directory></resource>
+            <resource>
+                <directory>${maven.multiModuleProjectDirectory}</directory>
+                <includes><include>LICENSE</include></includes>
+                <targetPath>META-INF</targetPath>
+            </resource>
+        </resources>
         <pluginManagement>
             <plugins>
                 <plugin>
@@ -411,6 +424,26 @@
             </plugins>
         </pluginManagement>
         <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <version>3.5.0</version>
+                <executions>
+                    <execution>
+                        <id>stage-javadoc-license</id>
+                        <phase>generate-resources</phase>
+                        <goals><goal>copy-resources</goal></goals>
+                        <configuration>
+                            <outputDirectory>${project.build.directory}/javadoc-resources/resources</outputDirectory>
+                            <resources><resource>
+                                <directory>${maven.multiModuleProjectDirectory}</directory>
+                                <includes><include>LICENSE</include></includes>
+                                <filtering>false</filtering>
+                            </resource></resources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             <!-- Generate the consumer POM on every build, then assert its exported floors. -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>

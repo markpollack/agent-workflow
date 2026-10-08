@@ -16,8 +16,8 @@
 package io.github.markpollack.workflow.flows;
 
 /**
- * Thrown by {@link AgentFlow#loop} when the loop completes all iterations
- * without the {@code until} condition being satisfied.
+ * Legacy in-memory loop exception, retained for existing callers. Raised when a loop completes all iterations
+ * without the {@code until} condition being satisfied. Durable workflow loops are not supported yet.
  */
 public class MaxIterationsExceededException extends RuntimeException {
 
