@@ -35,10 +35,13 @@ public final class Workflows {
 	/** Initial nonempty definition stage. */
 	public interface Start {
 
+		/** Append an application-supplied Step; its concrete types derive the input binding. */
 		Sequence then(Step<?, ?> step);
 
+		/** Append a Step with a stable authored label for diagnostics and invocation identity. */
 		Sequence then(String label, Step<?, ?> step);
 
+		/** Invoke a reusable child; only its declared result returns to this enclosing scope. */
 		Sequence subWorkflow(String label, ValidatedWorkflow workflow);
 
 		/** Begin an ordinary choice whose Step returns a concrete enum. */
@@ -58,13 +61,27 @@ public final class Workflows {
 
 	}
 
-	/** Append work, lexical choices or an explicit terminal. */
+	/** Append work, lexical choices or an explicit terminal; build validates all paths. */
 	public interface Sequence {
 
+		/**
+		 * Validate and freeze this definition without adding a terminal. Ordinary returning
+		 * paths still require {@code terminate(...)}. A final child that always fails or
+		 * cancels already closes its path and needs no unreachable parent terminal.
+		 * @return immutable workflow ready for registration and execution
+		 * @throws IllegalArgumentException for a dangling path, unreachable successor,
+		 * ambiguous input, unsupported construct or inconsistent result contract
+		 * @throws IllegalStateException if an inner lexical block remains open
+		 */
+		ValidatedWorkflow build();
+
+		/** Append an application-supplied Step; its concrete types derive the input binding. */
 		Sequence then(Step<?, ?> step);
 
+		/** Append a Step with a stable authored label for diagnostics and invocation identity. */
 		Sequence then(String label, Step<?, ?> step);
 
+		/** Invoke a reusable child; only its declared result returns to this enclosing scope. */
 		Sequence subWorkflow(String label, ValidatedWorkflow workflow);
 
 		/** Begin an ordinary choice whose Step returns a concrete enum. */
@@ -111,6 +128,7 @@ public final class Workflows {
 
 		Arm<P> when(Enum<?> outcome);
 
+		/** Close this lexical block and return to its enclosing stage; does not add a terminal. */
 		P end();
 
 	}
@@ -123,10 +141,13 @@ public final class Workflows {
 	 */
 	public interface Arm<P> {
 
+		/** Append an application-supplied Step; its concrete types derive the input binding. */
 		Arm<P> then(Step<?, ?> step);
 
+		/** Append a Step with a stable authored label for diagnostics and invocation identity. */
 		Arm<P> then(String label, Step<?, ?> step);
 
+		/** Invoke a reusable child; only its declared result returns to this enclosing scope. */
 		Arm<P> subWorkflow(String label, ValidatedWorkflow workflow);
 
 		/** Begin an ordinary choice whose Step returns a concrete enum. */
@@ -148,6 +169,7 @@ public final class Workflows {
 
 		Arm<P> when(Enum<?> outcome);
 
+		/** Close this lexical block and return to its enclosing stage; does not add a terminal. */
 		P end();
 
 	}
@@ -155,6 +177,12 @@ public final class Workflows {
 	/** A static group requires its explicit settlement policy before branches. */
 	public interface ParallelPolicy<P> {
 
+		/**
+		 * Require every branch to return successfully before joining. A negative business
+		 * assessment is still a returned value; an execution failure prevents the join.
+		 * Admitted work settles before failure is reported.
+		 * @return stage requiring at least one named branch
+		 */
 		ParallelBranches<P> allSuccessful();
 
 	}
@@ -169,10 +197,13 @@ public final class Workflows {
 	/** Isolated member sequence; end closes the group, never the workflow. */
 	public interface Branch<P> {
 
+		/** Append an application-supplied Step; its concrete types derive the input binding. */
 		Branch<P> then(Step<?, ?> step);
 
+		/** Append a Step with a stable authored label for diagnostics and invocation identity. */
 		Branch<P> then(String label, Step<?, ?> step);
 
+		/** Invoke a reusable child; only its declared result returns to this enclosing scope. */
 		Branch<P> subWorkflow(String label, ValidatedWorkflow workflow);
 
 		Decision<Branch<P>> decision(String label, Step<?, ?> step);
@@ -185,6 +216,7 @@ public final class Workflows {
 
 		Branch<P> branch(String name);
 
+		/** Close this lexical block and return to its enclosing stage; does not add a terminal. */
 		P end();
 
 	}
@@ -192,31 +224,54 @@ public final class Workflows {
 	/** Runtime membership requires explicit cardinality and logical occupancy bounds. */
 	public interface FanItems<P> {
 
+		/**
+		 * Bound the accepted manifest before any item effects. Oversized input fails;
+		 * it is never truncated. Empty input produces an empty result List.
+		 * @param maximum positive maximum number of input occurrences
+		 * @return logical occupancy stage
+		 */
 		FanFlight<P> maxItems(int maximum);
 
 	}
 
 	public interface FanFlight<P> {
 
+		/**
+		 * Bound admitted, unsettled item workflows. A waiting item retains its slot.
+		 * Physical Step concurrency is configured separately on the runtime.
+		 * @param maximum positive logical item capacity
+		 * @return settlement policy stage
+		 */
 		FanPolicy<P> maxInFlight(int maximum);
 
 	}
 
 	public interface FanPolicy<P> {
 
+		/**
+		 * Join only after every manifest item returns a result; execution failures cannot
+		 * produce a successful partial List. Negative assessments remain values.
+		 * @return stage for authoring one item body
+		 */
 		FanBody<P> allSuccessful();
 
 	}
 
 	/**
 	 * One typed item body; end returns its ordered List result to the enclosing sequence.
+	 * Each input occurrence has isolated state and stable manifest-index identity, including
+	 * equal values. Results retain manifest order regardless of completion order.
+	 * Recovery reuses accepted membership and committed results; unresolved effects may repeat.
 	 */
 	public interface FanBody<P> {
 
+		/** Append an application-supplied Step; its concrete types derive the input binding. */
 		FanBody<P> then(Step<?, ?> step);
 
+		/** Append a Step with a stable authored label for diagnostics and invocation identity. */
 		FanBody<P> then(String label, Step<?, ?> step);
 
+		/** Invoke a reusable child; only its declared result returns to this enclosing scope. */
 		FanBody<P> subWorkflow(String label, ValidatedWorkflow workflow);
 
 		Decision<FanBody<P>> decision(String label, Step<?, ?> step);
@@ -227,6 +282,7 @@ public final class Workflows {
 
 		FanItems<FanBody<P>> forEach(String label);
 
+		/** Close this lexical block and return to its enclosing stage; does not add a terminal. */
 		P end();
 
 	}
@@ -239,19 +295,28 @@ public final class Workflows {
 
 		final List<Type> results;
 
+		final String location;
+
 		Type first, current;
 
 		boolean closed, blocked, inMember;
 
-		Body(Map<Node, Step<?, ?>> supplied, List<Type> results, Type incoming) {
+		Body(Map<Node, Step<?, ?>> supplied, List<Type> results, Type incoming, String location) {
 			this.supplied = supplied;
 			this.results = results;
 			current = incoming;
+			this.location = location;
 		}
 
 		void open() {
-			if (closed || blocked)
-				throw new IllegalStateException("closed or unfinished lexical block");
+			if (closed)
+				throw new IllegalStateException(at("closed lexical block", "do not append work after a terminal"));
+			if (blocked)
+				throw new IllegalStateException(at("unfinished lexical block", "call end() on the innermost block first"));
+		}
+
+		String at(String problem, String correction) {
+			return location + ": " + problem + "; " + correction;
 		}
 
 		void call(String label, Step<?, ?> step) {
@@ -276,7 +341,7 @@ public final class Workflows {
 		void terminal(Terminal terminal, String reason) {
 			open();
 			if (inMember)
-				throw new IllegalStateException("a parallel member must reach its join");
+				throw new IllegalStateException(at("a member/item body must reach its join", "return an item/branch result and close the group with end()"));
 			nodes.add(new End(terminal, reason));
 			closed = true;
 			if (terminal == Terminal.SUCCEEDED)
@@ -328,7 +393,7 @@ public final class Workflows {
 		Duration duration;
 
 		Builder(String name) {
-			super(new IdentityHashMap<>(), new ArrayList<>(), null);
+			super(new IdentityHashMap<>(), new ArrayList<>(), null, "workflow '" + name + "'");
 			this.name = Objects.requireNonNull(name);
 		}
 
@@ -365,7 +430,7 @@ public final class Workflows {
 		public Builder maxDuration(Duration duration) {
 			open();
 			if (this.duration != null)
-				throw new IllegalStateException("duration already configured");
+				throw new IllegalStateException(at("duration already configured", "set maxDuration once"));
 			this.duration = Objects.requireNonNull(duration);
 			return this;
 		}
@@ -381,7 +446,7 @@ public final class Workflows {
 
 		public ValidatedWorkflow build() {
 			if (blocked || first == null)
-				throw new IllegalStateException("nonempty completed definition required");
+				throw new IllegalStateException(at("nonempty completed definition required", "add work and close each inner block with end() before build()"));
 			Type output = results.isEmpty() ? current : results.getFirst();
 			if (output == null)
 				output = first;
@@ -446,17 +511,18 @@ public final class Workflows {
 
 		public Arm<P> when(Enum<?> outcome) {
 			if (ended || (!arms.isEmpty() && arms.getLast().blocked))
-				throw new IllegalStateException("closed or unfinished choice");
+				throw new IllegalStateException(body.at("decision '" + label + "': closed or unfinished choice", "close an inner block with end(); do not reuse a closed choice"));
 			if (!arms.isEmpty())
 				arms.getLast().sealed = true;
-			var arm = new ArmBuilder<>(this, Objects.requireNonNull(outcome));
+			var arm = new ArmBuilder<>(this, Objects.requireNonNull(outcome,
+					body.at("decision '" + label + "': null choice outcome", "use a constant from the declared decision enum")));
 			arms.add(arm);
 			return arm;
 		}
 
 		public P end() {
 			if (ended || arms.isEmpty() || arms.getLast().blocked)
-				throw new IllegalStateException("empty, closed or unfinished choice");
+				throw new IllegalStateException(body.at("decision '" + label + "': empty, closed or unfinished choice", "declare an arm for every outcome and close the innermost block before end()"));
 			ended = true;
 			arms.forEach(a -> a.sealed = true);
 			var node = new Choice(label, nativeAssessment ? null : Op.declared(label, types.input(), types.output()),
@@ -486,7 +552,8 @@ public final class Workflows {
 		boolean sealed;
 
 		ArmBuilder(ChoiceBuilder<P> choice, Enum<?> outcome) {
-			super(choice.body.supplied, choice.body.results, choice.body.current);
+			super(choice.body.supplied, choice.body.results, choice.body.current,
+					choice.body.location + " / decision '" + choice.label + "' / arm " + outcome);
 			this.choice = choice;
 			this.outcome = outcome;
 			inMember = choice.body.inMember;
@@ -495,7 +562,7 @@ public final class Workflows {
 		@Override
 		void open() {
 			if (sealed)
-				throw new IllegalStateException("stale arm");
+				throw new IllegalStateException(at("stale arm", "use the current arm handle; a sibling when() or end() closes this arm"));
 			super.open();
 		}
 
@@ -540,13 +607,13 @@ public final class Workflows {
 
 		public Arm<P> when(Enum<?> outcome) {
 			if (sealed)
-				throw new IllegalStateException("stale arm");
+				throw new IllegalStateException(at("stale arm", "use the current arm handle; a sibling when() or end() closes this arm"));
 			return choice.when(outcome);
 		}
 
 		public P end() {
 			if (sealed)
-				throw new IllegalStateException("stale arm");
+				throw new IllegalStateException(at("stale arm", "use the current arm handle; a sibling when() or end() closes this arm"));
 			return choice.end();
 		}
 
@@ -572,14 +639,14 @@ public final class Workflows {
 
 		public ParallelBranches<P> allSuccessful() {
 			if (policy || ended)
-				throw new IllegalStateException("group policy already set");
+				throw new IllegalStateException(body.at("parallel '" + label + "': group policy already set", "call allSuccessful() once before declaring branches"));
 			policy = true;
 			return this;
 		}
 
 		public Branch<P> branch(String name) {
 			if (!policy || ended || !branches.isEmpty() && branches.getLast().blocked)
-				throw new IllegalStateException("closed or unfinished parallel group");
+				throw new IllegalStateException(body.at("parallel '" + label + "': closed or unfinished parallel group", "close the innermost block before branch(); do not reuse a closed group"));
 			if (!branches.isEmpty()) {
 				branches.getLast().sealed = true;
 				if (body.first == null)
@@ -592,9 +659,9 @@ public final class Workflows {
 
 		P end() {
 			if (ended || branches.isEmpty() || branches.getLast().blocked)
-				throw new IllegalStateException("empty, closed or unfinished parallel group");
+				throw new IllegalStateException(body.at("parallel '" + label + "': empty, closed or unfinished parallel group", "declare nonempty branches and close inner blocks before end()"));
 			if (branches.stream().anyMatch(b -> b.nodes.isEmpty()))
-				throw new IllegalArgumentException("empty branch");
+				throw new IllegalArgumentException(body.at("parallel '" + label + "': empty branch", "add work to every branch before end()"));
 			ended = true;
 			branches.forEach(b -> b.sealed = true);
 			body.nodes.add(new Parallel(label, null, true,
@@ -620,7 +687,8 @@ public final class Workflows {
 
 		BranchBuilder(ParallelBuilder<P> group, String name) {
 			super(group.body.supplied, group.body.results,
-					group.body.current == null ? group.body.first : group.body.current);
+					group.body.current == null ? group.body.first : group.body.current,
+					group.body.location + " / parallel '" + group.label + "' / branch '" + name + "'");
 			this.group = group;
 			this.name = name;
 			inMember = true;
@@ -629,7 +697,7 @@ public final class Workflows {
 		@Override
 		void open() {
 			if (sealed)
-				throw new IllegalStateException("stale parallel branch");
+				throw new IllegalStateException(at("stale parallel branch", "use the current branch handle; branch() or end() closes the preceding branch"));
 			super.open();
 		}
 
@@ -665,13 +733,13 @@ public final class Workflows {
 
 		public Branch<P> branch(String name) {
 			if (sealed)
-				throw new IllegalStateException("stale parallel branch");
+				throw new IllegalStateException(at("stale parallel branch", "use the current branch handle; branch() or end() closes the preceding branch"));
 			return group.branch(name);
 		}
 
 		public P end() {
 			if (sealed)
-				throw new IllegalStateException("stale parallel branch");
+				throw new IllegalStateException(at("stale parallel branch", "use the current branch handle; branch() or end() closes the preceding branch"));
 			return group.end();
 		}
 
@@ -693,7 +761,7 @@ public final class Workflows {
 		boolean policy, ended;
 
 		FanBuilder(Body enclosing, P parent, String label) {
-			super(enclosing.supplied, enclosing.results, null);
+			super(enclosing.supplied, enclosing.results, null, enclosing.location + " / forEach '" + label + "'");
 			this.enclosing = enclosing;
 			this.parent = parent;
 			this.label = Objects.requireNonNull(label);
@@ -707,27 +775,27 @@ public final class Workflows {
 		@Override
 		void open() {
 			if (ended || !policy)
-				throw new IllegalStateException("closed or unconfigured fan-out body");
+				throw new IllegalStateException(at("closed or unconfigured fan-out body", "set positive bounds and allSuccessful() before work; do not reuse after end()"));
 			super.open();
 		}
 
 		public FanFlight<P> maxItems(int maximum) {
 			if (items != 0 || maximum <= 0)
-				throw new IllegalArgumentException("positive maxItems required once");
+				throw new IllegalArgumentException(at("positive maxItems required once, received " + maximum, "set maxItems to a positive item-count bound exactly once"));
 			items = maximum;
 			return this;
 		}
 
 		public FanPolicy<P> maxInFlight(int maximum) {
 			if (items == 0 || flight != 0 || maximum <= 0)
-				throw new IllegalArgumentException("positive maxInFlight required once");
+				throw new IllegalArgumentException(at("positive maxInFlight required once, received " + maximum, "set maxItems first, then a positive maxInFlight bound exactly once"));
 			flight = maximum;
 			return this;
 		}
 
 		public FanBody<P> allSuccessful() {
 			if (flight == 0 || policy)
-				throw new IllegalStateException("fan-out policy requires bounds once");
+				throw new IllegalStateException(at("fan-out policy requires bounds once", "set maxItems and maxInFlight, then call allSuccessful() once"));
 			policy = true;
 			return this;
 		}
@@ -765,10 +833,10 @@ public final class Workflows {
 		public P end() {
 			open();
 			if (nodes.isEmpty())
-				throw new IllegalArgumentException("nonempty fan-out body required");
+				throw new IllegalArgumentException(at("nonempty fan-out body required", "add a Step or subWorkflow before end()"));
 			Type item = enclosing.first == null ? (element == null ? first : element) : null;
 			if (current == null)
-				throw new IllegalArgumentException("concrete item and result types required");
+				throw new IllegalArgumentException(at("concrete item and result types required", "declare one typed item result on every continuing body path"));
 			ended = true;
 			enclosing.nodes.add(new Fan(label, item, items, flight, true, List.copyOf(nodes)));
 			if (enclosing.first == null)

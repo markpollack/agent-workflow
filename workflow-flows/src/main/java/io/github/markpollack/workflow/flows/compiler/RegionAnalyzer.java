@@ -52,7 +52,7 @@ final class RegionAnalyzer {
         boundaryOutput=inferOutput?null:definition.output();
         Placement root=Coordinates.root(definition);
         RegionSummary summary=walk(definition.nodes(),new Scope(root,definition.input()),root,false);
-        require(!summary.continues(),"missing terminal or dangling path");
+        require(!summary.continues(),at(root,"missing terminal or dangling path; terminate every returning path explicitly"));
         require(!definition.nodes().isEmpty(),"empty definition");
         if(inferOutput && boundaryOutput!=null)
             definition=new Definition<>(definition.name(),definition.input(),boundaryOutput,definition.nodes(),definition.deadline());
@@ -68,6 +68,14 @@ final class RegionAnalyzer {
         try { duration.toNanos(); } catch(ArithmeticException ex) { throw new IllegalArgumentException(message+": overflow",ex); }
     }
     private static void require(boolean condition,String message) { if(!condition) throw new IllegalArgumentException(message); }
+    private static String at(Placement placement,String problem) {
+        return path(placement)+": "+problem;
+    }
+    private static String path(Placement placement) {
+        return placement.segments().stream()
+                .map(s->s.kind()+" '"+s.label()+"' ["+s.ordinal()+"]")
+                .collect(Collectors.joining(" / "));
+    }
     private RegionSummary walk(List<Node> nodes,Scope scope,Placement parent,boolean member) {
         require(nodes!=null,"missing sequence");
         int sequenceCaptures=captures.size(), sequenceProducts=products.size();
@@ -75,7 +83,7 @@ final class RegionAnalyzer {
         Set<String> labels=new HashSet<>();
         for(int index=0;index<nodes.size();index++) {
             Node node=nodes.get(index);
-            require(node!=null,"null node"); require(!scope.terminated,"unreachable authored work");
+            require(node!=null,"null node"); require(!scope.terminated,at(parent,"unreachable authored work '"+Coordinates.name(node)+"'; remove successors after a terminal or a child that cannot return"));
             String label=Coordinates.name(node);
             require(label!=null&&!label.isBlank(),"placement name required");
             require(node instanceof End||labels.add(label),"duplicate authored placement "+label);
@@ -123,7 +131,7 @@ final class RegionAnalyzer {
                     require((choice.operation()==null)!=(choice.assessment()==null),"exactly one decision/assessment contract required");
                     Class<?> domain;
                     if(choice.operation()!=null) {
-                        require(choice.operation().output() instanceof Class<?> c&&c.isEnum(),"concrete enum decision required");
+                        require(choice.operation().output() instanceof Class<?> c&&c.isEnum(),at(placement,"concrete enum decision required; declare a Step returning an enum, not Boolean or a routing lambda"));
                         domain=(Class<?>)choice.operation().output();
                         call(scope,placement,choice.id(),choice.operation().input(),domain,true);
                     } else {
@@ -139,14 +147,14 @@ final class RegionAnalyzer {
                     List<Scope> arms=new ArrayList<>();
                     for(int a=0;a<choice.arms().size();a++) {
                         Arm arm=choice.arms().get(a);
-                        require(arm!=null&&arm.outcome()!=null&&expected.contains(arm.outcome()),"foreign/null choice outcome");
-                        require(seen.add(arm.outcome()),"duplicate choice outcome "+arm.outcome());
+                        require(arm!=null&&arm.outcome()!=null&&expected.contains(arm.outcome()),at(placement,"foreign/null choice outcome at arm "+a+"; use one of "+expected));
+                        require(seen.add(arm.outcome()),at(placement,"duplicate choice outcome "+arm.outcome()+"; keep exactly one when("+arm.outcome()+") arm"));
                         Placement path=placement.child("arm",arm.outcome().name(),a);
                         Scope local=scope.fork(path);
                         RegionSummary armSummary=walk(arm.nodes(),local,path,member);
                         effects.addAll(armSummary.terminals()); required.addAll(armSummary.capabilities()); arms.add(local);
                     }
-                    require(seen.equals(expected),"missing choice outcome: expected "+expected+", received "+seen);
+                    require(seen.equals(expected),at(placement,"missing choice outcome: expected "+expected+", received "+seen+"; add when(...) for "+expected.stream().filter(v->!seen.contains(v)).toList()));
                     scope.merge(placement,choice.id(),arms);
                     if(!scope.terminated) meta(scope.phase,placement.child("join","choice",0),"exclusive-join",typeOf(scope.carrier),typeOf(scope.carrier),Map.of());
                     meta(scope.phase,placement,choice.assessment()==null?"decision":"verdict",choice.operation()!=null?choice.operation().input():choice.assessment().input(),choice.assessment()==null?domain:Verdict.class,
@@ -154,13 +162,13 @@ final class RegionAnalyzer {
                 }
                 case Parallel parallel -> {
                     if(parallel.output()!=null) applicationType(parallel.output());
-                    require(parallel.allSuccessful(),"allSuccessful required");
-                    require(parallel.members()!=null&&!parallel.members().isEmpty(),"nonempty static group required");
+                    require(parallel.allSuccessful(),at(placement,"allSuccessful required; declare allSuccessful() before branches"));
+                    require(parallel.members()!=null&&!parallel.members().isEmpty(),at(placement,"nonempty static group required; declare at least one branch with work"));
                     Set<String> members=new HashSet<>(); List<Fact> results=new ArrayList<>();
                     for(int m=0;m<parallel.members().size();m++) {
                         Member branch=parallel.members().get(m);
-                        require(branch!=null&&branch.name()!=null&&members.add(branch.name()),"duplicate/null branch");
-                        require(branch.nodes()!=null&&!branch.nodes().isEmpty(),"empty branch");
+                        require(branch!=null&&branch.name()!=null&&members.add(branch.name()),at(placement,"duplicate/null branch at member "+m+"; give each branch a distinct nonnull name"));
+                        require(branch.nodes()!=null&&!branch.nodes().isEmpty(),at(placement,"empty branch '"+branch.name()+"'; add work before closing the group"));
                         Placement path=placement.child("member",branch.name(),m);
                         Scope local=scope.fork(path); RegionSummary memberSummary=walk(branch.nodes(),local,path,true);
                         results.add(memberSummary.requireNormalResult("parallel member"));
@@ -171,9 +179,9 @@ final class RegionAnalyzer {
                     meta(scope.phase,placement.child("join","parallel",0),"typed-join",scope.carrier.type(),scope.carrier.type(),Map.of("policy","allSuccessful"));
                 }
                 case Fan fan -> {
-                    require(fan.maxItems()>0&&fan.maxInFlight()>0,"positive fan bounds required");
-                    require(fan.allSuccessful(),"allSuccessful required");
-                    require(fan.body()!=null&&!fan.body().isEmpty(),"one nonempty fan body required");
+                    require(fan.maxItems()>0&&fan.maxInFlight()>0,at(placement,"positive fan bounds required (maxItems="+fan.maxItems()+", maxInFlight="+fan.maxInFlight()+"); set both bounds above zero"));
+                    require(fan.allSuccessful(),at(placement,"allSuccessful required; declare allSuccessful() before the item body"));
+                    require(fan.body()!=null&&!fan.body().isEmpty(),at(placement,"one nonempty fan body required; add an item Step or child workflow before end()"));
                     Fact feeder=fan.element()==null ? scope.collection(placement,fan.body()) : scope.resolve(new ListType(fan.element()),placement,fan.id()+".manifest",false);
                     Type element=((ParameterizedType)feeder.type()).getActualTypeArguments()[0];
                     applicationType(element);
@@ -304,8 +312,7 @@ final class RegionAnalyzer {
                 } catch(IllegalArgumentException ex) { refusals.add(candidate.display()+": "+ex.getMessage()); }
             }
             if(carrier!=null && compatible.contains(carrier)) return resolve(carrier.type(),placement,"manifest",false);
-            require(compatible.size()==1,"one unambiguous compatible typed collection required at "+placement
-                    +"; candidates "+compatible.stream().map(Fact::display).toList()+"; rejected "+refusals);
+            require(compatible.size()==1,at(placement,"one unambiguous compatible typed collection required; candidates "+compatible.stream().map(Fact::display).toList()+"; rejected "+refusals+"; provide one compatible List<T> feeder and a typed item body"));
             return resolve(compatible.getFirst().type(),placement,"manifest",false);
         }
         Fact resolve(Type type,Placement placement,String label,boolean assemble) {
@@ -315,7 +322,7 @@ final class RegionAnalyzer {
                     &&!(carrier.type() instanceof ParameterizedType p&&p.getRawType()==List.class)) {
                 List<Fact> roles=carrier.components();
                 List<Fact> direct=roles.stream().filter(f->f.type().equals(type)).toList();
-                require(direct.size()<2,"ambiguous current product role "+type);
+                require(direct.size()<2,at(placement,"ambiguous current product role "+type+"; use distinct domain types for independent branch result roles"));
                 if(direct.size()==1) return direct.getFirst();
                 // A complete compatible current product precedes older whole values. Partial
                 // record construction still follows ordinary whole-value lookup precedence.
@@ -334,10 +341,10 @@ final class RegionAnalyzer {
                     }
                 }
             }
-            require(!missing.containsKey(type),"missing assignment for "+type+" on "+missing.get(type));
-            require(!unproven.containsKey(type),"unproven capture role "+type+" "+unproven.get(type));
+            require(!missing.containsKey(type),at(placement,"missing assignment for "+type+" on "+missing.get(type)+"; produce this role on every continuing arm or move its consumer into the producing arm"));
+            require(!unproven.containsKey(type),at(placement,"unproven capture role "+type+" "+unproven.get(type)+"; give continuing arms one shared result role or distinct domain types"));
             List<Fact> values=candidates(type);
-            require(values.size()<2,"ambiguous "+type+": "+values.stream().map(Fact::display).toList());
+            require(values.size()<2,at(placement,"ambiguous "+type+" for "+label+": "+values.stream().map(Fact::display).toList()+"; use distinct domain types for independent values or remove a competing producer"));
             if(values.size()==1) return values.getFirst();
             Class<?> c=rawRecord(type);
             if(assemble&&c!=null&&c.getRecordComponents().length>0) {
@@ -345,7 +352,7 @@ final class RegionAnalyzer {
                 for(var component:c.getRecordComponents()) components.add(resolve(memberType(type,component.getGenericType()),placement,label+"."+component.getName(),false));
                 return fact(placement,"input",phase,label,type,components,List.of());
             }
-            throw new IllegalArgumentException("unbound "+type+" at "+placement+"; legal scope "+path);
+            throw new IllegalArgumentException(at(placement,"unbound "+type+" for "+label+"; legal scope "+path(path)+"; only earlier/enclosing values are visible; return child or sibling data through its declared workflow/group result"));
         }
         void merge(Placement placement,String label,List<Scope> paths) {
             List<Scope> live=paths.stream().filter(s->!s.terminated).toList();
@@ -359,11 +366,11 @@ final class RegionAnalyzer {
                     List<Fact> local=s.facts.stream().filter(f->f.type().equals(type)&&!facts.contains(f)&&!s.superseded.contains(f)).toList();
                     if(s.carrier!=null&&s.carrier.type().equals(type)) selected.add(s.carrier);
                     else if(local.size()==1) selected.add(local.getFirst());
-                    else if(local.size()>1) throw new IllegalArgumentException("ambiguous capture role "+type);
+                    else if(local.size()>1) throw new IllegalArgumentException(at(placement,"ambiguous capture role "+type+"; each continuing arm must provide one result for this domain role"));
                     else {
                         List<Fact> old=s.candidates(type);
-                        require(old.size()<2,"ambiguous unchanged role "+type);
-                        if(old.size()==1) selected.add(old.getFirst()); else absent=s.path.toString();
+                        require(old.size()<2,at(placement,"ambiguous unchanged role "+type+"; distinguish independent earlier values with domain types"));
+                        if(old.size()==1) selected.add(old.getFirst()); else absent=path(s.path);
                     }
                 }
                 if(absent!=null) { missing.put(type,absent); continue; }

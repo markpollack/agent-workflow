@@ -166,7 +166,10 @@ class CompositeIntegrityTest {
 			// additional normal successor would correctly be unreachable authored work.
 			var definition = new Definition<>("parent", Text.class, Text.class, List.of(new Child("call", child)),
 					null);
-			var workflow = ValidatedWorkflow.compile(definition, Map.of());
+			var programmatic = ValidatedWorkflow.compile(definition, Map.of());
+			var workflow = Workflows.define("parent").subWorkflow("call", child).build();
+			assertThat(workflow.authoredIdentity()).isEqualTo(programmatic.authoredIdentity());
+			assertThat(workflow.graph().bindings()).isEqualTo(programmatic.graph().bindings());
 			try (var runtime = DurableWorkflows.open(directory.resolve(terminal.name()),
 					StepRegistry.of(Map.of("fast", step)), compatibility())) {
 				String id = runtime.start(workflow, "one", new Text("x")).runId();

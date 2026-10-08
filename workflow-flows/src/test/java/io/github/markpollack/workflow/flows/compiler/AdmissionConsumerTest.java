@@ -29,12 +29,15 @@ class AdmissionConsumerTest {
         assertThat(compiles("Object invalid(Compilation<?,?> compilation) { return new ValidatedWorkflow(compilation, Map.of()); }")).isFalse();
     }
 
-    @Test void stagedFluentGrammarRequiresANonemptyExplicitlyTerminatedSequence() throws Exception {
+    @Test void stagedFluentGrammarRequiresNonemptyWorkAndCompilerValidatedCompletion() throws Exception {
         String method="Object build(Step<?,?> step) { return Workflows.define(\"typed\")";
         assertThat(compiles(method+".then(step).terminate(Terminal.SUCCEEDED).build(); }")).isTrue();
         assertThat(compiles(method+".build(); }")).isFalse();
         assertThat(compiles(method+".terminate(Terminal.SUCCEEDED).build(); }")).isFalse();
-        assertThat(compiles(method+".then(step).build(); }")).isFalse();
+        // Sequence.build lets semantic analysis recognize a final non-returning child.
+        // FluentCompletionTest still refuses an ordinary dangling Step at build time.
+        assertThat(compiles(method+".then(step).build(); }")).isTrue();
+        assertThat(compiles("Object build(ValidatedWorkflow child) { return Workflows.define(\"parent\").subWorkflow(\"call\",child).build(); }")).isTrue();
         assertThat(compiles(method+".then(step).terminate(Terminal.SUCCEEDED).then(step).build(); }")).isFalse();
     }
 

@@ -26,8 +26,9 @@ import java.util.Objects;
 import java.util.function.BiFunction;
 
 /**
- * A named, inspectable workflow definition built from {@link BlueprintNode}s and
- * {@link BlueprintEdge}s.
+ * A named, inspectable in-memory composition built from {@link BlueprintNode}s and
+ * {@link BlueprintEdge}s. This companion API executes through the legacy graph
+ * strategy; it does not provide the typed Workflows DSL or local durable recovery.
  * <p>
  * {@code Blueprint} is a higher-level API over {@link GraphCompositionStrategy}. It
  * separates the declaration of <em>what</em> a pipeline does (node names, types,

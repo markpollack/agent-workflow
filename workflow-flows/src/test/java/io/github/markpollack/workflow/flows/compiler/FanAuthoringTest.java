@@ -88,9 +88,9 @@ class FanAuthoringTest {
 	@Test
 	void missingBoundsPolicyAndEmptyBodyRefuse() {
 		var start = Workflows.define("fan").then(new Discover());
-		assertThatThrownBy(() -> start.forEach("items").maxItems(0)).hasMessageContaining("positive maxItems");
+		assertThatThrownBy(() -> start.forEach("items").maxItems(0)).hasMessageContaining("positive maxItems").hasMessageContaining("fan").hasMessageContaining("items").hasMessageContaining("exactly once");
 		var bounds = Workflows.define("fan").then(new Discover()).forEach("items").maxItems(2);
-		assertThatThrownBy(() -> bounds.maxInFlight(0)).hasMessageContaining("positive maxInFlight");
+		assertThatThrownBy(() -> bounds.maxInFlight(0)).hasMessageContaining("positive maxInFlight").hasMessageContaining("items").hasMessageContaining("set maxItems first");
 		assertThatThrownBy(() -> Workflows.define("fan")
 			.then(new Discover())
 			.forEach("items")
@@ -124,7 +124,7 @@ class FanAuthoringTest {
 			.end()
 			.then(new Leak())
 			.terminate(Terminal.SUCCEEDED)
-			.build()).hasMessageContaining("unbound");
+			.build()).hasMessageContaining("unbound").hasMessageContaining("leak").hasMessageContaining("declared workflow/group result");
 		var body = Workflows.define("stale")
 			.then(new Discover())
 			.forEach("items")
@@ -133,7 +133,7 @@ class FanAuthoringTest {
 			.allSuccessful()
 			.then(new Review());
 		body.end().terminate(Terminal.SUCCEEDED).build();
-		assertThatThrownBy(() -> body.then(new Review())).isInstanceOf(IllegalStateException.class);
+		assertThatThrownBy(() -> body.then(new Review())).isInstanceOf(IllegalStateException.class).hasMessageContaining("stale").hasMessageContaining("items").hasMessageContaining("end()");
 	}
 
 }

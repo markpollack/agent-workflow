@@ -199,7 +199,7 @@ class ParallelAuthoringTest {
 			.end()
 			.then(finish)
 			.terminate(SUCCEEDED)
-			.build()).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("unbound");
+			.build()).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("unbound").hasMessageContaining("leak").hasMessageContaining("checks").hasMessageContaining("member 'b'").hasMessageContaining("declared workflow/group result");
 		assertThatThrownBy(() -> Workflows.define("ambiguous")
 			.parallel("checks")
 			.allSuccessful()
@@ -212,7 +212,7 @@ class ParallelAuthoringTest {
 			.end()
 			.then(finish)
 			.terminate(SUCCEEDED)
-			.build()).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("ambiguous");
+			.build()).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("ambiguous").hasMessageContaining("workflow 'ambiguous'").hasMessageContaining("domain types");
 	}
 
 }

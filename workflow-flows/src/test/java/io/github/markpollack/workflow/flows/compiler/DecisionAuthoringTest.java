@@ -79,19 +79,19 @@ class DecisionAuthoringTest {
 			.when(Route.LEFT)
 			.terminate(SUCCEEDED)
 			.end()
-			.build()).hasMessageContaining("duplicate choice outcome");
+			.build()).hasMessageContaining("duplicate choice outcome").hasMessageContaining("duplicate").hasMessageContaining("choice").hasMessageContaining("keep exactly one when");
 		assertThatThrownBy(() -> Workflows.define("foreign")
 			.decision("choice", choose)
 			.when(Foreign.OTHER)
 			.terminate(SUCCEEDED)
 			.end()
-			.build()).hasMessageContaining("foreign/null choice outcome");
+			.build()).hasMessageContaining("foreign/null choice outcome").hasMessageContaining("foreign").hasMessageContaining("choice").hasMessageContaining("use one of");
 		assertThatThrownBy(() -> Workflows.define("missing")
 			.decision("choice", choose)
 			.when(Route.LEFT)
 			.terminate(SUCCEEDED)
 			.end()
-			.build()).hasMessageContaining("missing choice outcome");
+			.build()).hasMessageContaining("missing choice outcome").hasMessageContaining("missing").hasMessageContaining("choice").hasMessageContaining("RIGHT").hasMessageContaining("add when");
 		assertThatThrownBy(() -> Workflows.define("boolean")
 			.decision("choice", new Bool())
 			.when(Route.LEFT)
@@ -101,7 +101,7 @@ class DecisionAuthoringTest {
 			.end()
 			.build()).hasMessageContaining("concrete enum decision required");
 		assertThatThrownBy(() -> Workflows.define("null").decision("choice", choose).when(null))
-			.isInstanceOf(NullPointerException.class);
+			.isInstanceOf(NullPointerException.class).hasMessageContaining("null").hasMessageContaining("choice").hasMessageContaining("declared decision enum");
 	}
 
 	@Test
