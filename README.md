@@ -2,17 +2,17 @@
 
 A Java 21 library for typed Steps, reusable workflows, exhaustive decisions and bounded concurrent work, with local JDBC durability and recovery.
 
-[Documentation](https://lab.pollack.ai/projects/agent-workflow) · [0.13.0 release notes](RELEASE_NOTES_0.13.0.md) · [Compiling deterministic example](examples/review-files/README.md) · [Six runnable lessons](https://github.com/markpollack/workflow-dsl-examples/tree/main/executable-dsl)
+[Documentation](https://lab.pollack.ai/projects/agent-workflow) · [0.14.0 release notes](RELEASE_NOTES_0.14.0.md) · [Compiling deterministic example](examples/review-files/README.md) · [Six runnable lessons](https://github.com/markpollack/workflow-dsl-examples/tree/main/executable-dsl)
 
 ## Maven
 
-The first executable-DSL milestone is **0.13.0**, available on Maven Central:
+The current executable-DSL release is **0.14.0**. The first milestone was 0.13.0:
 
 ```xml
 <dependency>
     <groupId>io.github.markpollack</groupId>
     <artifactId>workflow-batch</artifactId>
-    <version>0.13.0</version>
+    <version>0.14.0</version>
 </dependency>
 ```
 
@@ -28,12 +28,12 @@ Supports typed sequential Steps and derived bindings, nested reusable workflows,
 
 Store format 9 refuses older formats; no automatic migration. Recovery requires the exact compatible deployment and reuses committed work. Unresolved external effects can repeat; terminal failed runs cannot be reopened. See the [runtime guide](workflow-batch/README-durable.md) for bounds and lifecycle limitations.
 
-## Unreleased authoring additions
+## Fluent completion
 
-Main adds `Workflows.Sequence.build()` for a final child that always fails or cancels.
-It is an additive authoring correction planned for 0.14.0 after release approval and is **not in 0.13.0**.
+`Workflows.Sequence.build()` lets a parent finish with a final child that always fails or cancels.
+This additive authoring method is available starting in 0.14.0.
 Ordinary returning paths still require explicit terminals; unreachable successors still refuse.
-The six-lesson progression uses only 0.13.0 APIs.
+The six-lesson progression also remains compatible with 0.13.0.
 
 ## License
 

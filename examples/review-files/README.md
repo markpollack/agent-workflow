@@ -1,6 +1,6 @@
 # Review files with runtime fan-out
 
-This standalone Java 21 consumer uses `io.github.markpollack:workflow-batch:0.13.0`, with no project parent or BOM. Until publication it needs separately staged stable artifacts. All Steps are deterministic fixtures; no real provider, credentials or network calls.
+This standalone Java 21 consumer uses `io.github.markpollack:workflow-batch:0.14.0`, with no project parent or BOM. All Steps are deterministic fixtures; no real provider, credentials or network calls.
 
 From the repository root after installing the release artifacts, or after their Central publication:
 
