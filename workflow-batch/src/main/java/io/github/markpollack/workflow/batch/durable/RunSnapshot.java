@@ -21,13 +21,13 @@ public record RunSnapshot(String runId, String displayName, Status status, Insta
 		List<Decision> decisions, List<Group> groups) {
 	/** Immutable declaration-ordered settlement, including revoked unresolved members. */
 	public record Group(String groupId, String scope, String fork, String join, String phase, Instant openedAt,
-			Instant settledAt, List<Member> members) {
+			Instant settledAt, List<Member> members, String manifestValue, int maxItems, int maxInFlight) {
 		public Group {
 			members = List.copyOf(members);
 		}
 	}
 
-	public record Member(String scope, String status, String code, String outputValue) {
+	public record Member(String scope, String status, String code, String outputValue, int index, String itemValue) {
 	}
 
 	public enum Status {

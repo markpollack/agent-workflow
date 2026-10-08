@@ -15,7 +15,8 @@ import io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
  * terminals close execution paths. Continuing arms expose only compiler-checked captures.
  * Parallel branches are isolated sequences requiring explicit allSuccessful settlement;
  * end closes a group and returns to its enclosing sequence. No application code executes
- * during build.
+ * during build. Runtime forEach saves ordered typed membership and requires explicit
+ * positive item and logical occupancy bounds.
  */
 public final class Workflows {
 
@@ -51,6 +52,8 @@ public final class Workflows {
 
 		ParallelPolicy<Sequence> parallel(String label);
 
+		FanItems<Sequence> forEach(String label);
+
 		Start maxDuration(Duration duration);
 
 	}
@@ -74,6 +77,8 @@ public final class Workflows {
 		Decision<AfterChoice> verdict(String label, Step<?, Verdict> assessment);
 
 		ParallelPolicy<Sequence> parallel(String label);
+
+		FanItems<Sequence> forEach(String label);
 
 		Sequence maxDuration(Duration duration);
 
@@ -135,6 +140,8 @@ public final class Workflows {
 
 		ParallelPolicy<Arm<P>> parallel(String label);
 
+		FanItems<Arm<P>> forEach(String label);
+
 		Arm<P> terminate(Terminal terminal);
 
 		Arm<P> terminate(Terminal terminal, String reason);
@@ -174,7 +181,51 @@ public final class Workflows {
 
 		ParallelPolicy<Branch<P>> parallel(String label);
 
+		FanItems<Branch<P>> forEach(String label);
+
 		Branch<P> branch(String name);
+
+		P end();
+
+	}
+
+	/** Runtime membership requires explicit cardinality and logical occupancy bounds. */
+	public interface FanItems<P> {
+
+		FanFlight<P> maxItems(int maximum);
+
+	}
+
+	public interface FanFlight<P> {
+
+		FanPolicy<P> maxInFlight(int maximum);
+
+	}
+
+	public interface FanPolicy<P> {
+
+		FanBody<P> allSuccessful();
+
+	}
+
+	/**
+	 * One typed item body; end returns its ordered List result to the enclosing sequence.
+	 */
+	public interface FanBody<P> {
+
+		FanBody<P> then(Step<?, ?> step);
+
+		FanBody<P> then(String label, Step<?, ?> step);
+
+		FanBody<P> subWorkflow(String label, ValidatedWorkflow workflow);
+
+		Decision<FanBody<P>> decision(String label, Step<?, ?> step);
+
+		Decision<FanBody<P>> verdict(String label, Step<?, Verdict> step);
+
+		ParallelPolicy<FanBody<P>> parallel(String label);
+
+		FanItems<FanBody<P>> forEach(String label);
 
 		P end();
 
@@ -230,6 +281,12 @@ public final class Workflows {
 			closed = true;
 			if (terminal == Terminal.SUCCEEDED)
 				results.add(current);
+		}
+
+		<P> FanBuilder<P> fanBlock(String label, P parent) {
+			open();
+			blocked = true;
+			return new FanBuilder<>(this, parent, label);
 		}
 
 		<P> ParallelBuilder<P> parallelBlock(String label, P parent) {
@@ -297,6 +354,10 @@ public final class Workflows {
 			return nativeChoice(label, step, (AfterChoice) this);
 		}
 
+		public FanItems<Sequence> forEach(String label) {
+			return fanBlock(label, (Sequence) this);
+		}
+
 		public ParallelPolicy<Sequence> parallel(String label) {
 			return parallelBlock(label, (Sequence) this);
 		}
@@ -327,14 +388,15 @@ public final class Workflows {
 			var definition = new Definition<>(name, first, output, nodes, duration);
 			var selected = new LinkedHashMap<Placement, Step<?, ?>>();
 			collect(nodes, new Placement(List.of(new Segment("workflow", name, 0))), selected);
-			return ValidatedWorkflow.compile(definition, selected);
+			return ValidatedWorkflow.compileInferred(definition, selected);
 		}
 
 		void collect(List<Node> body, Placement parent, Map<Placement, Step<?, ?>> selected) {
 			for (int i = 0; i < body.size(); i++) {
 				Node node = body.get(i);
-				String label = node instanceof Call c ? c.id() : node instanceof Choice c ? c.id()
-						: node instanceof Parallel g ? g.id() : node instanceof Child c ? c.id() : "terminate";
+				String label = node instanceof Call c ? c.id()
+						: node instanceof Choice c ? c.id() : node instanceof Parallel g ? g.id()
+								: node instanceof Fan f ? f.id() : node instanceof Child c ? c.id() : "terminate";
 				Placement at = parent.child("node", label, i);
 				if (supplied.containsKey(node))
 					selected.put(at, supplied.get(node));
@@ -343,6 +405,8 @@ public final class Workflows {
 						var member = g.members().get(m);
 						collect(member.nodes(), at.child("member", member.name(), m), selected);
 					}
+				if (node instanceof Fan f)
+					collect(f.body(), at.child("body", "item", 0), selected);
 				if (node instanceof Choice c)
 					for (int a = 0; a < c.arms().size(); a++) {
 						var arm = c.arms().get(a);
@@ -455,6 +519,10 @@ public final class Workflows {
 
 		public Decision<Arm<P>> verdict(String label, Step<?, Verdict> step) {
 			return nativeChoice(label, step, (Arm<P>) this);
+		}
+
+		public FanItems<Arm<P>> forEach(String label) {
+			return fanBlock(label, (Arm<P>) this);
 		}
 
 		public ParallelPolicy<Arm<P>> parallel(String label) {
@@ -587,6 +655,10 @@ public final class Workflows {
 			return nativeChoice(label, step, (Branch<P>) this);
 		}
 
+		public FanItems<Branch<P>> forEach(String label) {
+			return fanBlock(label, (Branch<P>) this);
+		}
+
 		public ParallelPolicy<Branch<P>> parallel(String label) {
 			return parallelBlock(label, (Branch<P>) this);
 		}
@@ -601,6 +673,109 @@ public final class Workflows {
 			if (sealed)
 				throw new IllegalStateException("stale parallel branch");
 			return group.end();
+		}
+
+	}
+
+	private static final class FanBuilder<P> extends Body
+			implements FanItems<P>, FanFlight<P>, FanPolicy<P>, FanBody<P> {
+
+		final Body enclosing;
+
+		final P parent;
+
+		final String label;
+
+		final Type element;
+
+		int items, flight;
+
+		boolean policy, ended;
+
+		FanBuilder(Body enclosing, P parent, String label) {
+			super(enclosing.supplied, enclosing.results, null);
+			this.enclosing = enclosing;
+			this.parent = parent;
+			this.label = Objects.requireNonNull(label);
+			Type feeder = enclosing.current == null ? enclosing.first : enclosing.current;
+			this.element = feeder instanceof java.lang.reflect.ParameterizedType t && t.getRawType() == List.class
+					? t.getActualTypeArguments()[0] : null;
+			current = element;
+			inMember = true;
+		}
+
+		@Override
+		void open() {
+			if (ended || !policy)
+				throw new IllegalStateException("closed or unconfigured fan-out body");
+			super.open();
+		}
+
+		public FanFlight<P> maxItems(int maximum) {
+			if (items != 0 || maximum <= 0)
+				throw new IllegalArgumentException("positive maxItems required once");
+			items = maximum;
+			return this;
+		}
+
+		public FanPolicy<P> maxInFlight(int maximum) {
+			if (items == 0 || flight != 0 || maximum <= 0)
+				throw new IllegalArgumentException("positive maxInFlight required once");
+			flight = maximum;
+			return this;
+		}
+
+		public FanBody<P> allSuccessful() {
+			if (flight == 0 || policy)
+				throw new IllegalStateException("fan-out policy requires bounds once");
+			policy = true;
+			return this;
+		}
+
+		public FanBody<P> then(Step<?, ?> step) {
+			return then("step-" + (nodes.size() + 1), step);
+		}
+
+		public FanBody<P> then(String label, Step<?, ?> step) {
+			call(label, step);
+			return this;
+		}
+
+		public FanBody<P> subWorkflow(String label, ValidatedWorkflow workflow) {
+			child(label, workflow);
+			return this;
+		}
+
+		public Decision<FanBody<P>> decision(String label, Step<?, ?> step) {
+			return choice(label, step, (FanBody<P>) this);
+		}
+
+		public Decision<FanBody<P>> verdict(String label, Step<?, Verdict> step) {
+			return nativeChoice(label, step, (FanBody<P>) this);
+		}
+
+		public ParallelPolicy<FanBody<P>> parallel(String label) {
+			return parallelBlock(label, (FanBody<P>) this);
+		}
+
+		public FanItems<FanBody<P>> forEach(String label) {
+			return fanBlock(label, (FanBody<P>) this);
+		}
+
+		public P end() {
+			open();
+			if (nodes.isEmpty())
+				throw new IllegalArgumentException("nonempty fan-out body required");
+			Type item = enclosing.first == null ? (element == null ? first : element) : null;
+			if (current == null)
+				throw new IllegalArgumentException("concrete item and result types required");
+			ended = true;
+			enclosing.nodes.add(new Fan(label, item, items, flight, true, List.copyOf(nodes)));
+			if (enclosing.first == null)
+				enclosing.first = new ListType(item);
+			enclosing.current = new ListType(current);
+			enclosing.blocked = false;
+			return parent;
 		}
 
 	}

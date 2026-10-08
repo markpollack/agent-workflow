@@ -15,10 +15,10 @@ import static io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
  */
 public final class ValidatedWorkflow {
 
-	public static final String COMPILER_CONTRACT = "structured-workflow-compiler-v5";
+	public static final String COMPILER_CONTRACT = "structured-workflow-compiler-v6";
 
 	private static final Set<Capability> SUPPORTED = Set.of(Capability.OPERATION, Capability.TERMINAL, Capability.CHILD,
-			Capability.DECISION, Capability.VERDICT, Capability.PARALLEL);
+			Capability.DECISION, Capability.VERDICT, Capability.PARALLEL, Capability.FAN);
 
 	/**
 	 * Exact value contract and provenance prepared from an analyzed fact. Components
@@ -196,8 +196,14 @@ public final class ValidatedWorkflow {
 				valueIdentity(authored, binding.input().identity());
 				valueIdentity(authored, binding.output().identity());
 			}
-			if (node instanceof WorkflowNode.ForkNode fork)
+			if (node instanceof WorkflowNode.ForkNode fork) {
 				IdentityEncoding.field(authored, fork.joinNodeName());
+				Fan fan = fans().get(fork.name());
+				if (fan != null) {
+					IdentityEncoding.field(authored, Integer.toString(fan.maxItems()));
+					IdentityEncoding.field(authored, Integer.toString(fan.maxInFlight()));
+				}
+			}
 			if (node instanceof WorkflowNode.ControlNode control)
 				IdentityEncoding.field(authored, control.kind());
 			if (node instanceof WorkflowNode.TerminalNode terminal) {
@@ -245,6 +251,20 @@ public final class ValidatedWorkflow {
 			});
 		}
 		return IdentityEncoding.digest(authored.toString());
+	}
+
+	/**
+	 * Fluent authoring bridge: derive the successful result from shared region analysis.
+	 * Every successful terminal must agree; explicit programmatic compile still checks
+	 * the supplied output contract. This uses the same ownership, normalization,
+	 * analysis, lowering and verification boundary and invokes no application work.
+	 * @param source authored topology with a concrete provisional output declaration
+	 * @param selections exact supplied operation associations
+	 * @return immutable workflow with its compiler-derived successful output contract
+	 */
+	public static ValidatedWorkflow compileInferred(Definition<?, ?> source, Map<Placement, Step<?, ?>> selections) {
+		return new CompilationSession().compileOwned(DefinitionOwnership.acquire(source), selections, Map.of(),
+				DeadlinePolicy.DEFAULT, true);
 	}
 
 	/**
@@ -321,6 +341,8 @@ public final class ValidatedWorkflow {
 					var member = group.members().get(m);
 					collectSelections(member.nodes(), at.child("member", member.name(), m), remaining, selected);
 				}
+			if (node instanceof Fan f)
+				collectSelections(f.body(), at.child("body", "item", 0), remaining, selected);
 			if (node instanceof Choice choice)
 				for (int arm = 0; arm < choice.arms().size(); arm++) {
 					var body = choice.arms().get(arm);
@@ -366,6 +388,11 @@ public final class ValidatedWorkflow {
 		// would replace the identity keys used to memoize a shared declaration DAG.
 		ValidatedWorkflow compileOwned(Definition<?, ?> owned, Map<Placement, Step<?, ?>> steps,
 				Map<Placement, ValidatedWorkflow> children, DeadlinePolicy policy) {
+			return compileOwned(owned, steps, children, policy, false);
+		}
+
+		ValidatedWorkflow compileOwned(Definition<?, ?> owned, Map<Placement, Step<?, ?>> steps,
+				Map<Placement, ValidatedWorkflow> children, DeadlinePolicy policy, boolean inferOutput) {
 			Objects.requireNonNull(policy, "deadline policy");
 			var authored = owned.deadline();
 			Map<Placement, ValidatedWorkflow> references = new LinkedHashMap<>();
@@ -374,13 +401,15 @@ public final class ValidatedWorkflow {
 			if (!required.equals(children.keySet()))
 				throw new IllegalArgumentException("extraneous validated child selection");
 			if (nodes.stream()
-				.noneMatch(
-						n -> n instanceof Call || n instanceof Child || n instanceof Choice || n instanceof Parallel))
+				.noneMatch(n -> n instanceof Call || n instanceof Child || n instanceof Choice || n instanceof Parallel
+						|| n instanceof Fan))
 				throw new IllegalArgumentException("workflow requires at least one Step or composite");
 			owned = new Definition<>(owned.name(), owned.input(), owned.output(), List.copyOf(nodes),
 					policy.resolve(authored));
-			return new ValidatedWorkflow(StructuredWorkflowCompiler.compileOwned(owned), Map.copyOf(steps), references,
-					policy, authored);
+			return new ValidatedWorkflow(
+					inferOutput ? StructuredWorkflowCompiler.compileInferredOwned(owned)
+							: StructuredWorkflowCompiler.compileOwned(owned),
+					Map.copyOf(steps), references, policy, authored);
 		}
 
 		private List<Node> normalize(List<Node> body, Placement parent, Map<Placement, ValidatedWorkflow> children,
@@ -400,6 +429,11 @@ public final class ValidatedWorkflow {
 								position.child("member", member.name(), m), children, references, required)));
 					}
 					nodes.add(new Parallel(group.id(), group.output(), group.allSuccessful(), members));
+				}
+				else if (node instanceof Fan fan) {
+					Placement position = Coordinates.node(parent, node, i);
+					nodes.add(new Fan(fan.id(), fan.element(), fan.maxItems(), fan.maxInFlight(), fan.allSuccessful(),
+							normalize(fan.body(), position.child("body", "item", 0), children, references, required)));
 				}
 				else if (node instanceof Choice choice) {
 					Placement position = Coordinates.node(parent, node, i);
@@ -455,6 +489,8 @@ public final class ValidatedWorkflow {
 						var member = g.members().get(m);
 						unresolved(member.nodes(), at.child("member", member.name(), m), selected, nested);
 					}
+				if (node instanceof Fan f)
+					unresolved(f.body(), at.child("body", "item", 0), selected, nested);
 				if (node instanceof Choice c)
 					for (int a = 0; a < c.arms().size(); a++) {
 						Arm arm = c.arms().get(a);
@@ -542,6 +578,36 @@ public final class ValidatedWorkflow {
 	/** Validated children, isolated from the parent's value namespace. */
 	public Map<Placement, ValidatedWorkflow> children() {
 		return children;
+	}
+
+	/** Symbolic runtime fan-out declarations keyed by their graph fork identity. */
+	public Map<String, Fan> fans() {
+		Map<String, Fan> result = new LinkedHashMap<>();
+		collectFans(definition.nodes(), Coordinates.root(definition), result);
+		return Map.copyOf(result);
+	}
+
+	private static void collectFans(List<Node> nodes, Placement parent, Map<String, Fan> result) {
+		for (int i = 0; i < nodes.size(); i++) {
+			Node node = nodes.get(i);
+			Placement at = Coordinates.node(parent, node, i);
+			if (node instanceof Fan f) {
+				result.put(at.graphName(), f);
+				collectFans(f.body(), at.child("body", "item", 0), result);
+			}
+			else if (node instanceof Parallel p) {
+				for (int m = 0; m < p.members().size(); m++) {
+					var member = p.members().get(m);
+					collectFans(member.nodes(), at.child("member", member.name(), m), result);
+				}
+			}
+			else if (node instanceof Choice c) {
+				for (int a = 0; a < c.arms().size(); a++) {
+					var arm = c.arms().get(a);
+					collectFans(arm.nodes(), at.child("arm", arm.outcome().name(), a), result);
+				}
+			}
+		}
 	}
 
 	public List<Product> products() {

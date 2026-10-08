@@ -45,7 +45,8 @@ final class WorkflowProgress {
 			if (node.phase.equals("WAITING_CHILD"))
 				continue;
 			if (node.phase.equals("WAITING_GROUP")
-					&& !ParallelProgress.ready(r, r.groups.get(ParallelProgress.identity(scope, node.node))))
+					&& !ParallelProgress.ready(r, r.groups.get(ParallelProgress.identity(scope, node.node)))
+					&& !ParallelProgress.canAdmit(r, r.groups.get(ParallelProgress.identity(scope, node.node))))
 				continue;
 			return scope;
 		}
@@ -111,6 +112,10 @@ final class WorkflowProgress {
 
 	private static void validatePrefix(RunState r, RunState.Scope s, ValidatedWorkflow w,
 			WorkflowExecutionBindings resolved) {
+		if (s.lifecycle.equals("QUEUED") || !s.group.isEmpty() && s.nodes.isEmpty()) {
+			require(s.nodes.isEmpty() && s.localOutcome == null, "queued item has progress");
+			return;
+		}
 		String node = s.group.isEmpty() ? w.graph().startNode() : s.entry;
 		Set<String> seen = new HashSet<>();
 		while (true) {
@@ -126,6 +131,14 @@ final class WorkflowProgress {
 			if (graphNode instanceof WorkflowNode.ForkNode fork) {
 				var group = r.groups.get(ParallelProgress.identity(s, node));
 				if (!progress.phase.equals("SETTLED")) {
+					if (s.localOutcome != null && s.localOutcome.code().equals("MAX_ITEMS_EXCEEDED")) {
+						var fan = w.fans().get(node);
+						require(fan != null && group == null && progress.phase.equals("REVOKED"),
+								"manifest refusal graph source");
+						var item = ParallelProgress.item(w, node);
+						var items = (List<?>) ScopedValues.decode(r, s, item.consumed().getFirst(), w, resolved);
+						require(items.size() > fan.maxItems(), "manifest refusal without oversized collection");
+					}
 					require(group != null || progress.phase.equals("READY") || progress.phase.equals("REVOKED"),
 							"fork progress without group");
 					break;

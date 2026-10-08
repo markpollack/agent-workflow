@@ -28,7 +28,7 @@ public record ExecutionPolicy(int maximumAttempts, int maximumDepth, long maximu
 	}
 
 	String identity() {
-		return Digests.fields("execution-policy-v5", Integer.toString(maximumAttempts), Integer.toString(maximumDepth),
+		return Digests.fields("execution-policy-v6", Integer.toString(maximumAttempts), Integer.toString(maximumDepth),
 				Long.toString(maximumInvocations), Integer.toString(maximumConcurrency));
 	}
 }

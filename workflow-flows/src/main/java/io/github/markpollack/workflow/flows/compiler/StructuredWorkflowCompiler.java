@@ -23,6 +23,10 @@ public final class StructuredWorkflowCompiler {
 		return compileOwned(DefinitionOwnership.acquire(definition));
 	}
 
+	static Compilation<?, ?> compileInferredOwned(Definition<?, ?> owned) {
+		return GraphLowering.lower(RegionAnalyzer.analyzeInferred(owned));
+	}
+
 	static Compilation<?, ?> compileOwned(Definition<?, ?> owned) {
 		return GraphLowering.lower(RegionAnalyzer.analyze(owned));
 	}

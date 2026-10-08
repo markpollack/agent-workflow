@@ -23,7 +23,7 @@ final class RunIntegrity {
 	}
 
 	private static void check(RunState r) {
-		require(r.format == 8 && r.id != null && r.deployment != null, "run envelope");
+		require(r.format == 9 && r.id != null && r.deployment != null, "run envelope");
 		require(Set.of("ACTIVE", "SUCCEEDED", "FAILED", "CANCELLED").contains(r.status), "run status");
 		var policy = new ExecutionPolicy(r.maximumAttempts, r.maximumDepth, r.maximumInvocations, r.maximumConcurrency);
 		require(closureBounds(r, policy).equals(r.bounds), "admitted structural bounds");
@@ -166,9 +166,11 @@ final class RunIntegrity {
 							? r.scopes.get(producer.child).localOutcome.status().equals("SUCCEEDED")
 							: producer.outcome.equals("COMMITTED")), "output has no accepted successful producer");
 			}
-			if (r.groups.containsKey(v.producer))
+			boolean item = r.groups.containsKey(v.producer) && scope.group.equals(v.producer) && !v.source.isEmpty()
+					&& r.groups.get(v.producer).manifest.equals(v.source);
+			if (r.groups.containsKey(v.producer) && !item)
 				require(r.groups.get(v.producer).phase.equals("SETTLED"), "aggregate without settled group");
-			if (!v.source.isEmpty()) {
+			if (!v.source.isEmpty() && !item) {
 				var source = r.values.get(v.source);
 				require(source != null && Arrays.equals(source.payload, v.payload) && source.type.equals(v.type)
 						&& source.shape.equals(v.shape) && source.codec.equals(v.codec),
@@ -196,7 +198,8 @@ final class RunIntegrity {
 		require(s.id.equals(key) && r.definitions.containsKey(s.definition) && r.values.containsKey(s.input),
 				"scope identity/input");
 		require(s.deadline > s.opened && s.depth <= r.maximumDepth, "scope deadline/depth");
-		require(Set.of("OPEN", "LOCAL_TERMINAL", "RETURNED", "REVOKED").contains(s.lifecycle), "scope lifecycle");
+		require(Set.of("QUEUED", "OPEN", "LOCAL_TERMINAL", "RETURNED", "REVOKED").contains(s.lifecycle),
+				"scope lifecycle");
 		if (!s.id.equals(r.rootScope) && s.group.isEmpty()) {
 			var parent = r.scopes.get(s.parent);
 			var call = calls.get(s.opening);
@@ -207,6 +210,9 @@ final class RunIntegrity {
 			if (s.open() || s.lifecycle.equals("LOCAL_TERMINAL"))
 				require(parent.open(), "live child under closed parent");
 		}
+		if (s.lifecycle.equals("QUEUED"))
+			require(!s.group.isEmpty() && s.nodes.isEmpty() && s.localOutcome == null && s.revocation == null,
+					"queued item facts");
 		if (s.open())
 			require(s.localOutcome == null && s.revocation == null, "OPEN scope outcome/revocation");
 		if (s.lifecycle.equals("LOCAL_TERMINAL") || s.lifecycle.equals("RETURNED"))
@@ -378,6 +384,9 @@ final class RunIntegrity {
 				case "DEADLINE_EXCEEDED" ->
 					require(o.status().equals("FAILED") && o.actor().equals("store") && o.acceptedAt() >= s.deadline
 							&& o.message().equals("absolute deadline reached"), "deadline outcome facts");
+				case "MAX_ITEMS_EXCEEDED" ->
+					require(o.status().equals("FAILED") && o.actor().equals("runtime") && o.acceptedAt() < s.deadline,
+							"manifest refusal facts");
 				case "INPUT_ENCODING_FAILED" -> require(
 						o.status().equals("FAILED") && o.actor().equals("runtime") && o.acceptedAt() < s.deadline
 								&& s.nodes.values()
@@ -444,8 +453,7 @@ final class RunIntegrity {
 			else {
 				require(Collections.disjoint(d.leaves().keySet(), d.callees().keySet()),
 						"overlapping leaf/composite selection");
-				done.put(v.key(), CompositionBounds.combine(d.leaves().size(),
-						d.callees().values().stream().map(done::get).toList(), policy, d.members()));
+				done.put(v.key(), CompositionBounds.descriptor(d, done, policy));
 				active.remove(v.key());
 			}
 		}

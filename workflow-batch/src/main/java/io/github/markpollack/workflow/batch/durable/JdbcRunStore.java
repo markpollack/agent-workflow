@@ -25,7 +25,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  */
 final class JdbcRunStore implements AutoCloseable {
 
-	private static final int FORMAT = 8;
+	private static final int FORMAT = 9;
 
 	private final String url;
 

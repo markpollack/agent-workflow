@@ -4,14 +4,14 @@ import java.time.Instant;
 import java.util.*;
 
 /**
- * Format-8 aggregate owned by one JdbcRunStore.Tx. Scopes hold graph progress;
+ * Format-9 aggregate owned by one JdbcRunStore.Tx. Scopes hold graph progress;
  * invocation, attempt, value, outcome and return records retain facts. No field is a Java
  * call stack. Public fields serve the store codec only. Never retain this mutable object
  * across TXs.
  */
 final class RunState {
 
-	public int format = 8;
+	public int format = 9;
 
 	public String id, key, admission, compatibility, display, authored, deadlineOrigin;
 
@@ -40,6 +40,10 @@ final class RunState {
 		public String id, scope, fork, join, phase = "OPEN";
 
 		public long opened, settled;
+
+		public String manifest = "";
+
+		public int maxItems, maxInFlight;
 
 		public List<String> members = new ArrayList<>();
 
@@ -343,8 +347,15 @@ final class RunState {
 								return new RunSnapshot.Member(id, outcome == null ? member.lifecycle : outcome.status(),
 										outcome == null ? member.revocation == null ? "" : member.revocation.code()
 												: outcome.code(),
-										outcome == null ? "" : outcome.successValue());
-							}).toList()))
+										outcome == null ? "" : outcome.successValue(), g.members.indexOf(id),
+										g.manifest.isEmpty() ? ""
+												: values.values()
+													.stream()
+													.filter(v -> v.scope.equals(id) && v.producer.equals(g.id))
+													.map(v -> v.id)
+													.findFirst()
+													.orElseThrow());
+							}).toList(), g.manifest, g.maxItems, g.maxInFlight))
 					.toList());
 	}
 

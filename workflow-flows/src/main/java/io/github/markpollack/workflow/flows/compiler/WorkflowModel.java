@@ -179,6 +179,7 @@ public final class WorkflowModel {
 	public record Member(String name, List<Node> nodes) {
 	}
 
+	/** A null element requests unique typed collection inference through the shared analyzer. */
 	public record Fan(String id, Type element, int maxItems, int maxInFlight, boolean allSuccessful,
 			List<Node> body) implements Node {
 	}

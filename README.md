@@ -117,7 +117,7 @@ See [DecisionRecoveryExample](workflow-batch/src/test/java/io/github/markpollack
 
 [PrReviewDecisionExample](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/PrReviewDecisionExample.java) is a complete PR-review-style application: fetch a diff, retain the native assessment alongside the original PR and revision, route all four conclusions, choose a report format, and reopen after assessment acceptance without repeating the jury. It uses deterministic PR data and judge observations with the real native jury and durable store; it makes no provider or GitHub call. Run its `main` on the workflow-batch test classpath with a fresh store directory as the first argument.
 
-Native routing uses Agent Judge `0.18.0-SNAPSHOT`, `agent-judge-core` and `agent-judge-json-jackson2`, with the producer's strict version-6 Verdict codec. These dependencies are optional for applications using only ordinary workflows; native applications must include the JSON artifact. The codec supports the producer's registered built-in requirement and voting-rule forms and refuses unsupported custom forms rather than discarding evidence. Native artifact fingerprints participate in compatibility, so changing snapshot bytes requires a new compatible deployment decision. Store format 8 deliberately refuses older databases; no automatic migration is supplied.
+Native routing uses Agent Judge `0.18.0-SNAPSHOT`, `agent-judge-core` and `agent-judge-json-jackson2`, with the producer's strict version-6 Verdict codec. These dependencies are optional for applications using only ordinary workflows; native applications must include the JSON artifact. The codec supports the producer's registered built-in requirement and voting-rule forms and refuses unsupported custom forms rather than discarding evidence. Native artifact fingerprints participate in compatibility, so changing snapshot bytes requires a new compatible deployment decision. Store format 9 deliberately refuses older databases; no automatic migration is supplied.
 
 ## Execute independent typed assessments in parallel
 
@@ -135,9 +135,30 @@ var workflow = Workflows.define("parallel-assessments")
 
 The compiling [ParallelAssessmentExample](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/ParallelAssessmentExample.java) declares `quality: Revision → QualityAssessment`, `backport: BackportInput(PullRequest, Revision) → BackportAssessment`, and `report: ReportInput(PullRequest, QualityAssessment, BackportAssessment) → Report`. Quality and backport receive the shared earlier facts and run concurrently when capacity permits. The compiler assembles the report's typed record after both succeed. A negative quality assessment is a business value, so it still reaches the report. A thrown Step failure stops that member; all admitted siblings settle before the group fails.
 
-Each branch can contain multiple Steps, decisions, composites and nested static groups. Branches cannot read sibling-private facts. Homogeneous results form a declaration-ordered `List<T>`; heterogeneous results retain distinct typed roles for record binding. Structural products retain durable member references without an opaque product payload. Group/member evidence appears in `RunSnapshot.groups()`. Fan-out, loops and timers still refuse execution.
+Each branch can contain multiple Steps, decisions, composites and nested static groups. Branches cannot read sibling-private facts. Homogeneous results form a declaration-ordered `List<T>`; heterogeneous results retain distinct typed roles for record binding. Structural products retain durable member references without an opaque product payload. Group/member evidence appears in `RunSnapshot.groups()`. Bounded runtime fan-out is supported below. Loops and timers still refuse execution.
 
 [ParallelRecoveryIT](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/durable/ParallelRecoveryIT.java) kills a JVM with quality already committed and backport unresolved. A compatible replacement reuses quality and repeats only unresolved backport work with the same invocation identity and exact saved input.
+
+## Review a runtime collection
+
+A Step can discover a typed list at runtime. One authored body then runs for each saved item:
+
+```java
+var workflow = Workflows.define("review-changed-files")
+        .then(discoverFiles)
+        .forEach("files").maxItems(40).maxInFlight(4).allSuccessful()
+            .then(reviewFile)
+        .end()
+        .then(writeReport)
+        .terminate(Terminal.SUCCEEDED)
+        .build();
+```
+
+The compiling [FanOutReviewExample](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/examples/FanOutReviewExample.java) declares `discoverFiles: ReviewRequest → List<FilePatch>`, `reviewFile: FilePatch → FileReview`, and `writeReport: ReportInput(ReviewRequest, List<FileReview>) → Report`. Results keep input order even when completion order differs; a negative business review remains a value. The original request reaches the report through normal typed binding.
+
+Both positive bounds are explicit. `maxItems` refuses oversized input before any item runs. The runtime durably saves the complete ordered manifest and each item snapshot before item execution; equal values at different indexes have distinct invocation identities. `maxInFlight` limits admitted, unsettled **whole item bodies**, including time awaiting inner work. `ExecutionPolicy.maximumConcurrency()` separately limits executing Steps across the runtime. Queued items execute even after another item fails; failure propagates after full settlement and never yields a successful partial aggregate. Empty input returns a typed empty list.
+
+Bodies support multiple Steps, decisions, reusable workflows, static groups and nested fan-out with isolated values. Coordinating scopes use no worker slots, so nesting progresses at capacity one. [FanOutRecoveryIT](workflow-batch/src/test/java/io/github/markpollack/workflow/batch/durable/FanOutRecoveryIT.java) kills a JVM after manifest admission and one committed item. Recovery reuses saved membership/results and repeats only unresolved work within the saved allowance; external effects may repeat.
 
 ## Reuse a workflow within one run
 
@@ -169,7 +190,7 @@ shows explicit bean qualifiers and fresh-context reuse through two levels of com
 
 ## Execution and recovery
 
-For a definition containing parallel work, `resume` coordinates graph progress on its caller and runs Step bodies on runtime-owned JDK workers. The caller waits for full settlement; graph transitions and composite returns do not occupy worker slots. `ExecutionPolicy.maximumConcurrency()` bounds occupied Step slots across the runtime (default 4), including ordinary caller-thread execution. Nested groups and composites progress with capacity one because workers never await descendants. Sequential definitions retain caller-thread execution; `advance` performs one Step or engine boundary on its caller. Competing execution of the same run refuses before another attempt is charged.
+For a definition containing parallel or fan-out work, `resume` coordinates graph progress on its caller and runs Step bodies on runtime-owned JDK workers. The caller waits for full settlement; graph transitions and composite returns do not occupy worker slots. `ExecutionPolicy.maximumConcurrency()` bounds occupied Step slots across the runtime (default 4), including ordinary caller-thread execution. Nested groups and composites progress with capacity one because workers never await descendants. Sequential definitions retain caller-thread execution; `advance` performs one Step or engine boundary on its caller. Competing execution of the same run refuses before another attempt is charged.
 
 The runtime drains admitted callers and workers before shutting down its executor, store and local database ownership. Cancellation/deadline fence late acceptance without promising to interrupt Step bodies. Dependencies remain application-owned; Steps must support their authored concurrent use. Steps express nested execution through the DSL rather than recursively calling this runtime's execution methods.
 

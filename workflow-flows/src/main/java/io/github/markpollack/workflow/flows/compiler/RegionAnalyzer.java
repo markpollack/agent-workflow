@@ -43,16 +43,19 @@ final class RegionAnalyzer {
                     List<Capture> captures,List<Product> products,List<LoopContract> loops,
                     Map<SummaryKey,RegionSummary> summaries,Map<SummaryKey,Metadata> phaseMetadata) {}
 
-    static Analysis analyze(Definition<?,?> owned) { return new RegionAnalyzer().run(owned); }
-    private Analysis run(Definition<?,?> definition) {
+    static Analysis analyze(Definition<?,?> owned) { return new RegionAnalyzer().run(owned,false); }
+    static Analysis analyzeInferred(Definition<?,?> owned) { return new RegionAnalyzer().run(owned,true); }
+    private Analysis run(Definition<?,?> definition,boolean inferOutput) {
         require(definition.name()!=null&&!definition.name().isBlank(),"workflow name required");
         applicationType(definition.input()); applicationType(definition.output());
         finite(definition.deadline(),false,"finite positive workflow deadline required");
-        boundaryOutput=definition.output();
+        boundaryOutput=inferOutput?null:definition.output();
         Placement root=Coordinates.root(definition);
         RegionSummary summary=walk(definition.nodes(),new Scope(root,definition.input()),root,false);
         require(!summary.continues(),"missing terminal or dangling path");
         require(!definition.nodes().isEmpty(),"empty definition");
+        if(inferOutput && boundaryOutput!=null)
+            definition=new Definition<>(definition.name(),definition.input(),boundaryOutput,definition.nodes(),definition.deadline());
         return new Analysis(definition,Map.copyOf(metadata),List.copyOf(bindings),List.copyOf(captures),
                 List.copyOf(products),List.copyOf(loops),Map.copyOf(summaries),Map.copyOf(phaseMetadata));
     }
@@ -108,6 +111,7 @@ final class RegionAnalyzer {
                     require(!member,"root terminal inside member/body");
                     require(end.terminal()!=null,"terminal intent required");
                     if(end.terminal()==Terminal.SUCCEEDED) {
+                        if(boundaryOutput==null && scope.carrier!=null) boundaryOutput=scope.carrier.type();
                         require(scope.carrier!=null&&scope.carrier.type().equals(boundaryOutput),
                                 "successful output disagreement: expected "+boundaryOutput+", current "+(scope.carrier==null?"none":scope.carrier.type()));
                         applicationType(scope.carrier.type());
@@ -170,11 +174,12 @@ final class RegionAnalyzer {
                     require(fan.maxItems()>0&&fan.maxInFlight()>0,"positive fan bounds required");
                     require(fan.allSuccessful(),"allSuccessful required");
                     require(fan.body()!=null&&!fan.body().isEmpty(),"one nonempty fan body required");
-                    applicationType(fan.element());
-                    Fact feeder=scope.resolve(new ListType(fan.element()),placement,fan.id()+".manifest",false);
+                    Fact feeder=fan.element()==null ? scope.collection(placement,fan.body()) : scope.resolve(new ListType(fan.element()),placement,fan.id()+".manifest",false);
+                    Type element=((ParameterizedType)feeder.type()).getActualTypeArguments()[0];
+                    applicationType(element);
                     Placement path=placement.child("body","item",0);
                     Scope local=scope.fork(path);
-                    Fact item=fact(path,"item",scope.phase,fan.id()+".item",fan.element(),List.of(),List.of(feeder));
+                    Fact item=fact(path,"item",scope.phase,fan.id()+".item",element,List.of(),List.of(feeder));
                     local.facts.add(item); local.carrier=item;
                     RegionSummary bodySummary=walk(fan.body(),local,path,true);
                     bodySummary.requireNormalResult("fan body");
@@ -276,6 +281,33 @@ final class RegionAnalyzer {
         Scope(Placement path,Scope outer) { this.path=path; facts.addAll(outer.facts); superseded.addAll(outer.superseded); missing.putAll(outer.missing); unproven.putAll(outer.unproven); carrier=outer.carrier; phase=outer.phase; }
         Scope fork(Placement path) { return new Scope(path,this); }
         List<Fact> candidates(Type type) { return facts.stream().filter(f->f.type().equals(type)&&!superseded.contains(f)).distinct().toList(); }
+        Fact collection(Placement placement,List<Node> body) {
+            List<Fact> lists=facts.stream().filter(f->!superseded.contains(f)
+                    && f.type() instanceof ParameterizedType p && p.getRawType()==List.class).distinct().toList();
+            if(lists.stream().map(Fact::type).distinct().count()==1)
+                return resolve(lists.getFirst().type(),placement,"manifest",false);
+            // Ask the same region transfer to prove the authored body for each candidate
+            // element contract. Probes invoke no Steps and retain no graph or runtime.
+            List<Fact> compatible=new ArrayList<>();
+            List<String> refusals=new ArrayList<>();
+            Placement path=placement.child("body","item",0);
+            for(Fact candidate:lists) {
+                try {
+                    RegionAnalyzer probe=new RegionAnalyzer();
+                    probe.boundaryOutput=boundaryOutput;
+                    Scope local=probe.new Scope(path,this);
+                    Type element=((ParameterizedType)candidate.type()).getActualTypeArguments()[0];
+                    Fact item=fact(path,"item",phase,"item",element,List.of(),List.of(candidate));
+                    local.facts.add(item); local.carrier=item;
+                    probe.walk(body,local,path,true).requireNormalResult("fan body");
+                    compatible.add(candidate);
+                } catch(IllegalArgumentException ex) { refusals.add(candidate.display()+": "+ex.getMessage()); }
+            }
+            if(carrier!=null && compatible.contains(carrier)) return resolve(carrier.type(),placement,"manifest",false);
+            require(compatible.size()==1,"one unambiguous compatible typed collection required at "+placement
+                    +"; candidates "+compatible.stream().map(Fact::display).toList()+"; rejected "+refusals);
+            return resolve(compatible.getFirst().type(),placement,"manifest",false);
+        }
         Fact resolve(Type type,Placement placement,String label,boolean assemble) {
             applicationType(type);
             if(carrier!=null&&carrier.type().equals(type)) return carrier;

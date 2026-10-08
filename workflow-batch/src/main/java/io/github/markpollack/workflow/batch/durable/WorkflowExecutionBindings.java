@@ -107,11 +107,9 @@ final class WorkflowExecutionBindings {
 			Map<String, Step<?, ?>> objects = new HashMap<>();
 			validateLocal(registry, current, leafNames, objects);
 			Map<String, String> callees = new java.util.TreeMap<>();
-			var children = new java.util.ArrayList<CompositionBounds>();
 			current.children().forEach((placement, child) -> {
 				String key = completed.get(child);
 				callees.put(placement.graphName(), key);
-				children.add(bounds.get(key));
 				var node = current.graph().nodeByName(placement.graphName());
 				if (!(node instanceof WorkflowNode.CompositeNode composite)
 						|| !composite.authoredDefinition().equals(child.authoredIdentity()))
@@ -132,13 +130,12 @@ final class WorkflowExecutionBindings {
 						.filter(n -> n instanceof WorkflowNode.ControlNode || n instanceof WorkflowNode.ForkNode)
 						.map(WorkflowNode::name)
 						.collect(java.util.stream.Collectors.toSet()),
-					current.products().stream().mapToLong(p -> p.members().size()).sum());
+					memberBound(current), occurrences(current));
 			String key = descriptor.identity();
 			var prior = descriptors.putIfAbsent(key, descriptor);
 			if (prior != null && !prior.equals(descriptor))
 				throw new WorkflowRefusal("DEFINITION_COLLISION", "conflicting prepared descriptors");
-			var summary = CompositionBounds.combine(leafNames.size(), children, policy,
-					current.products().stream().mapToLong(p -> p.members().size()).sum());
+			var summary = CompositionBounds.descriptor(descriptor, bounds, policy);
 			if (bounds.containsKey(key) && !bounds.get(key).equals(summary))
 				throw new WorkflowRefusal("DEFINITION_COLLISION", "conflicting definition bounds");
 			bounds.put(key, summary);
@@ -152,6 +149,41 @@ final class WorkflowExecutionBindings {
 			active.remove(current);
 		}
 		root = completed.get(workflow);
+	}
+
+	private static Map<String, Long> occurrences(ValidatedWorkflow workflow) {
+		Map<String, Long> result = new java.util.TreeMap<>();
+		for (var node : workflow.graph().nodes())
+			if (node instanceof WorkflowNode.StepNode || node instanceof WorkflowNode.DecisionNode
+					|| node instanceof WorkflowNode.CompositeNode)
+				result.put(node.name(), multiplier(workflow, node.name()));
+		return result;
+	}
+
+	private static long multiplier(ValidatedWorkflow workflow, String path) {
+		long weight = 1;
+		for (var entry : workflow.fans().entrySet()) {
+			var product = ParallelProgress.product(workflow, entry.getKey());
+			if (path.startsWith(product.placement().child("body", "item", 0).graphName()))
+				weight = CompositionBounds.multiply(weight, entry.getValue().maxItems());
+		}
+		return weight;
+	}
+
+	private static long memberBound(ValidatedWorkflow workflow) {
+		long count = 0;
+		try {
+			for (var product : workflow.products()) {
+				var fan = workflow.fans().get(product.placement().graphName());
+				long members = fan == null ? product.members().size() : fan.maxItems();
+				count = Math.addExact(count,
+						CompositionBounds.multiply(members, multiplier(workflow, product.placement().graphName())));
+			}
+		}
+		catch (ArithmeticException ex) {
+			throw new WorkflowRefusal("COMPOSITION_LIMIT", "scope occurrence overflow", ex);
+		}
+		return count;
 	}
 
 	private void validateLocal(StepRegistry registry, ValidatedWorkflow workflow, Map<String, String> names,

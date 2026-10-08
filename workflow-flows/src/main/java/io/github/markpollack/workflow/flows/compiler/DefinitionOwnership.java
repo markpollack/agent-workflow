@@ -59,7 +59,7 @@ final class DefinitionOwnership {
                     copy(c.arms(),a -> within(a,()->new Arm(a.outcome(),nodes(a.nodes())))));
             case Parallel p -> new Parallel(p.id(),p.output()==null?null:type(p.output()),p.allSuccessful(),
                     copy(p.members(),m -> within(m,()->new Member(m.name(),nodes(m.nodes())))));
-            case Fan f -> new Fan(f.id(),type(f.element()),f.maxItems(),f.maxInFlight(),f.allSuccessful(),nodes(f.body()));
+            case Fan f -> new Fan(f.id(),f.element()==null?null:type(f.element()),f.maxItems(),f.maxInFlight(),f.allSuccessful(),nodes(f.body()));
             case Loop l -> new Loop(l.id(),booleanOp(l.test()),l.maxIterations(),l.policy(),nodes(l.body()));
             case Child c -> c.reference() == null ? new Child(c.id(),definition(c.definition())) : new Child(c.id(),c.reference());
             case Timer t -> new Timer(t.id(),t.duration());

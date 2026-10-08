@@ -125,6 +125,12 @@ final class ScopedValues {
 		if (id.role().equals("product"))
 			producer = Digests.fields("group-v1", scope.id, id.placement().graphName());
 		String source = "";
+		if (id.role().equals("item")) {
+			var group = run.groups.get(scope.group);
+			RunIntegrity.require(group != null && !group.manifest.isEmpty(), "item without manifest");
+			producer = group.id;
+			source = group.manifest;
+		}
 		if (id.role().equals("root") && !scope.parent.isEmpty()) {
 			source = WorkflowProgress.invocation(run, scope.opening).input;
 		}
@@ -134,7 +140,7 @@ final class ScopedValues {
 				throw new WorkflowRefusal("VALUE_CHANGED", "capture acceptance missing");
 			source = accepted.captures().get(value.id);
 		}
-		else if (!id.role().equals("root")) {
+		else if (!id.role().equals("root") && !id.role().equals("item")) {
 			var call = WorkflowProgress.find(run, scope.id, id.placement().graphName());
 			if (call != null && call.kind.equals("COMPOSITE") && call.output.equals(value.id)
 					&& call.status.equals("SETTLED"))
@@ -146,7 +152,7 @@ final class ScopedValues {
 				|| !value.shape.equals(recipe.contract().shapeDigest())
 				|| !value.codec.equals(codec(recipe.contract().codec()))
 				|| !value.digest.equals(Digests.of(value.payload))
-				|| !value.components.equals(recipe.components().stream().map(v -> id(run, owning, v)).toList())
+				|| !value.components.equals(components(run, owning, recipe, workflow))
 				|| !value.consumed.equals(recipe.consumed().stream().map(v -> id(run, owning, v)).toList()))
 			throw new WorkflowRefusal("VALUE_CHANGED", "persisted value identity/type/codec/provenance differs");
 		return value;
@@ -155,6 +161,17 @@ final class ScopedValues {
 	static Object decode(RunState run, RunState.Scope scope, ValueId id, ValidatedWorkflow workflow,
 			WorkflowExecutionBindings resolved) {
 		return resolved.decode(verify(run, scope, id, workflow).payload, workflow.values().get(id).declaration());
+	}
+
+	private static List<String> components(RunState run, RunState.Scope scope, ValidatedWorkflow.ValueRecipe recipe,
+			ValidatedWorkflow workflow) {
+		if (recipe.identity().role().equals("product")
+				&& workflow.fans().containsKey(recipe.identity().placement().graphName())) {
+			var group = run.groups.get(ParallelProgress.identity(scope, recipe.identity().placement().graphName()));
+			RunIntegrity.require(group != null && group.phase.equals("SETTLED"), "fan result without settlement");
+			return group.members.stream().map(run.scopes::get).map(s -> s.localOutcome.successValue()).toList();
+		}
+		return recipe.components().stream().map(v -> id(run, scope, v)).toList();
 	}
 
 	static void materialize(RunState run, RunState.Scope scope, ValueId id, ValidatedWorkflow workflow,
@@ -167,10 +184,24 @@ final class ScopedValues {
 		if (recipe == null || recipe.components().isEmpty())
 			throw new WorkflowRefusal("VALUE_MISSING", "selected immutable value missing: " + id);
 		List<Object> components = new ArrayList<>();
-		for (ValueId component : recipe.components())
-			components.add(decode(run, scope, component, workflow, resolved));
+		boolean fan = id.role().equals("product") && workflow.fans().containsKey(id.placement().graphName());
+		if (fan) {
+			var group = run.groups.get(ParallelProgress.identity(scope, id.placement().graphName()));
+			RunIntegrity.require(group != null && group.phase.equals("SETTLED"), "fan aggregate before settlement");
+			for (String member : group.members) {
+				var local = run.scopes.get(member);
+				RunIntegrity.require(local.localOutcome != null && local.localOutcome.status().equals("SUCCEEDED"),
+						"fan missing result");
+				components.add(decode(run, local, recipe.components().getFirst(), workflow, resolved));
+			}
+		}
+		else
+			for (ValueId component : recipe.components())
+				components.add(decode(run, scope, component, workflow, resolved));
 		Object input = resolved.assemble(recipe.declaration(), components);
 		put(run, scope, recipe, resolved.encode(input, recipe.declaration()), producer, "");
+		if (fan)
+			run.values.get(id(run, scope, id)).components = components(run, scope, recipe, workflow);
 	}
 
 }

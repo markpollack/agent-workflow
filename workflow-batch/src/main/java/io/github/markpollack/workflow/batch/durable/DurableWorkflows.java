@@ -273,7 +273,8 @@ public final class DurableWorkflows implements AutoCloseable {
 		try (var activity = lifecycle.enter(runId)) {
 			leaves.requireCoordinator();
 			WorkflowExecutionBindings resolved = resolve(runId, workflow);
-			if (workflow.capabilities().contains(Capability.PARALLEL))
+			if ((workflow.capabilities().contains(Capability.PARALLEL)
+					|| workflow.capabilities().contains(Capability.FAN)))
 				return resumeParallel(runId, workflow, resolved, activity);
 			RunSnapshot result;
 			do {
@@ -504,7 +505,9 @@ public final class DurableWorkflows implements AutoCloseable {
 		var node = local.graph().nodeByName(progress.node);
 		if (node instanceof WorkflowNode.ForkNode) {
 			if (progress.phase.equals("READY"))
-				ParallelProgress.open(run, scope, progress, local, tx.now);
+				ParallelProgress.open(run, scope, progress, local, resolved, tx.now);
+			else if (ParallelProgress.canAdmit(run, run.groups.get(ParallelProgress.identity(scope, progress.node))))
+				ParallelProgress.admit(run, run.groups.get(ParallelProgress.identity(scope, progress.node)));
 			else if (ParallelProgress.settle(run, scope, progress, local, resolved, tx.now))
 				continueAt(tx, run, scope, local,
 						local.graph().unconditionalSuccessor(((WorkflowNode.ForkNode) node).joinNodeName()), resolved);
@@ -937,7 +940,7 @@ public final class DurableWorkflows implements AutoCloseable {
 		Objects.requireNonNull(workflow);
 		if (!Set
 			.of(Capability.OPERATION, Capability.TERMINAL, Capability.CHILD, Capability.DECISION, Capability.VERDICT,
-					Capability.PARALLEL)
+					Capability.PARALLEL, Capability.FAN)
 			.containsAll(workflow.capabilities()))
 			throw new WorkflowRefusal("UNSUPPORTED_CAPABILITY", "unsupported execution construct");
 	}
