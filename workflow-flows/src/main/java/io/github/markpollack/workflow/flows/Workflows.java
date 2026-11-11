@@ -59,6 +59,9 @@ public final class Workflows {
 
 		Start maxDuration(Duration duration);
 
+		/** Explicitly remove this definition's deadline; enclosing finite scopes still cap it. */
+		Start withoutDeadline();
+
 	}
 
 	/** Append work, lexical choices or an explicit terminal; build validates all paths. */
@@ -98,6 +101,9 @@ public final class Workflows {
 		FanItems<Sequence> forEach(String label);
 
 		Sequence maxDuration(Duration duration);
+
+		/** Explicitly remove this definition's deadline; mutually exclusive with maxDuration. */
+		Sequence withoutDeadline();
 
 		Closed terminate(Terminal terminal);
 
@@ -430,8 +436,19 @@ public final class Workflows {
 		public Builder maxDuration(Duration duration) {
 			open();
 			if (this.duration != null)
-				throw new IllegalStateException(at("duration already configured", "set maxDuration once"));
-			this.duration = Objects.requireNonNull(duration);
+				throw new IllegalStateException(at("duration already configured", "choose maxDuration or withoutDeadline once"));
+			Objects.requireNonNull(duration);
+			if (duration.isZero())
+				throw new IllegalArgumentException(at("maxDuration must be positive", "use withoutDeadline() for explicit untimed execution"));
+			this.duration = duration;
+			return this;
+		}
+
+		public Builder withoutDeadline() {
+			open();
+			if (duration != null)
+				throw new IllegalStateException(at("duration already configured", "choose maxDuration or withoutDeadline once"));
+			duration = Duration.ZERO;
 			return this;
 		}
 
@@ -450,10 +467,11 @@ public final class Workflows {
 			Type output = results.isEmpty() ? current : results.getFirst();
 			if (output == null)
 				output = first;
-			var definition = new Definition<>(name, first, output, nodes, duration);
+			boolean untimed = Duration.ZERO.equals(duration);
+			var definition = new Definition<>(name, first, output, nodes, untimed ? null : duration);
 			var selected = new LinkedHashMap<Placement, Step<?, ?>>();
 			collect(nodes, new Placement(List.of(new Segment("workflow", name, 0))), selected);
-			return ValidatedWorkflow.compileInferred(definition, selected);
+			return ValidatedWorkflow.compileInferred(definition, selected, untimed ? DeadlinePolicy.UNTIMED : DeadlinePolicy.DEFAULT);
 		}
 
 		void collect(List<Node> body, Placement parent, Map<Placement, Step<?, ?>> selected) {

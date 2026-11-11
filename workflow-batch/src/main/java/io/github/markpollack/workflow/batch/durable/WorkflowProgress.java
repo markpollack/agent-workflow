@@ -77,7 +77,7 @@ final class WorkflowProgress {
 					"scope root input identity");
 			long localDeadline;
 			try {
-				localDeadline = Math.addExact(scope.opened, workflow.definition().deadline().toMillis());
+				localDeadline = DurableWorkflows.absoluteDeadline(scope.opened, workflow);
 			}
 			catch (ArithmeticException ex) {
 				throw new WorkflowRefusal("PROGRESS_INVALID", "scope deadline overflow", ex);

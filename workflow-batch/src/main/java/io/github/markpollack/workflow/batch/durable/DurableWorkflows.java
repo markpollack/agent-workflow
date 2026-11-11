@@ -39,6 +39,12 @@ import io.github.markpollack.workflow.flows.compiler.WorkflowModel.*;
  */
 public final class DurableWorkflows implements AutoCloseable {
 
+	/** Resolve once at admission/scope entry; zero is explicit absence, not immediate expiry. */
+	static long absoluteDeadline(long now, ValidatedWorkflow workflow) {
+		Duration duration = workflow.definition().deadline();
+		return duration.isZero() ? Long.MAX_VALUE : Math.addExact(now, duration.toMillis());
+	}
+
 	private final JdbcRunStore store;
 
 	private final StoreOwnership ownership;
@@ -165,7 +171,7 @@ public final class DurableWorkflows implements AutoCloseable {
 			run.authored = workflow.authoredIdentity();
 			run.deployment = requireDeployment().manifest();
 			run.admitted = tx.now;
-			run.deadline = Math.addExact(tx.now, workflow.definition().deadline().toMillis());
+			run.deadline = absoluteDeadline(tx.now, workflow);
 			run.deadlineOrigin = workflow.deadlineOrigin();
 			run.maximumAttempts = policy.maximumAttempts();
 			run.maximumConcurrency = policy.maximumConcurrency();
@@ -586,7 +592,7 @@ public final class DurableWorkflows implements AutoCloseable {
 		child.returnNode = workflow.graph().unconditionalSuccessor(progress.node);
 		child.depth = parent.depth + 1;
 		child.opened = tx.now;
-		child.deadline = Math.min(parent.deadline, Math.addExact(tx.now, callee.definition().deadline().toMillis()));
+		child.deadline = Math.min(parent.deadline, absoluteDeadline(tx.now, callee));
 		child.deadlineOrigin = "INHERITED:" + callee.deadlineOrigin();
 		child.ready(callee.graph().startNode());
 		var rootRecipe = ScopedValues.root(callee);

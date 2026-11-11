@@ -19,6 +19,16 @@ public record RunSnapshot(String runId, String displayName, Status status, Insta
 		List<Event> events, String rootScope, String rootDefinition, long logicalInvocations, List<Scope> scopes,
 		List<ReturnReceipt> returns, java.util.Map<String, DefinitionSelection> definitions, Resources resources,
 		List<Decision> decisions, List<Group> groups) {
+	/**
+	 * Whether the run has a finite deadline. Untimed runs retain the non-null
+	 * {@link io.github.markpollack.workflow.flows.StepContext#NO_DEADLINE} marker in deadline().
+	 * Adapters should wait interruptibly without a timeout when this returns false;
+	 * cancellation and finite shutdown budgets remain separate controls.
+	 */
+	public boolean hasDeadline() {
+		return !io.github.markpollack.workflow.flows.StepContext.NO_DEADLINE.equals(deadline);
+	}
+
 	/** Immutable declaration-ordered settlement, including revoked unresolved members. */
 	public record Group(String groupId, String scope, String fork, String join, String phase, Instant openedAt,
 			Instant settledAt, List<Member> members, String manifestValue, int maxItems, int maxInFlight) {
@@ -159,6 +169,11 @@ public record RunSnapshot(String runId, String displayName, Status status, Insta
 			LocalOutcome localOutcome, Revocation revocation, List<NodeProgress> nodes) {
 		public Scope {
 			nodes = List.copyOf(nodes);
+		}
+
+		/** Whether this scope has a finite effective bound, including inherited limits. */
+		public boolean hasDeadline() {
+			return !io.github.markpollack.workflow.flows.StepContext.NO_DEADLINE.equals(deadline);
 		}
 	}
 

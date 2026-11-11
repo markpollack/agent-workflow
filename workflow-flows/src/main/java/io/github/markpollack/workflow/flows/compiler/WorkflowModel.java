@@ -140,9 +140,9 @@ public final class WorkflowModel {
 	 * @param input full root input declaration
 	 * @param output full successful result declaration
 	 * @param nodes ordered construction data; copied recursively by validation
-	 * @param deadline authored duration, or null for the ValidatedWorkflow policy
-	 * default; raw StructuredWorkflowCompiler analysis requires a resolved finite
-	 * duration
+	 * @param deadline positive authored duration, or null for the selected ValidatedWorkflow
+	 * policy (finite by default). Explicit untimed policy resolves internally to zero;
+	 * caller-authored zero is invalid.
 	 */
 	public record Definition<I, O>(String name, Type input, Type output, List<Node> nodes, Duration deadline) {
 	}

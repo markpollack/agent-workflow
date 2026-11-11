@@ -263,8 +263,21 @@ public final class ValidatedWorkflow {
 	 * @return immutable workflow with its compiler-derived successful output contract
 	 */
 	public static ValidatedWorkflow compileInferred(Definition<?, ?> source, Map<Placement, Step<?, ?>> selections) {
+		return compileInferred(source, selections, DeadlinePolicy.DEFAULT);
+	}
+
+	/**
+	 * Infer the successful boundary with an explicit deadline policy. The untimed policy
+	 * is an opt-in; raw zero/negative authored durations still refuse.
+	 * @param source caller-owned definition
+	 * @param selections exact supplied Steps
+	 * @param policy finite default/cap, or explicit {@link DeadlinePolicy#UNTIMED}
+	 * @return immutable validated workflow
+	 */
+	public static ValidatedWorkflow compileInferred(Definition<?, ?> source, Map<Placement, Step<?, ?>> selections,
+			DeadlinePolicy policy) {
 		return new CompilationSession().compileOwned(DefinitionOwnership.acquire(source), selections, Map.of(),
-				DeadlinePolicy.DEFAULT, true);
+				policy, true);
 	}
 
 	/**
@@ -279,12 +292,12 @@ public final class ValidatedWorkflow {
 	}
 
 	/**
-	 * Snapshot and validate a programmatic definition with a finite deadline policy.
+	 * Snapshot and validate a programmatic definition with a finite or explicitly untimed deadline policy.
 	 * Reject unsupported constructs before region analysis. The same owned definition is
 	 * analyzed and lowered; checked bindings remain facts on the resulting graph.
 	 * @param source caller-owned construction data; do not mutate during this call
 	 * @param selections exact operation selections keyed by compiler placements
-	 * @param policy finite maximum/default used when resolving the authored duration
+	 * @param policy finite maximum/default or explicit untimed policy
 	 * @return immutable checked definition, graph, selections and value recipes
 	 * @throws IllegalArgumentException for malformed structure/types, ambiguous or
 	 * missing bindings, unsupported capabilities or missing/extraneous selections
@@ -303,7 +316,7 @@ public final class ValidatedWorkflow {
 	 * @param source construction data, copied before analysis
 	 * @param selections local supplied Steps keyed by placement
 	 * @param children selected definitions for unresolved Child declarations
-	 * @param policy finite duration policy for this definition
+	 * @param policy finite or explicit untimed duration policy for this definition
 	 * @return immutable graph, bindings and separate supplied associations
 	 */
 	public static ValidatedWorkflow compile(Definition<?, ?> source, Map<Placement, Step<?, ?>> selections,

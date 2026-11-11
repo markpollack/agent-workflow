@@ -35,9 +35,18 @@ import java.util.Objects;
  * @param invocationId stable logical step invocation
  * @param attemptId unique physical attempt
  * @param attemptNumber one-based charged attempt number
- * @param deadline persisted effective scope deadline, capped by every enclosing scope
+ * @param deadline persisted effective scope deadline, capped by every enclosing scope,
+ * or {@link #NO_DEADLINE} when untimed; check {@link #hasDeadline()} before deriving a timeout
  */
 public record StepContext(String runId, String invocationId, String attemptId, int attemptNumber, Instant deadline) {
+	/** Reserved absence marker for an untimed scope, never a duration to await. */
+	public static final Instant NO_DEADLINE = Instant.ofEpochMilli(Long.MAX_VALUE);
+
+	/** Whether this effective scope has a finite deadline, including inherited bounds. */
+	public boolean hasDeadline() {
+		return !NO_DEADLINE.equals(deadline);
+	}
+
 	/**
 	 * Create immutable metadata for a charged attempt. IDs/deadline must be non-null and the attempt number positive; identity provenance is established by the
 	 * runtime, not by constructing this value.

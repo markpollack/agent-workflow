@@ -20,7 +20,10 @@ public final class StructuredWorkflowCompiler {
 	 * compilation is construction evidence; runtime eligibility is a separate boundary.
 	 */
 	public static Compilation<?, ?> compile(Definition<?, ?> definition) {
-		return compileOwned(DefinitionOwnership.acquire(definition));
+		Definition<?, ?> owned = DefinitionOwnership.acquire(definition);
+		if (owned.deadline() != null && owned.deadline().isZero())
+			throw new IllegalArgumentException("raw zero workflow duration is invalid; select DeadlinePolicy.UNTIMED through ValidatedWorkflow");
+		return compileOwned(owned);
 	}
 
 	static Compilation<?, ?> compileInferredOwned(Definition<?, ?> owned) {

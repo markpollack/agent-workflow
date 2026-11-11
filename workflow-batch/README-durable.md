@@ -134,6 +134,29 @@ This is not exactly-once external execution. If a process dies after an external
 
 The default maximum duration is one hour (`DeadlinePolicy.DEFAULT`, profile `local-v1`). An authored shorter duration tightens it; a longer duration is capped. The lower-level validation API accepts another positive finite `DeadlinePolicy`. Admission saves an absolute deadline and its origin, which recovery never extends.
 
+On the 0.14.1-SNAPSHOT development line, authors can explicitly opt out with
+`Workflows.define("long-running").withoutDeadline().then(step).terminate(SUCCEEDED).build()`.
+This is mutually exclusive with `maxDuration`; zero is not a valid maxDuration. Omission
+still means the finite one-hour default. The builder selects `DeadlinePolicy.UNTIMED`, which resolves to a zero
+marker in its compiled duration and `UNTIMED:local-v1` origin. No store-format change or
+finite-workflow identity change is required. Raw authored zero durations still refuse;
+programmatic construction must explicitly select the untimed policy.
+
+`RunSnapshot.hasDeadline()`, nested `Scope.hasDeadline()` and `StepContext.hasDeadline()`
+expose the effective mode. When false, the existing non-null `deadline()` is
+`StepContext.NO_DEADLINE` (`Instant.ofEpochMilli(Long.MAX_VALUE)`), a reserved absence marker.
+Do not convert that marker into an enormous timeout. A consumer waiting on a Future should
+use interruptible `get()` for an untimed run and the existing timed get for a finite run.
+Operator cancellation and finite shutdown/provider cleanup budgets remain necessary;
+untimed work can otherwise wait indefinitely, including allSuccessful settlement.
+
+Each reusable child opts out independently. A default or explicitly finite child retains
+its local bound inside an untimed parent; a finite parent caps an untimed child. Recovery
+reuses saved effective bounds and committed results, and unresolved attempts retain their
+existing allowance. Cancellation still fences late durable results without promising
+physical interruption of application effects. This API is absent from released 0.14.0.
+
+
 An entered scope saves the minimum of its parent deadline and its own duration from entry. This absolute bound never resets after recovery. `StepContext.deadline()` exposes that effective bound.
 
 Each serialized transition samples the database-side wall clock with a persisted high-water mark. At equality with the deadline, success/progress is ineligible. This sample is the transition's eligibility instant, not its later physical fsync time. Backward clock movement does not rewind the saved clock; forward movement can expire runs early. Expiry is observed during runtime calls rather than by a background timer. The first valid terminal transition wins permanently.

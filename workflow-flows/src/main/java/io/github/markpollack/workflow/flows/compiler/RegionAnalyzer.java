@@ -48,7 +48,7 @@ final class RegionAnalyzer {
     private Analysis run(Definition<?,?> definition,boolean inferOutput) {
         require(definition.name()!=null&&!definition.name().isBlank(),"workflow name required");
         applicationType(definition.input()); applicationType(definition.output());
-        finite(definition.deadline(),false,"finite positive workflow deadline required");
+        finite(definition.deadline(),true,"positive workflow deadline or explicit untimed marker required");
         boundaryOutput=inferOutput?null:definition.output();
         Placement root=Coordinates.root(definition);
         RegionSummary summary=walk(definition.nodes(),new Scope(root,definition.input()),root,false);

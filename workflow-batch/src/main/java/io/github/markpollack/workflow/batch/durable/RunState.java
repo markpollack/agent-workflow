@@ -266,7 +266,7 @@ final class RunState {
 		Scope expired = scopes.values()
 			.stream()
 			.filter(Scope::open)
-			.filter(s -> now >= s.deadline)
+			.filter(s -> s.deadline != Long.MAX_VALUE && now >= s.deadline)
 			.min(Comparator.comparingInt(s -> s.depth))
 			.orElse(null);
 		if (expired == null)
