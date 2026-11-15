@@ -68,7 +68,10 @@
         <logback.version>1.6.3</logback.version>
         <micrometer.version>1.17.1</micrometer.version>
         <spring-ai.version>2.0.1</spring-ai.version>
-        <agent-judge.version>0.18.0</agent-judge.version>
+        <!-- Built against the next Judge until Judge 1.0.0 ships; the release repins it. -->
+        <agent-judge.version>0.19.0-SNAPSHOT</agent-judge.version>
+        <!-- Agent Client: test scope only (workflow-flows). -->
+        <agent-client.version>0.32.1-SNAPSHOT</agent-client.version>
         <spring-ai-agent-utils.version>0.10.0</spring-ai-agent-utils.version>
         <journal-core.version>1.10.0</journal-core.version>
         <jacoco.version>0.8.15</jacoco.version>
@@ -277,6 +280,18 @@
     </distributionManagement>
 
     <repositories>
+        <!-- Member snapshots (Judge, Client) until the release repins them to stable versions. -->
+        <repository>
+            <id>central-snapshots</id>
+            <name>Maven Central Snapshots</name>
+            <url>https://central.sonatype.com/repository/maven-snapshots/</url>
+            <releases>
+                <enabled>false</enabled>
+            </releases>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+        </repository>
         <repository>
             <id>spring-milestones</id>
             <name>Spring Milestones</name>
