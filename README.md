@@ -35,6 +35,33 @@ This additive authoring method is available starting in 0.14.0.
 Ordinary returning paths still require explicit terminals; unreachable successors still refuse.
 The six-lesson progression also remains compatible with 0.13.0.
 
+## Spring Boot, Quarkus and Micronaut
+
+Each framework gets one integration module; none of them depends on Spring AI or Agent Client.
+
+| Framework | Module |
+|---|---|
+| Spring Boot 4.1 | `workflow-spring-boot-autoconfigure` |
+| Quarkus 3.40 | `workflow-quarkus` (extension; `workflow-quarkus-deployment` holds its build steps) |
+| Micronaut 4.10 | `workflow-micronaut` |
+
+They provide the same beans from the same `agent-workflow.*` properties:
+
+| Bean | From |
+|---|---|
+| `ExecutionPolicy` | `agent-workflow.execution.maximum-attempts`, `maximum-depth`, `maximum-invocations`, `maximum-concurrency`; unset bounds keep the defaults |
+| `StepRegistry` | every `Step` bean, under its bean name (Quarkus and Micronaut: its `@Named` name, else its class name) |
+| `ExecutionCompatibility` | `agent-workflow.application-id`, `agent-workflow.build-id`, `agent-workflow.configuration.*` |
+| `DurableWorkflows` | `agent-workflow.database`, the H2 base file path; closed with the application |
+
+```properties
+agent-workflow.database=/var/lib/reviews/runs
+agent-workflow.application-id=reviews
+agent-workflow.build-id=2026.11.15
+```
+
+An application bean of the same type replaces each one. A prepackaged workflow can therefore ship as a JAR of `Step` beans and a `ValidatedWorkflow` bean, and an application swaps just the step it needs: in Spring Boot the JAR declares that step `@ConditionalOnMissingBean`, in Quarkus `@DefaultBean`, and in Micronaut the application's step declares `@Replaces`.
+
 ## License
 
 [Business Source License 1.1](LICENSE)

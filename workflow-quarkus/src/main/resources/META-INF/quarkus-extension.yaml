@@ -1,0 +1,10 @@
+name: "Agent Workflow"
+metadata:
+  short-name: "agent-workflow"
+  keywords:
+    - "workflow"
+    - "durable"
+    - "agent"
+  categories:
+    - "miscellaneous"
+  status: "preview"

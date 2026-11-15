@@ -31,6 +31,9 @@ JACKSON_AND_NETWORKNT_MODULES = {
     "workflow-core",
     "workflow-flows",
     "workflow-journal",
+    "workflow-micronaut",
+    "workflow-quarkus",
+    "workflow-spring-boot-autoconfigure",
     "workflow-temporal",
 }
 PUBLISHED_MODULES = JACKSON_AND_NETWORKNT_MODULES | {"workflow-tools"}

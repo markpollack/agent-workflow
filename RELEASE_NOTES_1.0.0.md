@@ -15,3 +15,13 @@ The durable engine (`workflow-api`, `workflow-flows`, `workflow-batch`, `workflo
 Update the imports; the types themselves are unchanged. Code that implements `LoopPattern` or `ToolCallListener` now needs `workflow-core`.
 
 `workflow-flows` declares Spring AI as optional. An application that uses `ChatClientStep` adds `org.springframework.ai:spring-ai-client-chat` itself.
+
+## New modules
+
+Framework integrations, one per framework, each providing the durable workflow beans from `agent-workflow.*` properties (see the README):
+
+- `workflow-spring-boot-autoconfigure` (Spring Boot 4.1.1)
+- `workflow-quarkus` and `workflow-quarkus-deployment` (Quarkus 3.40.1)
+- `workflow-micronaut` (Micronaut platform 4.10.20, core 4.10.30)
+
+Each imports the Jackson BOMs ahead of its platform BOM, so it resolves Jackson 2.22.3 and 3.2.3 or later.
