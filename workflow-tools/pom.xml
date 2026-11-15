@@ -14,6 +14,11 @@
     <name>Workflow Tools</name>
     <description>Reusable tools for AI agents: file operations, shell execution, search</description>
 
+    <properties>
+        <!-- Legacy tools for the loop patterns: Spring AI ToolCallback. -->
+        <workflow.spring-ai.allowed>true</workflow.spring-ai.allowed>
+    </properties>
+
     <dependencies>
         <!-- Consumer-visible floors for runtime families otherwise governed only by the parent. -->
         <dependency>

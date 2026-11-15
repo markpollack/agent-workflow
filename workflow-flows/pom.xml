@@ -14,6 +14,11 @@
     <name>Workflow Flows</name>
     <description>Typed workflow DSL and validation; also retains legacy in-memory combinators</description>
 
+    <properties>
+        <!-- Spring AI is optional here, for the legacy ChatClientStep adapter only. workflow-batch and workflow-journal ban it, so it cannot become transitive. -->
+        <workflow.spring-ai.allowed>true</workflow.spring-ai.allowed>
+    </properties>
+
     <dependencies>
         <dependency>
             <groupId>io.github.markpollack</groupId>
@@ -55,16 +60,11 @@
             <artifactId>workflow-api</artifactId>
         </dependency>
 
-        <!-- workflow-core provides GraphCompositionStrategy for GraphStep -->
-        <dependency>
-            <groupId>io.github.markpollack</groupId>
-            <artifactId>workflow-core</artifactId>
-        </dependency>
-
-        <!-- Spring AI ChatClient for ChatClientStep -->
+        <!-- Spring AI ChatClient (optional — legacy ChatClientStep adapter only) -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-client-chat</artifactId>
+            <optional>true</optional>
         </dependency>
 
         <!-- A2A Protocol SDK (optional — A2AStep remote agent invocation) -->

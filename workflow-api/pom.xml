@@ -43,16 +43,6 @@
             <version>${json-schema-validator.version}</version>
         </dependency>
 
-        <!-- Spring AI (ChatClient, ToolCallback, ChatResponse) -->
-        <dependency>
-            <groupId>org.springframework.ai</groupId>
-            <artifactId>spring-ai-client-chat</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.ai</groupId>
-            <artifactId>spring-ai-model</artifactId>
-        </dependency>
-
         <!-- Agent Judge (for Verdict type in TerminationStrategy) -->
         <dependency>
             <groupId>io.github.markpollack</groupId>

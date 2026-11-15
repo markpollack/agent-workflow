@@ -69,6 +69,11 @@
         <journal-core.version>1.10.0</journal-core.version>
         <jacoco.version>0.8.15</jacoco.version>
 
+        <!-- The engine (api, flows, batch, journal) and the framework integrations carry no Spring AI
+             and no legacy loop patterns. The legacy pattern modules opt out, each saying why. -->
+        <workflow.spring-ai.allowed>false</workflow.spring-ai.allowed>
+        <workflow.legacy-patterns.allowed>false</workflow.legacy-patterns.allowed>
+
         <!-- Release plugin versions -->
         <maven-source-plugin.version>3.4.0</maven-source-plugin.version>
         <maven-javadoc-plugin.version>3.12.0</maven-javadoc-plugin.version>
@@ -484,6 +489,46 @@
                                 <argument>--pom</argument>
                                 <argument>${project.build.directory}/.flattened-pom.xml</argument>
                             </arguments>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.6.2</version>
+                <executions>
+                    <execution>
+                        <id>ban-spring-ai</id>
+                        <phase>validate</phase>
+                        <goals><goal>enforce</goal></goals>
+                        <configuration>
+                            <skip>${workflow.spring-ai.allowed}</skip>
+                            <rules>
+                                <bannedDependencies>
+                                    <excludes>
+                                        <exclude>org.springframework.ai:*</exclude>
+                                    </excludes>
+                                    <message>This module must not depend on Spring AI (org.springframework.ai); only the legacy loop pattern modules may.</message>
+                                </bannedDependencies>
+                            </rules>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>ban-legacy-patterns</id>
+                        <phase>validate</phase>
+                        <goals><goal>enforce</goal></goals>
+                        <configuration>
+                            <skip>${workflow.legacy-patterns.allowed}</skip>
+                            <rules>
+                                <bannedDependencies>
+                                    <excludes>
+                                        <exclude>io.github.markpollack:workflow-core</exclude>
+                                    </excludes>
+                                    <message>This module must not depend on the legacy loop patterns (workflow-core).</message>
+                                </bannedDependencies>
+                            </rules>
                         </configuration>
                     </execution>
                 </executions>

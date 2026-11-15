@@ -16,7 +16,7 @@
 package io.github.markpollack.workflow.patterns.graph;
 
 /**
- * Declares whether a {@link GraphNode} is deterministic or agent-driven.
+ * Declares whether a graph node is deterministic or agent-driven.
  * <p>
  * This is the key distinction in the Blueprint Engine (Pattern 5):
  * <ul>
@@ -35,21 +35,18 @@ package io.github.markpollack.workflow.patterns.graph;
  *   <li>Blueprint visualization (deterministic = rectangle, agent = rounded rectangle)</li>
  *   <li>Cost estimation before execution (sum agent node costs × expected token rates)</li>
  * </ul>
- *
- * @see GraphNode#nodeType()
- * @see NodeMetrics
  */
 public enum NodeType {
 
     /**
      * No LLM calls, no tokens consumed, predictable cost, guaranteed termination.
-     * {@link FunctionGraphNode} is always {@code DETERMINISTIC}.
+     * A function graph node is always {@code DETERMINISTIC}.
      */
     DETERMINISTIC,
 
     /**
      * Uses an LLM, consumes tokens, variable cost, may need timeout/termination.
-     * {@link LoopGraphNode} is always {@code AGENT}.
+     * A loop graph node is always {@code AGENT}.
      */
     AGENT
 }

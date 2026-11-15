@@ -15,6 +15,9 @@
     <description>Example implementations of all patterns</description>
 
     <properties>
+        <!-- Examples of the legacy loop patterns. -->
+        <workflow.spring-ai.allowed>true</workflow.spring-ai.allowed>
+        <workflow.legacy-patterns.allowed>true</workflow.legacy-patterns.allowed>
         <maven.deploy.skip>true</maven.deploy.skip>
     </properties>
 

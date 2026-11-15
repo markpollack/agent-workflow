@@ -14,6 +14,11 @@
     <name>Workflow Core</name>
     <description>Legacy agent strategies and graph composition; durable Workflows uses workflow-batch</description>
 
+    <properties>
+        <!-- Legacy loop patterns: built on Spring AI ChatClient and tools. -->
+        <workflow.spring-ai.allowed>true</workflow.spring-ai.allowed>
+    </properties>
+
     <dependencies>
         <!-- Consumer-visible floors for runtime families otherwise governed only by the parent. -->
         <dependency>

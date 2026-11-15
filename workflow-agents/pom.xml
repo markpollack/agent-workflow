@@ -14,6 +14,12 @@
     <name>Workflow Agents</name>
     <description>Ready-to-use agent implementations including AgentLoop</description>
 
+    <properties>
+        <!-- Legacy agents built on the loop patterns and Spring AI. -->
+        <workflow.spring-ai.allowed>true</workflow.spring-ai.allowed>
+        <workflow.legacy-patterns.allowed>true</workflow.legacy-patterns.allowed>
+    </properties>
+
     <dependencies>
         <!-- Consumer-visible floors for runtime families otherwise governed only by the parent. -->
         <dependency>
