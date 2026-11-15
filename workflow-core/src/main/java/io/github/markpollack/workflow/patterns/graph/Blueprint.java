@@ -15,7 +15,7 @@
  */
 package io.github.markpollack.workflow.patterns.graph;
 
-import io.github.markpollack.workflow.core.LoopPattern;
+import io.github.markpollack.workflow.patterns.LoopPattern;
 import io.github.markpollack.workflow.core.LoopResult;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.tool.ToolCallback;
@@ -176,7 +176,7 @@ public final class Blueprint<I, O> {
          * Adds an agent-typed node backed by a plain function.
          * <p>
          * Use when the agent call is external (REST, AgentClient, subprocess) rather
-         * than an embedded {@link io.github.markpollack.workflow.core.LoopPattern}.
+         * than an embedded {@link io.github.markpollack.workflow.patterns.LoopPattern}.
          * The node reports {@link NodeType#AGENT} in metrics and visualization.
          *
          * @param nodeName    the unique node name

@@ -15,6 +15,7 @@
  */
 package io.github.markpollack.workflow.patterns.graph;
 
+import io.github.markpollack.workflow.core.NodeType;
 import io.github.markpollack.workflow.core.LoopResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

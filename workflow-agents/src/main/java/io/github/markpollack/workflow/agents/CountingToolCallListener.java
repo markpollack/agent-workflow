@@ -15,7 +15,7 @@
  */
 package io.github.markpollack.workflow.agents;
 
-import io.github.markpollack.workflow.core.ToolCallListener;
+import io.github.markpollack.workflow.patterns.ToolCallListener;
 import org.springframework.ai.chat.messages.AssistantMessage;
 
 import java.time.Duration;

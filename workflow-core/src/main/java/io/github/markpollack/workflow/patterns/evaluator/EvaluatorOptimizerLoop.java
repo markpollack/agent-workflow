@@ -15,7 +15,7 @@
  */
 package io.github.markpollack.workflow.patterns.evaluator;
 
-import io.github.markpollack.workflow.core.LoopPattern;
+import io.github.markpollack.workflow.patterns.LoopPattern;
 import io.github.markpollack.workflow.core.LoopState;
 import io.github.markpollack.workflow.core.TerminationReason;
 import io.github.markpollack.workflow.patterns.judge.ScoreText;

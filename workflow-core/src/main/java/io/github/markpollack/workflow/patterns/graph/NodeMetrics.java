@@ -15,6 +15,7 @@
  */
 package io.github.markpollack.workflow.patterns.graph;
 
+import io.github.markpollack.workflow.core.NodeType;
 import java.time.Duration;
 import java.util.Objects;
 

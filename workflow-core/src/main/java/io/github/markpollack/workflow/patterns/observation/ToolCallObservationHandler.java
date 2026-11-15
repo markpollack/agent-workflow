@@ -17,7 +17,7 @@ package io.github.markpollack.workflow.patterns.observation;
 
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
-import io.github.markpollack.workflow.core.ToolCallListener;
+import io.github.markpollack.workflow.patterns.ToolCallListener;
 import org.springframework.ai.tool.observation.ToolCallingObservationContext;
 
 import java.time.Duration;

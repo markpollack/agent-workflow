@@ -1,6 +1,6 @@
 package io.github.markpollack.workflow.flows.workflow;
 
-import io.github.markpollack.workflow.patterns.graph.NodeType;
+import io.github.markpollack.workflow.core.NodeType;
 
 import java.time.Duration;
 import java.time.Instant;

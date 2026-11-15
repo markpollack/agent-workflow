@@ -17,7 +17,7 @@ package io.github.markpollack.workflow.examples.prreview;
 
 import io.github.markpollack.workflow.patterns.graph.BlueprintNode;
 import io.github.markpollack.workflow.patterns.graph.GraphResult;
-import io.github.markpollack.workflow.patterns.graph.NodeType;
+import io.github.markpollack.workflow.core.NodeType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;

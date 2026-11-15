@@ -15,6 +15,7 @@
  */
 package io.github.markpollack.workflow.patterns.graph;
 
+import io.github.markpollack.workflow.core.NodeType;
 import java.util.Objects;
 import java.util.function.BiFunction;
 

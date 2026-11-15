@@ -15,7 +15,7 @@
  */
 package io.github.markpollack.workflow.patterns.statemachine;
 
-import io.github.markpollack.workflow.core.LoopPattern;
+import io.github.markpollack.workflow.patterns.LoopPattern;
 import io.github.markpollack.workflow.core.LoopState;
 import io.github.markpollack.workflow.core.LoopStatus;
 import io.github.markpollack.workflow.core.TerminationReason;

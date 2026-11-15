@@ -17,7 +17,7 @@ package io.github.markpollack.workflow.agents;
 
 import io.micrometer.observation.ObservationRegistry;
 import io.github.markpollack.workflow.callback.AgentCallback;
-import io.github.markpollack.workflow.core.ToolCallListener;
+import io.github.markpollack.workflow.patterns.ToolCallListener;
 import io.github.markpollack.workflow.patterns.advisor.AgentLoopAdvisor;
 import io.github.markpollack.workflow.patterns.advisor.AgentLoopListener;
 import io.github.markpollack.workflow.patterns.advisor.AgentLoopTerminatedException;

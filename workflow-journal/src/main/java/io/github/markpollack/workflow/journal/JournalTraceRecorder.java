@@ -3,7 +3,7 @@ package io.github.markpollack.workflow.journal;
 import io.github.markpollack.journal.Run;
 import io.github.markpollack.workflow.flows.workflow.StepTransition;
 import io.github.markpollack.workflow.flows.workflow.TraceRecorder;
-import io.github.markpollack.workflow.patterns.graph.NodeType;
+import io.github.markpollack.workflow.core.NodeType;
 
 import java.util.List;
 import java.util.Objects;

@@ -15,10 +15,10 @@
  */
 package io.github.markpollack.workflow.patterns.turnlimited;
 
-import io.github.markpollack.workflow.core.LoopPattern;
+import io.github.markpollack.workflow.patterns.LoopPattern;
 import io.github.markpollack.workflow.core.LoopState;
 import io.github.markpollack.workflow.core.TerminationReason;
-import io.github.markpollack.workflow.core.ToolCallListener;
+import io.github.markpollack.workflow.patterns.ToolCallListener;
 import io.github.markpollack.workflow.patterns.judge.ScoreText;
 import io.github.markpollack.workflow.patterns.judge.SpringAiJuryAdapter;
 import io.github.markpollack.workflow.strategy.TerminationStrategy;

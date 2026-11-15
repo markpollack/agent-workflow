@@ -16,7 +16,7 @@
 package io.github.markpollack.workflow.patterns.observation;
 
 import io.micrometer.observation.Observation;
-import io.github.markpollack.workflow.core.ToolCallListener;
+import io.github.markpollack.workflow.patterns.ToolCallListener;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;

@@ -15,7 +15,8 @@
  */
 package io.github.markpollack.workflow.patterns.graph;
 
-import io.github.markpollack.workflow.core.LoopPattern;
+import io.github.markpollack.workflow.core.NodeType;
+import io.github.markpollack.workflow.patterns.LoopPattern;
 import io.github.markpollack.workflow.core.LoopResult;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.tool.ToolCallback;

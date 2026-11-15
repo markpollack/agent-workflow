@@ -1,7 +1,7 @@
 package io.github.markpollack.workflow.journal;
 
 import io.github.markpollack.journal.event.JournalEvent;
-import io.github.markpollack.workflow.patterns.graph.NodeType;
+import io.github.markpollack.workflow.core.NodeType;
 
 import java.time.Duration;
 import java.time.Instant;

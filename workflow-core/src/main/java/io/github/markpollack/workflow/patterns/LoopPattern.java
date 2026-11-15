@@ -13,8 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.github.markpollack.workflow.core;
+package io.github.markpollack.workflow.patterns;
 
+import io.github.markpollack.workflow.core.LoopResult;
 import io.github.markpollack.workflow.strategy.TerminationStrategy;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.tool.ToolCallback;

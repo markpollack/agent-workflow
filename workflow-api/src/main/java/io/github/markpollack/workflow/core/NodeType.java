@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.github.markpollack.workflow.patterns.graph;
+package io.github.markpollack.workflow.core;
 
 /**
  * Declares whether a graph node is deterministic or agent-driven.

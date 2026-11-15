@@ -10,7 +10,7 @@ import javax.sql.DataSource;
 
 import io.github.markpollack.workflow.flows.workflow.StepTransition;
 import io.github.markpollack.workflow.flows.workflow.TraceRecorder;
-import io.github.markpollack.workflow.patterns.graph.NodeType;
+import io.github.markpollack.workflow.core.NodeType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;

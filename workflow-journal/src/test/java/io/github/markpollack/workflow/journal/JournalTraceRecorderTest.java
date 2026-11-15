@@ -6,7 +6,7 @@ import io.github.markpollack.journal.event.JournalEvent;
 import io.github.markpollack.journal.storage.InMemoryStorage;
 import io.github.markpollack.workflow.flows.workflow.StepTransition;
 import io.github.markpollack.workflow.flows.workflow.TraceRecorder;
-import io.github.markpollack.workflow.patterns.graph.NodeType;
+import io.github.markpollack.workflow.core.NodeType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
