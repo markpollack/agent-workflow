@@ -17,9 +17,6 @@
     <properties>
         <!-- Spring AI is optional here, for the legacy ChatClientStep adapter only. workflow-batch and workflow-journal ban it, so it cannot become transitive. -->
         <workflow.spring-ai.allowed>true</workflow.spring-ai.allowed>
-        <!-- Agent Client is a test dependency here (AgentClientStep trace wiring); workflow-batch and
-             workflow-journal ban it, so it cannot become transitive. -->
-        <workflow.agent-client.allowed>true</workflow.agent-client.allowed>
     </properties>
 
     <dependencies>
@@ -98,20 +95,6 @@
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
-        </dependency>
-
-        <!-- Agent Client (test only — integration tests for AgentClientStep trace wiring) -->
-        <dependency>
-            <groupId>io.github.markpollack</groupId>
-            <artifactId>agent-client-core</artifactId>
-            <version>${agent-client.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>io.github.markpollack</groupId>
-            <artifactId>agent-claude</artifactId>
-            <version>${agent-client.version}</version>
-            <scope>test</scope>
         </dependency>
 
         <!-- Test -->

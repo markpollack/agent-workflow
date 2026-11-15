@@ -70,8 +70,6 @@
         <spring-ai.version>2.0.1</spring-ai.version>
         <!-- Built against the next Judge until Judge 1.0.0 ships; the release repins it. -->
         <agent-judge.version>0.19.0-SNAPSHOT</agent-judge.version>
-        <!-- Agent Client: test scope only (workflow-flows). -->
-        <agent-client.version>0.32.1-SNAPSHOT</agent-client.version>
         <spring-ai-agent-utils.version>0.10.0</spring-ai-agent-utils.version>
         <journal-core.version>1.10.0</journal-core.version>
         <jacoco.version>0.8.15</jacoco.version>
@@ -86,7 +84,7 @@
              and no legacy loop patterns. The legacy pattern modules opt out, each saying why. -->
         <workflow.spring-ai.allowed>false</workflow.spring-ai.allowed>
         <workflow.legacy-patterns.allowed>false</workflow.legacy-patterns.allowed>
-        <!-- Agent Client is a test dependency only (workflow-flows); no module may ship with it. -->
+        <!-- No module depends on Agent Client, at any scope. -->
         <workflow.agent-client.allowed>false</workflow.agent-client.allowed>
 
         <!-- Release plugin versions -->
@@ -280,7 +278,7 @@
     </distributionManagement>
 
     <repositories>
-        <!-- Member snapshots (Judge, Client) until the release repins them to stable versions. -->
+        <!-- Member snapshots (Judge) for development builds; published POMs drop every repository. -->
         <repository>
             <id>central-snapshots</id>
             <name>Maven Central Snapshots</name>
@@ -337,6 +335,31 @@
             <id>release</id>
             <build>
                 <plugins>
+                    <!--
+                        A release depends on releases only. On a release version the build fails
+                        while any dependency, direct or transitive, is still a snapshot; on a
+                        development version the rule does not apply.
+                    -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-enforcer-plugin</artifactId>
+                        <version>3.6.2</version>
+                        <executions>
+                            <execution>
+                                <id>require-release-dependencies</id>
+                                <goals><goal>enforce</goal></goals>
+                                <configuration>
+                                    <rules>
+                                        <requireReleaseDeps>
+                                            <onlyWhenRelease>true</onlyWhenRelease>
+                                            <message>A release must not depend on a snapshot. Release or repin the dependency first.</message>
+                                        </requireReleaseDeps>
+                                    </rules>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+
                     <!-- Maven Central Publishing Plugin -->
                     <plugin>
                         <groupId>org.sonatype.central</groupId>
@@ -504,6 +527,12 @@
                 <configuration>
                     <flattenMode>ossrh</flattenMode>
                     <outputDirectory>${project.build.directory}</outputDirectory>
+                    <!-- A published POM names no repository. The snapshot repositories above serve
+                         development builds only; a consumer of a release resolves from Central alone. -->
+                    <pomElements>
+                        <repositories>remove</repositories>
+                        <pluginRepositories>remove</pluginRepositories>
+                    </pomElements>
                 </configuration>
                 <executions>
                     <execution>
