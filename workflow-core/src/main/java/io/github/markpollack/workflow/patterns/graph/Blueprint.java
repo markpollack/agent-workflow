@@ -177,7 +177,7 @@ public final class Blueprint<I, O> {
          * <p>
          * Use when the agent call is external (REST, AgentClient, subprocess) rather
          * than an embedded {@link io.github.markpollack.workflow.patterns.LoopPattern}.
-         * The node reports {@link NodeType#AGENT} in metrics and visualization.
+         * The node reports {@link io.github.markpollack.workflow.core.NodeType#AGENT} in metrics and visualization.
          *
          * @param nodeName    the unique node name
          * @param description human-readable purpose of this node
