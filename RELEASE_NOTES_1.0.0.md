@@ -1,6 +1,6 @@
 # Agent Workflow 1.0.0 — draft
 
-Draft notes for the next release; the version is not yet set. Requires Java 21.
+Draft notes for the next release; the version is not yet set. Requires Java 21 and Agent Judge 1.0.0 (`agent-judge-core`; native Verdict routing also uses `agent-judge-json-jackson2` 1.0.0).
 
 ## Breaking changes
 
@@ -25,3 +25,13 @@ Framework integrations, one per framework, each providing the durable workflow b
 - `workflow-micronaut` (Micronaut platform 4.10.20, core 4.10.30)
 
 Each imports the Jackson BOMs ahead of its platform BOM, so it resolves Jackson 2.22.3 and 3.2.3 or later.
+
+## Removed
+
+`workflow-temporal` is no longer published and has left the Agentworks BOM. Its last release, 0.12.3, calls a Workflow class that 0.14 no longer has; `workflow-batch` is the durable runtime. A Temporal binding for the current engine may return in a later release.
+
+## Dependencies
+
+- Agent Judge 0.18.0 → 1.0.0, with no source changes.
+- No Agent Client dependency at any scope.
+- A release build refuses snapshot dependencies, and published POMs name no repository.
