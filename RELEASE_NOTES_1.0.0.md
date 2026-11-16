@@ -1,6 +1,6 @@
-# Agent Workflow 1.0.0 — draft
+# Agent Workflow 1.0.0
 
-Draft notes for the next release; the version is not yet set. Requires Java 21 and Agent Judge 1.0.0 (`agent-judge-core`; native Verdict routing also uses `agent-judge-json-jackson2` 1.0.0).
+First 1.x release, for the AgentWorks BOM 1.22.0. Requires Java 21 and Agent Judge 1.0.0 (`agent-judge-core`; native Verdict routing also uses `agent-judge-json-jackson2` 1.0.0).
 
 ## Breaking changes
 

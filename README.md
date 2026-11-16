@@ -2,21 +2,21 @@
 
 A Java 21 library for typed Steps, reusable workflows, exhaustive decisions and bounded concurrent work, with local JDBC durability and recovery.
 
-[Documentation](https://lab.pollack.ai/projects/agent-workflow) · [0.14.0 release notes](RELEASE_NOTES_0.14.0.md) · [Compiling deterministic example](examples/review-files/README.md) · [Six runnable lessons](https://github.com/markpollack/workflow-dsl-examples/tree/main/executable-dsl)
+[Documentation](https://lab.pollack.ai/projects/agent-workflow) · [1.0.0 release notes](RELEASE_NOTES_1.0.0.md) · [Compiling deterministic example](examples/review-files/README.md) · [Six runnable lessons](https://github.com/markpollack/workflow-dsl-examples/tree/main/executable-dsl)
 
 ## Maven
 
-The current executable-DSL release is **0.14.0**. The first milestone was 0.13.0:
+The current release is **1.0.0**:
 
 ```xml
 <dependency>
     <groupId>io.github.markpollack</groupId>
     <artifactId>workflow-batch</artifactId>
-    <version>0.14.0</version>
+    <version>1.0.0</version>
 </dependency>
 ```
 
-Native Verdict routing additionally requires `io.github.markpollack:agent-judge-json-jackson2:0.18.0`.
+Native Verdict routing additionally requires `io.github.markpollack:agent-judge-json-jackson2:1.0.0`.
 
 ## Build
 
