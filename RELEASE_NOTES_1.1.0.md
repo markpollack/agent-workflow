@@ -1,6 +1,6 @@
-# Agent Workflow 1.0.1 — draft
+# Agent Workflow 1.1.0 — draft
 
-Draft notes for the next patch release; the version is not yet set. Requires Java 21.
+Draft notes for the next release; main is 1.1.0-SNAPSHOT. Requires Java 21.
 
 ## Security
 
