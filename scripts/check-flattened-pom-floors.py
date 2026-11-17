@@ -23,6 +23,9 @@ JACKSON3 = {
 NETWORKNT = {
     ("com.networknt", "json-schema-validator"): "3.0.7",
 }
+JSOUP = {
+    ("org.jsoup", "jsoup"): "1.23.2",
+}
 
 JACKSON_AND_NETWORKNT_MODULES = {
     "workflow-agents",
@@ -47,6 +50,8 @@ def required_floors(artifact_id: str) -> dict[tuple[str, str], str]:
         floors[("tools.jackson.dataformat", "jackson-dataformat-yaml")] = "3.2.3"
     if artifact_id == "workflow-journal":
         floors.update(JACKSON2_DATETIME)
+    if artifact_id == "workflow-agents":
+        floors.update(JSOUP)
     return floors
 
 

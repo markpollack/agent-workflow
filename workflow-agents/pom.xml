@@ -83,6 +83,13 @@
             <groupId>org.springaicommunity</groupId>
             <artifactId>spring-ai-agent-utils</artifactId>
         </dependency>
+        <!-- Consumer-visible floor: SmartWebFetchTool converts fetched HTML through flexmark, which
+             would otherwise bring jsoup 1.15.4 (CVE-2026-75140, CVE-2026-71497). -->
+        <dependency>
+            <groupId>org.jsoup</groupId>
+            <artifactId>jsoup</artifactId>
+            <version>${jsoup.version}</version>
+        </dependency>
 
         <!-- zt-exec for process execution -->
         <dependency>

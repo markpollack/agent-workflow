@@ -62,6 +62,9 @@
         <jackson.version>2.22.3</jackson.version>
         <jackson3.version>3.2.3</jackson3.version>
         <json-schema-validator.version>3.0.7</json-schema-validator.version>
+        <!-- CVE-2026-75140 (fixed in 1.23.2) and CVE-2026-71497 (1.23.1): flexmark-html2md-converter
+             0.64.8, via spring-ai-agent-utils, brings 1.15.4. -->
+        <jsoup.version>1.24.1</jsoup.version>
         <junit.version>5.14.4</junit.version>
         <assertj.version>3.27.7</assertj.version>
         <slf4j.version>2.0.18</slf4j.version>
@@ -261,6 +264,11 @@
             </dependency>
 
             <!-- zt-exec for process execution -->
+            <dependency>
+                <groupId>org.jsoup</groupId>
+                <artifactId>jsoup</artifactId>
+                <version>${jsoup.version}</version>
+            </dependency>
             <dependency>
                 <groupId>org.zeroturnaround</groupId>
                 <artifactId>zt-exec</artifactId>
