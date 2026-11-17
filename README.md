@@ -62,6 +62,10 @@ agent-workflow.build-id=2026.11.15
 
 An application bean of the same type replaces each one. A prepackaged workflow can therefore ship as a JAR of `Step` beans and a `ValidatedWorkflow` bean, and an application swaps just the step it needs: in Spring Boot the JAR declares that step `@ConditionalOnMissingBean`, in Quarkus `@DefaultBean`, and in Micronaut the application's step declares `@Replaces`.
 
+## Agent Client steps
+
+`workflow-agent-client` runs an `AgentClientStep` through Agent Client: `AgentClientStep.of(WorkflowAgentClient.of(client), "Fix {input}")`. It is the only Workflow module that depends on Agent Client. See [its README](workflow-agent-client/README.md).
+
 ## License
 
 [Business Source License 1.1](LICENSE)

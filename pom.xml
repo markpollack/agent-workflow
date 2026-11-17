@@ -49,6 +49,8 @@
         <module>workflow-quarkus</module>
         <module>workflow-quarkus-deployment</module>
         <module>workflow-micronaut</module>
+        <module>workflow-agent-client-reader</module>
+        <module>workflow-agent-client</module>
     </modules>
 
     <properties>
@@ -72,6 +74,10 @@
         <micrometer.version>1.17.1</micrometer.version>
         <spring-ai.version>2.0.1</spring-ai.version>
         <agent-judge.version>1.1.0-SNAPSHOT</agent-judge.version>
+        <!-- workflow-agent-client only (Workflow is above Client in the release train). -->
+        <agent-client.version>0.32.1-SNAPSHOT</agent-client.version>
+        <!-- Journal 2's capture TCK: workflow-agent-client's live proof only, test scope. -->
+        <agent-journal.version>2.0.0-SNAPSHOT</agent-journal.version>
         <spring-ai-agent-utils.version>0.10.0</spring-ai-agent-utils.version>
         <journal-core.version>1.10.0</journal-core.version>
         <jacoco.version>0.8.15</jacoco.version>
@@ -86,7 +92,7 @@
              and no legacy loop patterns. The legacy pattern modules opt out, each saying why. -->
         <workflow.spring-ai.allowed>false</workflow.spring-ai.allowed>
         <workflow.legacy-patterns.allowed>false</workflow.legacy-patterns.allowed>
-        <!-- No module depends on Agent Client, at any scope. -->
+        <!-- Only workflow-agent-client depends on Agent Client; every other module bans it, at any scope. -->
         <workflow.agent-client.allowed>false</workflow.agent-client.allowed>
 
         <!-- Release plugin versions -->
@@ -176,6 +182,11 @@
             <dependency>
                 <groupId>io.github.markpollack</groupId>
                 <artifactId>workflow-micronaut</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.markpollack</groupId>
+                <artifactId>workflow-agent-client</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
@@ -623,9 +634,26 @@
                             <rules>
                                 <bannedDependencies>
                                     <excludes>
+                                        <!-- Every artifact Agent Client publishes. -->
                                         <exclude>io.github.markpollack:agent-client*</exclude>
-                                        <exclude>io.github.markpollack:agent-claude*</exclude>
                                         <exclude>io.github.markpollack:agent-model*</exclude>
+                                        <exclude>io.github.markpollack:agent-tck</exclude>
+                                        <exclude>io.github.markpollack:agent-launcher</exclude>
+                                        <exclude>io.github.markpollack:agent-starter*</exclude>
+                                        <exclude>io.github.markpollack:*-cli-sdk</exclude>
+                                        <exclude>io.github.markpollack:swe-agent-sdk</exclude>
+                                        <exclude>io.github.markpollack:agent-acp</exclude>
+                                        <exclude>io.github.markpollack:agent-claude*</exclude>
+                                        <exclude>io.github.markpollack:agent-gemini</exclude>
+                                        <exclude>io.github.markpollack:agent-swe</exclude>
+                                        <exclude>io.github.markpollack:agent-amp</exclude>
+                                        <exclude>io.github.markpollack:agent-codex</exclude>
+                                        <exclude>io.github.markpollack:agent-grok</exclude>
+                                        <exclude>io.github.markpollack:agent-antigravity</exclude>
+                                        <exclude>io.github.markpollack:agent-junie</exclude>
+                                        <exclude>io.github.markpollack:agent-amazon-q</exclude>
+                                        <exclude>io.github.markpollack:agent-qwen-code</exclude>
+                                        <exclude>io.github.markpollack:hello-world-agent*</exclude>
                                     </excludes>
                                     <message>This module must not depend on Agent Client.</message>
                                 </bannedDependencies>

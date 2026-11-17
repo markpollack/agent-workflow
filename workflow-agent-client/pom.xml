@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.markpollack</groupId>
+        <artifactId>agent-workflow-parent</artifactId>
+        <version>1.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>workflow-agent-client</artifactId>
+    <name>Workflow Agent Client</name>
+    <description>Agent Client as a Workflow agent: an AgentClientStep runs through Agent Client</description>
+
+    <properties>
+        <!-- The one Workflow module that depends on Agent Client (Workflow is above Client in the
+             release train). Every other module keeps ban-agent-client. -->
+        <workflow.agent-client.allowed>true</workflow.agent-client.allowed>
+    </properties>
+
+    <dependencies>
+        <!-- Consumer-visible floors for runtime families otherwise governed only by the parent. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>tools.jackson.core</groupId>
+            <artifactId>jackson-core</artifactId>
+            <version>${jackson3.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>tools.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${jackson3.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>tools.jackson.dataformat</groupId>
+            <artifactId>jackson-dataformat-yaml</artifactId>
+            <version>${jackson3.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.networknt</groupId>
+            <artifactId>json-schema-validator</artifactId>
+            <version>${json-schema-validator.version}</version>
+        </dependency>
+
+        <!-- The step interface. Workflow's Judge, Spring AI, A2A and Anthropic dependencies are optional
+             there and do not reach this module. -->
+        <dependency>
+            <groupId>io.github.markpollack</groupId>
+            <artifactId>workflow-flows</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.markpollack</groupId>
+            <artifactId>agent-client-core</artifactId>
+            <version>${agent-client.version}</version>
+        </dependency>
+
+        <!-- Test -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- The live Junie proof (JunieWorkflowRecordingIT). -->
+        <dependency>
+            <groupId>io.github.markpollack</groupId>
+            <artifactId>workflow-batch</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.github.markpollack</groupId>
+            <artifactId>agent-client-junie</artifactId>
+            <version>${agent-client.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.github.markpollack</groupId>
+            <artifactId>agent-client-journal</artifactId>
+            <version>${agent-client.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.github.markpollack</groupId>
+            <artifactId>journal-capture-tck</artifactId>
+            <version>${agent-journal.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Build order only: the reader runs in its own JVM and is kept off this classpath below. -->
+        <dependency>
+            <groupId>io.github.markpollack</groupId>
+            <artifactId>workflow-agent-client-reader</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <classpathDependencyExcludes>
+                        <classpathDependencyExclude>io.github.markpollack:workflow-agent-client-reader</classpathDependencyExclude>
+                    </classpathDependencyExcludes>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <!-- A live run is one real agent session: never rerun it automatically. -->
+                    <rerunFailingTestsCount>0</rerunFailingTestsCount>
+                    <classpathDependencyExcludes>
+                        <classpathDependencyExclude>io.github.markpollack:workflow-agent-client-reader</classpathDependencyExclude>
+                    </classpathDependencyExcludes>
+                    <systemPropertyVariables>
+                        <proof.reader.classes>${project.basedir}/../workflow-agent-client-reader/target/classes</proof.reader.classes>
+                        <proof.reader.classpath>${project.basedir}/../workflow-agent-client-reader/target/reader-classpath.txt</proof.reader.classpath>
+                    </systemPropertyVariables>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

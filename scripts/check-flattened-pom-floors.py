@@ -28,6 +28,7 @@ JSOUP = {
 }
 
 JACKSON_AND_NETWORKNT_MODULES = {
+    "workflow-agent-client",
     "workflow-agents",
     "workflow-api",
     "workflow-batch",
